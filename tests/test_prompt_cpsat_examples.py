@@ -267,7 +267,7 @@ def test_cpsat_prompt_callback_example_still_streams_under_a_configured_search_l
     # Every other example test runs with the config env var cleared, which is why
     # this path went uncovered.
     config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({"search_time_limit_seconds": 30}), encoding="utf-8")
+    config_path.write_text(json.dumps({"solver_time_limit_seconds": 30}), encoding="utf-8")
     monkeypatch.setenv("OPENCONSTRAINT_MCP_CPSAT_CONFIG", str(config_path))
 
     out = io.StringIO()

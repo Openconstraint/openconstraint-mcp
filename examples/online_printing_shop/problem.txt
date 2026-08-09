@@ -173,7 +173,7 @@ models.py reads three settings:
 random seed
     OPENCONSTRAINT_MCP_CPSAT_SEED, default 42.
 
-search_time_limit_seconds
+solver_time_limit_seconds
     The CP-SAT SEARCH limit. Without it the solve runs unbounded, and a run
     started through an MCP tool is killed at script_timeout_ms instead of
     stopping on its own. Set it well below script_timeout_ms: it bounds search
@@ -192,13 +192,13 @@ data_sops1.json
     Nothing. It proves optimality in well under a second on one worker.
 
 data_mops1.json
-    Benefits from search_time_limit_seconds: CP-SAT then stops itself and
+    Benefits from solver_time_limit_seconds: CP-SAT then stops itself and
     returns a clean status instead of running until the timeout kill. Either
     way the streaming callback leaves a recoverable incumbent on stdout, and
     the checker grades that "timeout" verdict too.
 
 data_lops.json
-    Both, for example {"search_time_limit_seconds": 150, "num_workers": 8}. On one
+    Both, for example {"solver_time_limit_seconds": 150, "num_workers": 8}. On one
     worker it spends the whole limit and still reports status "unknown" with no
     incumbent, which the checker refuses.
 
@@ -207,7 +207,7 @@ complete envelope for each improving solution while their cumulative size fits
 a 512 KiB budget, then keeps searching without further intermediate output. The
 fixed budget leaves half the executor's combined 1 MiB stdout/stderr cap
 available for the final envelope and any stderr. Gating the callback itself on
-search_time_limit_seconds would be unsound: that limit bounds search alone, the
+solver_time_limit_seconds would be unsound: that limit bounds search alone, the
 script cannot read script_timeout_ms, and nothing checks one against the other,
 so the script can never prove it will exit before the kill. If a kill happens
 after the stream budget is exhausted, recovery returns the last incumbent that

@@ -1180,14 +1180,14 @@ async def test_cpsat_python_solution_workflow_prompt_both_examples_call_the_conf
 
 @pytest.mark.asyncio
 async def test_cpsat_python_solution_workflow_prompt_time_limit_is_conditional() -> None:
-    # search_time_limit_seconds carries this test; num_workers defaulting to 1 is
+    # solver_time_limit_seconds carries this test; num_workers defaulting to 1 is
     # confirmatory only, already covered by the seed-protocol test above.
     text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
     normalized = " ".join(text.split()).lower()
 
-    assert "search_time_limit_seconds" in text
-    assert 'config.get("search_time_limit_seconds")' in text
-    assert "if search_time_limit_seconds is not none" in normalized
+    assert "solver_time_limit_seconds" in text
+    assert 'config.get("solver_time_limit_seconds")' in text
+    assert "if solver_time_limit_seconds is not none" in normalized
     assert 'config.get("num_workers", 1)' in text
 
 

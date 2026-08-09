@@ -285,17 +285,17 @@ def _solver_config() -> dict[str, Any]:
     return config
 
 
-def _search_time_limit_seconds(config: dict[str, Any]) -> float | None:
+def _solver_time_limit_seconds(config: dict[str, Any]) -> float | None:
     """Return the caller's CP-SAT SEARCH limit, or None to search unbounded.
 
     Bounds ``solver.solve`` only — not reading the instance, building the model,
-    or serializing the schedule. Without a ``search_time_limit_seconds`` entry
+    or serializing the schedule. Without a ``solver_time_limit_seconds`` entry
     the search stays unbounded: the small instances prove optimality in well
     under a second, while a larger one needs a limit to return a clean status
     instead of being killed at the tool's ``script_timeout_ms``.
     """
 
-    limit: Any = config.get("search_time_limit_seconds")
+    limit: Any = config.get("solver_time_limit_seconds")
     return None if limit is None else float(limit)
 
 
@@ -684,9 +684,9 @@ def solve(instance: OPSInstance) -> Solution:
     solver: cp_model.CpSolver = cp_model.CpSolver()
     solver.parameters.random_seed = int(os.environ.get("OPENCONSTRAINT_MCP_CPSAT_SEED", "42"))
     solver.parameters.num_workers = _num_workers(config)
-    search_time_limit_seconds: float | None = _search_time_limit_seconds(config)
-    if search_time_limit_seconds is not None:
-        solver.parameters.max_time_in_seconds = search_time_limit_seconds
+    solver_time_limit_seconds: float | None = _solver_time_limit_seconds(config)
+    if solver_time_limit_seconds is not None:
+        solver.parameters.max_time_in_seconds = solver_time_limit_seconds
     # Intermediate envelopes exist for one reason: a child killed at the tool's
     # script_timeout_ms leaves only stdout behind, and the executor recovers the
     # last complete block from it. A search limit does NOT make that redundant —

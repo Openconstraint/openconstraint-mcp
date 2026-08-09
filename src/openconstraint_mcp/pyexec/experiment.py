@@ -451,7 +451,7 @@ def _check_wall_clock_budget(
         f"MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS={MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS} ms. "
         f"Breakdown (slowest attempt): attempt_count={len(attempts)}, "
         f"max_parallel_attempts={max_parallel_attempts}, batches={batches}, "
-        f"per_attempt_timeout_ms={slowest.script_timeout_ms}, "
+        f"script_timeout_ms={slowest.script_timeout_ms}, "
         f"checker_timeout_ms={slowest.checker_timeout_ms}, "
         f"attempt_budget_ms={slowest.attempt_budget_ms}, "
         f"checker_budget_ms={slowest.checker_budget_ms}, "

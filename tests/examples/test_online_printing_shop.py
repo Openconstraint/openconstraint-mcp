@@ -14,8 +14,8 @@ from examples.online_printing_shop.checker import check_payload
 from examples.online_printing_shop.models import (
     _num_workers,
     _required_processing,
-    _search_time_limit_seconds,
     _solver_config,
+    _solver_time_limit_seconds,
     parse_input,
     read_input,
     serialize_solution,
@@ -237,7 +237,7 @@ def test_no_config_file_yields_an_empty_config(monkeypatch: pytest.MonkeyPatch) 
 def test_no_config_file_leaves_the_solve_unbounded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENCONSTRAINT_MCP_CPSAT_CONFIG", raising=False)
 
-    assert _search_time_limit_seconds(_solver_config()) is None
+    assert _solver_time_limit_seconds(_solver_config()) is None
 
 
 def test_config_without_a_time_limit_leaves_the_solve_unbounded(
@@ -245,15 +245,15 @@ def test_config_without_a_time_limit_leaves_the_solve_unbounded(
 ) -> None:
     _write_config(tmp_path, monkeypatch, {"num_workers": 4})
 
-    assert _search_time_limit_seconds(_solver_config()) is None
+    assert _solver_time_limit_seconds(_solver_config()) is None
 
 
 def test_config_time_limit_is_read_as_seconds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _write_config(tmp_path, monkeypatch, {"search_time_limit_seconds": 20})
+    _write_config(tmp_path, monkeypatch, {"solver_time_limit_seconds": 20})
 
-    assert _search_time_limit_seconds(_solver_config()) == 20.0
+    assert _solver_time_limit_seconds(_solver_config()) == 20.0
 
 
 def test_no_config_file_keeps_the_single_reproducible_worker(
@@ -267,7 +267,7 @@ def test_no_config_file_keeps_the_single_reproducible_worker(
 def test_config_without_workers_keeps_the_single_reproducible_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _write_config(tmp_path, monkeypatch, {"search_time_limit_seconds": 20})
+    _write_config(tmp_path, monkeypatch, {"solver_time_limit_seconds": 20})
 
     assert _num_workers(_solver_config()) == 1
 
@@ -292,7 +292,7 @@ def test_time_limited_solve_still_streams_recoverable_incumbents(
     # can never prove it will exit first. Suppressing the stream here loses every
     # solution CP-SAT found whenever the limit does not fit inside the executor
     # budget (see test_search_limit_above_the_script_timeout_still_recovers).
-    _write_config(tmp_path, monkeypatch, {"search_time_limit_seconds": 30})
+    _write_config(tmp_path, monkeypatch, {"solver_time_limit_seconds": 30})
 
     solve(parse_input(load_instance()))
 
@@ -319,7 +319,7 @@ def test_config_workers_raise_the_cpsat_portfolio(
 ) -> None:
     # data_lops1.json finds no incumbent on one worker; the caller needs this key
     # to reach a checkable solution at all.
-    _write_config(tmp_path, monkeypatch, {"search_time_limit_seconds": 20, "num_workers": 8})
+    _write_config(tmp_path, monkeypatch, {"solver_time_limit_seconds": 20, "num_workers": 8})
 
     assert _num_workers(_solver_config()) == 8
 
@@ -451,7 +451,7 @@ async def test_search_limit_above_the_script_timeout_still_recovers() -> None:
             "script_path": str(EXAMPLE_DIR / "models.py"),
             "args": ["data_mops1.json"],
             "script_timeout_ms": 15_000,
-            "config": {"search_time_limit_seconds": 300, "num_workers": 8},
+            "config": {"solver_time_limit_seconds": 300, "num_workers": 8},
         },
     )
     assert call_result.structured_content is not None

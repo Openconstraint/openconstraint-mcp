@@ -941,7 +941,7 @@ def test_projected_budget_over_cap_rejected(monkeypatch: pytest.MonkeyPatch) -> 
         "attempt_count=1",
         "max_parallel_attempts=",
         "batches=",
-        "per_attempt_timeout_ms=",
+        "script_timeout_ms=",
         "checker_timeout_ms=",
         "attempt_budget_ms=",
         "checker_budget_ms=",

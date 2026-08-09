@@ -488,10 +488,10 @@ User problem:
      `_solver_config() -> dict` helper that reads the JSON file named by
      `OPENCONSTRAINT_MCP_CPSAT_CONFIG` and returns `{{}}` when the variable is
      unset (omitted config and `{{}}` are equivalent), then apply only
-     `num_workers` (default 1) and — only when present — `search_time_limit_seconds`
+     `num_workers` (default 1) and — only when present — `solver_time_limit_seconds`
      from it, exactly as the example below does. This keeps an omitted or
      empty config preserving today's defaults: seed 42, one worker, and no
-     CP-SAT-owned time limit. When you DO set `search_time_limit_seconds`,
+     CP-SAT-owned time limit. When you DO set `solver_time_limit_seconds`,
      keep it well under the call's `script_timeout_ms`: it caps CP-SAT's
      search only, so parsing, model building, and serialization still have to
      fit in what is left, and the server does not check one against the other.
@@ -589,9 +589,9 @@ User problem:
              os.environ.get("OPENCONSTRAINT_MCP_CPSAT_SEED", "42")
          )
          solver.parameters.num_workers = config.get("num_workers", 1)
-         search_time_limit_seconds = config.get("search_time_limit_seconds")
-         if search_time_limit_seconds is not None:
-             solver.parameters.max_time_in_seconds = search_time_limit_seconds
+         solver_time_limit_seconds = config.get("solver_time_limit_seconds")
+         if solver_time_limit_seconds is not None:
+             solver.parameters.max_time_in_seconds = solver_time_limit_seconds
          status_code = solver.solve(model)
 
          status_map = {{
@@ -720,9 +720,9 @@ User problem:
              os.environ.get("OPENCONSTRAINT_MCP_CPSAT_SEED", "42")
          )
          solver.parameters.num_workers = config.get("num_workers", 1)
-         search_time_limit_seconds = config.get("search_time_limit_seconds")
-         if search_time_limit_seconds is not None:
-             solver.parameters.max_time_in_seconds = search_time_limit_seconds
+         solver_time_limit_seconds = config.get("solver_time_limit_seconds")
+         if solver_time_limit_seconds is not None:
+             solver.parameters.max_time_in_seconds = solver_time_limit_seconds
          names = [item.name for item in instance.items]
          status_code = solver.solve(model, _Best(names, take, model.has_objective()))
 

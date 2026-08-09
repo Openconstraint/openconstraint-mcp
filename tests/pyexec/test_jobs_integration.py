@@ -139,7 +139,7 @@ def test_submit_file_with_real_checker_reaches_optimal_and_accepted() -> None:
     try:
         job_id = registry.submit_file(
             _EXAMPLES / "solution.py",
-            # solution.py's own search_time_limit_seconds defaults to 60s; keep our
+            # solution.py's own solver_time_limit_seconds defaults to 60s; keep our
             # subprocess cap and wait window comfortably above that so the
             # example's internal search cap can never trip our timeout first.
             script_timeout_ms=90_000,
