@@ -32,7 +32,9 @@ must inline the instance JSON too; the resolver's not-found error says so.
 Checker protocol:
 - Receives the payload JSON path as sys.argv[1].
 - Payload keys: problem (str|null), solution (dict), objective (float|null),
-  solver_status (str).
+  solver_status (str). The checker admits solver_status in {"optimal",
+  "feasible", "timeout"} -- mirroring pyexec/eligibility.py's
+  DIAGNOSTIC_ACCEPT_STATUSES -- and treats every other value as ungradeable.
 - Prints exactly one JSON object as its final stdout line:
   {"status": "accepted"|"rejected"|"error", "errors": [...], "details": {}}
 - "accepted" with an empty errors list is the only passing verdict.
@@ -211,11 +213,17 @@ def check_payload(payload: dict[str, Any]) -> dict[str, Any]:
     # against the instance means anything. A missing solver_status or a solution
     # that is not a list of int-valued entries is a serialization fault in the
     # producer, not an infeasible schedule, so it is an "error" -- see the
-    # verdict split in the module docstring.
+    # verdict split in the module docstring. "timeout" is included alongside
+    # "optimal"/"feasible" because a timed-out run can still hand back a
+    # well-formed recovered incumbent (see pyexec/eligibility.py's
+    # DIAGNOSTIC_ACCEPT_STATUSES, which this set mirrors); it asserts no
+    # optimality claim, so grading it is safe.
     protocol_errors: list[str] = []
     solver_status = payload.get("solver_status")
-    if solver_status not in {"optimal", "feasible"}:
-        protocol_errors.append(f"solver_status is {solver_status!r}, expected optimal or feasible")
+    if solver_status not in {"optimal", "feasible", "timeout"}:
+        protocol_errors.append(
+            f"solver_status is {solver_status!r}, expected optimal, feasible, or timeout"
+        )
 
     schedule, schedule_errors = _load_schedule(payload.get("solution"))
     protocol_errors.extend(schedule_errors)

@@ -10,13 +10,15 @@ from examples.online_printing_shop.audit_instance import audit_instance
 from examples.online_printing_shop.checker import (
     _required_processing as _checker_required_processing,
 )
+from examples.online_printing_shop.checker import check_payload
 from examples.online_printing_shop.models import (
     _num_workers,
     _required_processing,
     _solver_config,
-    _time_limit_seconds,
+    _solver_time_limit_seconds,
     parse_input,
     read_input,
+    serialize_solution,
     solve,
 )
 from openconstraint_mcp.server import create_mcp_server
@@ -44,6 +46,52 @@ def test_sops1_model_proves_the_known_optimum() -> None:
     result = solve(parse_input(load_instance()))
 
     assert (result.status, result.objective) == ("optimal", 274)
+
+
+def _checker_payload(solver_status: str) -> dict[str, Any]:
+    """A checker payload built from a real solve of data_sops1.json, so its
+    schedule is genuinely well-formed and feasible."""
+    envelope = serialize_solution(solve(parse_input(load_instance())))
+    return {
+        "problem": INSTANCE_PATH.read_text(encoding="utf-8"),
+        "solution": envelope["solution"],
+        "objective": envelope["objective"],
+        "solver_status": solver_status,
+    }
+
+
+def test_checker_accepts_timeout_with_valid_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A timeout with a recovered, well-formed schedule asserts no optimality
+    claim, so the checker must grade it like any other feasible solution."""
+    monkeypatch.delenv("OPENCONSTRAINT_MCP_CPSAT_CONFIG", raising=False)
+    result = check_payload(_checker_payload("timeout"))
+
+    assert result["status"] == "accepted", result["errors"]
+
+
+def test_checker_rejects_timeout_with_infeasible_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Proves the checker actually grades a timeout payload rather than waving
+    it through: an infeasible schedule under solver_status="timeout" must still
+    be "rejected", not "accepted" or "error"."""
+    monkeypatch.delenv("OPENCONSTRAINT_MCP_CPSAT_CONFIG", raising=False)
+    payload = _checker_payload("timeout")
+    payload["solution"]["schedule"][0]["machine"] = "no-such-machine"
+
+    result = check_payload(payload)
+
+    assert result["status"] == "rejected"
+
+
+def test_checker_errors_on_malformed_solution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unchanged behavior: a solution that is not a well-formed schedule claim
+    stays "error" regardless of solver_status."""
+    monkeypatch.delenv("OPENCONSTRAINT_MCP_CPSAT_CONFIG", raising=False)
+    payload = _checker_payload("optimal")
+    payload["solution"] = {"makespan": payload["solution"]["makespan"]}
+
+    result = check_payload(payload)
+
+    assert result["status"] == "error"
 
 
 def test_missing_successor_reference_is_rejected() -> None:
@@ -189,7 +237,7 @@ def test_no_config_file_yields_an_empty_config(monkeypatch: pytest.MonkeyPatch) 
 def test_no_config_file_leaves_the_solve_unbounded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENCONSTRAINT_MCP_CPSAT_CONFIG", raising=False)
 
-    assert _time_limit_seconds(_solver_config()) is None
+    assert _solver_time_limit_seconds(_solver_config()) is None
 
 
 def test_config_without_a_time_limit_leaves_the_solve_unbounded(
@@ -197,15 +245,15 @@ def test_config_without_a_time_limit_leaves_the_solve_unbounded(
 ) -> None:
     _write_config(tmp_path, monkeypatch, {"num_workers": 4})
 
-    assert _time_limit_seconds(_solver_config()) is None
+    assert _solver_time_limit_seconds(_solver_config()) is None
 
 
 def test_config_time_limit_is_read_as_seconds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _write_config(tmp_path, monkeypatch, {"max_time_in_seconds": 20})
+    _write_config(tmp_path, monkeypatch, {"solver_time_limit_seconds": 20})
 
-    assert _time_limit_seconds(_solver_config()) == 20.0
+    assert _solver_time_limit_seconds(_solver_config()) == 20.0
 
 
 def test_no_config_file_keeps_the_single_reproducible_worker(
@@ -219,7 +267,7 @@ def test_no_config_file_keeps_the_single_reproducible_worker(
 def test_config_without_workers_keeps_the_single_reproducible_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _write_config(tmp_path, monkeypatch, {"max_time_in_seconds": 20})
+    _write_config(tmp_path, monkeypatch, {"solver_time_limit_seconds": 20})
 
     assert _num_workers(_solver_config()) == 1
 
@@ -236,24 +284,42 @@ def test_unbounded_solve_streams_recoverable_incumbents(
     assert capsys.readouterr().out.strip() != ""
 
 
-def test_time_limited_solve_streams_nothing(
+def test_time_limited_solve_still_streams_recoverable_incumbents(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A self-imposed limit returns normally and main() prints the final envelope,
-    # so streaming would only spend the executor's 1 MiB stdout budget.
-    _write_config(tmp_path, monkeypatch, {"max_time_in_seconds": 30})
+    # A CP-SAT limit bounds SEARCH only — not input parsing, model building, or
+    # serialization — and the script cannot see the executor's own deadline, so it
+    # can never prove it will exit first. Suppressing the stream here loses every
+    # solution CP-SAT found whenever the limit does not fit inside the executor
+    # budget (see test_search_limit_above_the_script_timeout_still_recovers).
+    _write_config(tmp_path, monkeypatch, {"solver_time_limit_seconds": 30})
 
     solve(parse_input(load_instance()))
 
-    assert capsys.readouterr().out == ""
+    assert capsys.readouterr().out.strip() != ""
+
+
+def test_solve_callback_honors_the_intermediate_byte_budget(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    budget: int = 4 * 1024
+    monkeypatch.delenv("OPENCONSTRAINT_MCP_CPSAT_CONFIG", raising=False)
+    monkeypatch.setattr(
+        "examples.online_printing_shop.models._MAX_INTERMEDIATE_OUTPUT_BYTES", budget
+    )
+
+    solve(parse_input(load_instance()))
+
+    output: str = capsys.readouterr().out
+    assert 0 < len(output.encode("utf-8")) <= budget
 
 
 def test_config_workers_raise_the_cpsat_portfolio(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # data_lops.json finds no incumbent on one worker; the caller needs this key
+    # data_lops1.json finds no incumbent on one worker; the caller needs this key
     # to reach a checkable solution at all.
-    _write_config(tmp_path, monkeypatch, {"max_time_in_seconds": 20, "num_workers": 8})
+    _write_config(tmp_path, monkeypatch, {"solver_time_limit_seconds": 20, "num_workers": 8})
 
     assert _num_workers(_solver_config()) == 8
 
@@ -346,7 +412,7 @@ async def test_sops1_model_and_checker_reach_the_known_optimum_through_mcp() -> 
             "checker_path": str(EXAMPLE_DIR / "checker.py"),
             "args": ["data_sops1.json"],
             "problem": "data_sops1.json",
-            "timeout_ms": 30_000,
+            "script_timeout_ms": 30_000,
             "test_checker": True,
         },
     )
@@ -365,3 +431,32 @@ async def test_sops1_model_and_checker_reach_the_known_optimum_through_mcp() -> 
     assert {entry["operation"] for entry in schedule} == set(load_instance()["operations"])
     fixed = next(entry for entry in schedule if entry["operation"] == "6")
     assert (fixed["machine"], fixed["start"]) == ("1", 79)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_search_limit_above_the_script_timeout_still_recovers() -> None:
+    # The regression this pins: a CP-SAT search limit ABOVE the executor's own
+    # deadline leaves the child tree-killed mid-search, so the final envelope
+    # main() would print never happens. The streamed incumbents are then the only
+    # record of what CP-SAT found. Nothing validates the two limits against each
+    # other, and the script cannot see the executor's, so gating the stream on
+    # "a limit was set" reported timeout_no_incumbent and discarded a schedule the
+    # solver had already proven feasible.
+    mcp = create_mcp_server("full")
+
+    call_result = await mcp.call_tool(
+        "run_cpsat_python_file",
+        {
+            "script_path": str(EXAMPLE_DIR / "models.py"),
+            "args": ["data_mops1.json"],
+            "script_timeout_ms": 15_000,
+            "config": {"solver_time_limit_seconds": 300, "num_workers": 8},
+        },
+    )
+    assert call_result.structured_content is not None
+    result: dict[str, Any] = call_result.structured_content
+
+    assert result["status"] == "timeout"
+    assert result["diagnostic"]["category"] == "timeout_with_incumbent"
+    assert result["solution"]["schedule"]

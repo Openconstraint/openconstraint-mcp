@@ -72,7 +72,7 @@ async def test_ft06_model_and_checker_reach_an_accepted_verdict_through_the_mcp_
             "checker_path": str(_EXAMPLE_DIR / "checker.py"),
             "args": ["data_ft06.json"],
             "problem": problem_text,
-            "timeout_ms": 20_000,
+            "script_timeout_ms": 20_000,
         },
     )
     assert call_result.structured_content is not None
@@ -121,7 +121,7 @@ async def test_seed_env_var_changes_solver_search_result(tmp_path: Path) -> None
         {
             "script_path": str(_EXAMPLE_DIR / "model.py"),
             "args": [str(probe_path)],
-            "timeout_ms": 10_000,
+            "script_timeout_ms": 10_000,
         },
     )
     seeded_result = await mcp.call_tool(
@@ -129,7 +129,7 @@ async def test_seed_env_var_changes_solver_search_result(tmp_path: Path) -> None
         {
             "script_path": str(_EXAMPLE_DIR / "model.py"),
             "args": [str(probe_path)],
-            "timeout_ms": 10_000,
+            "script_timeout_ms": 10_000,
             "seed": 12345,
         },
     )
@@ -165,7 +165,7 @@ async def test_timeout_never_fabricates_best_objective_bound() -> None:
     OWN solver call without adding new CLI surface, which is out of scope.
 
     The reachable non-terminal state through the MCP tool is instead the
-    EXECUTOR's own wall-clock timeout (`timeout_ms`), forced here with a tiny
+    EXECUTOR's own wall-clock timeout (`script_timeout_ms`), forced here with a tiny
     budget against ft20 (20x20, the largest job_shop instance) so the child is
     killed before it ever prints an envelope. This does not exercise the new
     in-script guard branch -- nothing of the script runs to completion -- but
@@ -189,7 +189,7 @@ async def test_timeout_never_fabricates_best_objective_bound() -> None:
         {
             "script_path": str(_EXAMPLE_DIR / "model.py"),
             "args": ["data_ft20.json"],
-            "timeout_ms": 300,
+            "script_timeout_ms": 300,
         },
     )
     assert call_result.structured_content is not None

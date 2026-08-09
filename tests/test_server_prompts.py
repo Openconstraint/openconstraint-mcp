@@ -195,7 +195,8 @@ async def test_solve_constraint_problem_prompt_names_the_cpsat_execution_path() 
     text = await _get_core_prompt_text("solve_constraint_problem", {"problem": SAMPLE_PROBLEM})
     normalized = " ".join(text.split())
 
-    assert "`run_cpsat_python(source=<complete script>, timeout_ms=<milliseconds>)`" in normalized
+    call = "`run_cpsat_python(source=<complete script>, script_timeout_ms=<milliseconds>)`"
+    assert call in normalized
 
 
 @pytest.mark.asyncio
@@ -335,6 +336,13 @@ def test_output_contract_fragment_ties_intermediate_objects_to_timeout_recovery(
     normalized = " ".join(CPSAT_OUTPUT_CONTRACT_GUIDANCE_CORE.split())
 
     assert "recover a partial answer when the run hits its timeout" in normalized
+
+
+def test_output_contract_fragment_bounds_intermediate_output() -> None:
+    normalized = " ".join(CPSAT_OUTPUT_CONTRACT_GUIDANCE_CORE.split())
+
+    assert "Bound their cumulative bytes" in normalized
+    assert "512 KiB" in normalized
 
 
 def test_output_contract_fragment_scopes_the_error_status_to_a_clean_exit() -> None:
@@ -1060,7 +1068,7 @@ async def test_cpsat_python_solution_workflow_prompt_offers_script_path_attempts
     text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
     normalized = " ".join(text.split()).lower()
 
-    assert "`{name, source | script_path, args, seed, config, timeout_ms}`" in normalized
+    assert "`{name, source | script_path, args, seed, config, script_timeout_ms}`" in normalized
     assert "exactly one of `source`" in normalized
 
 
@@ -1130,12 +1138,83 @@ async def test_auto_tune_prompt_still_selects_a_finalist_rather_than_passing_all
 async def test_cpsat_python_solution_workflow_prompt_teaches_seed_protocol() -> None:
     # The client-facing protocol must not drift from the env-var contract the
     # save replay relies on: read OPENCONSTRAINT_MCP_CPSAT_SEED, fall back to
-    # 42, single worker.
+    # 42, single worker by default. Keyed on a whole-prompt count (step 6's
+    # mini-example plus both solve() examples) rather than the bare literal,
+    # which is already present once in the unedited prompt and would measure
+    # nothing.
     text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
     assert "OPENCONSTRAINT_MCP_CPSAT_SEED" in text
     assert "42" in text
-    assert "num_workers = 1" in text
+    assert text.count('config.get("num_workers", 1)') == 3
     assert "save_verified_cpsat_python" in text
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_defines_a_solver_config_helper() -> None:
+    # Keyed on `_solver_config`, not on the env var name: the env var was
+    # already read three times before this edit, so a guard phrased as
+    # "the prompt mentions OPENCONSTRAINT_MCP_CPSAT_CONFIG" would be green
+    # before any edit is made.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+
+    assert "def _solver_config" in text
+    assert "OPENCONSTRAINT_MCP_CPSAT_CONFIG" in text
+    assert "return {}" in text
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_both_examples_call_the_config_helper() -> None:
+    # The half-edit guard: updating only the step-3 example (one definition,
+    # one call) leaves this count at 1, not 2. Keyed on "= _solver_config()"
+    # rather than the bare "_solver_config()" -- the bare token also matches
+    # its own `def _solver_config() -> dict:` line and prose mentions naming
+    # the helper (e.g. the streaming fence calling it out as a reused
+    # dependency), so it isn't a count of call sites: it moves with unrelated
+    # prose edits to those mentions, not just with calls being added or
+    # dropped. Excluding the prose and the definition keeps the count pinned
+    # to call sites only.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+
+    assert text.count("= _solver_config()") == 2
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_time_limit_is_conditional() -> None:
+    # solver_time_limit_seconds carries this test; num_workers defaulting to 1 is
+    # confirmatory only, already covered by the seed-protocol test above.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "solver_time_limit_seconds" in text
+    assert 'config.get("solver_time_limit_seconds")' in text
+    assert "if solver_time_limit_seconds is not none" in normalized
+    assert 'config.get("num_workers", 1)' in text
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_always_installs_the_streaming_callback() -> (
+    None
+):
+    # The script cannot observe the executor's own deadline, so a CP-SAT search
+    # limit never proves the solve returns before the kill. Gating the callback on
+    # that limit discards every solution found whenever the limit does not fit
+    # inside the executor budget, which nothing validates.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "callback = (" not in text
+    assert "solver.solve(model, _best(names" in normalized
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_still_teaches_direct_instance_values() -> None:
+    # Config is for solver-run controls and explicit multi-attempt scenario
+    # selection, not for a one-off problem instance's own values.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "hardcode the actual parameter values" in normalized
+    assert "config-driven instance selection is not the default modeling style" in normalized
 
 
 @pytest.mark.asyncio
@@ -1360,7 +1439,8 @@ async def test_experiment_guidance_escalates_to_a_seed_preserving_rerun() -> Non
     section = _section(lower, _EXPERIMENT_RERUN_ANCHOR, _EXPERIMENT_SECTION_END)
 
     assert "replaying its exact inputs" in section
-    assert "the same `problem`, `seed`, `config`, `timeout_ms`, and `checker_timeout_ms`" in section
+    echoed = "the same `problem`, `seed`, `config`, `script_timeout_ms`, and `checker_timeout_ms`"
+    assert echoed in section
     assert "save_verified_cpsat_python" in section
     assert "run_cpsat_python_file_checked" in section
 
@@ -1714,7 +1794,7 @@ async def test_auto_tune_constraint_problem_prompt_offers_script_path_attempts()
     text = await _get_prompt_text("auto_tune_constraint_problem", {"problem": SAMPLE_PROBLEM})
     lower = " ".join(text.split()).lower()
 
-    assert "`{name, source | script_path, args, seed, config, timeout_ms}`" in lower
+    assert "`{name, source | script_path, args, seed, config, script_timeout_ms}`" in lower
     assert "exactly one of a complete, independent inline `source` or a `script_path`" in lower
     # The tool gained a path option on attempts only — checker/problem stay inline.
     assert "`checker`/`problem` stay inline text for the whole call" in lower

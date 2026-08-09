@@ -163,8 +163,8 @@ def test_submit_source_echoes_timeout_ms(monkeypatch: pytest.MonkeyPatch) -> Non
     _patch_run_source(monkeypatch, lambda source, *, on_start, **kw: _cpsat_result())
     registry = CpsatJobRegistry()
     try:
-        job_id = registry.submit_source("x=1", timeout_ms=45000)
-        assert registry.get(job_id).timeout_ms == 45000
+        job_id = registry.submit_source("x=1", script_timeout_ms=45000)
+        assert registry.get(job_id).script_timeout_ms == 45000
     finally:
         registry.shutdown()
 
@@ -781,7 +781,7 @@ def test_checker_receives_problem_and_effective_timeout(monkeypatch: pytest.Monk
         checker_behavior=_spy,
         problem="pack the boxes",
         checker_timeout_ms=7000,
-        timeout_ms=45000,
+        script_timeout_ms=45000,
     )
     assert seen["checker"] == _CHECKER
     assert seen["problem"] == "pack the boxes"
@@ -794,7 +794,7 @@ def test_checker_timeout_ms_echo_explicit_value(monkeypatch: pytest.MonkeyPatch)
         solver_result=_cpsat_result("optimal"),
         checker_behavior=lambda *a, **kw: _checker_report(),
         checker_timeout_ms=7000,
-        timeout_ms=45000,
+        script_timeout_ms=45000,
     )
     assert status.checker_timeout_ms == 7000
 
@@ -804,7 +804,7 @@ def test_checker_timeout_ms_echo_defaults_to_timeout_ms(monkeypatch: pytest.Monk
         monkeypatch,
         solver_result=_cpsat_result("optimal"),
         checker_behavior=lambda *a, **kw: _checker_report(),
-        timeout_ms=45000,
+        script_timeout_ms=45000,
     )
     assert status.checker_timeout_ms == 45000
 
@@ -957,7 +957,7 @@ def test_checker_path_job_echoes_a_non_none_effective_checker_timeout(
     _patch_run_checker_file(monkeypatch, lambda *a, **kw: _checker_report())
     registry = CpsatJobRegistry()
     try:
-        job_id = registry.submit_file(script, checker_path=checker, timeout_ms=45000)
+        job_id = registry.submit_file(script, checker_path=checker, script_timeout_ms=45000)
         _wait_until_terminal(registry, job_id)
         assert registry.get(job_id).checker_timeout_ms == 45000
     finally:

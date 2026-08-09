@@ -235,16 +235,43 @@ def test_schedule_entry_missing_field_yields_error_status() -> None:
     assert result["status"] == "error"
 
 
-@pytest.mark.parametrize("solver_status", ["unknown", "infeasible", "timeout", "error", None])
+@pytest.mark.parametrize("solver_status", ["unknown", "infeasible", "error", None])
 def test_unsolved_solver_status_yields_error_status(solver_status: object) -> None:
-    """A status that does not claim a solution makes the schedule ungradeable: there
-    is no asserted solution to grade, so the checker cannot pronounce on feasibility."""
+    """A status outside {optimal, feasible, timeout} does not claim a gradeable
+    solution, so the checker cannot pronounce on feasibility. "timeout" is
+    deliberately absent from this test's parametrize list: a timed-out run can
+    still carry a well-formed recovered incumbent, which the checker CAN grade
+    (see test_timeout_with_valid_schedule_is_accepted)."""
     problem, jobs = _load_instance("data_ft06.json")
     schedule, makespan = _valid_schedule(jobs)
     payload = _payload(problem, schedule, makespan)
     payload["solver_status"] = solver_status
     result = _checker.check_payload(payload)
     assert result["status"] == "error"
+
+
+def test_timeout_with_valid_schedule_is_accepted() -> None:
+    """A timeout with a recovered, well-formed schedule asserts no optimality claim,
+    so the checker must grade it like any other feasible solution."""
+    problem, jobs = _load_instance("data_ft06.json")
+    schedule, makespan = _valid_schedule(jobs)
+    payload = _payload(problem, schedule, makespan)
+    payload["solver_status"] = "timeout"
+    result = _checker.check_payload(payload)
+    assert result["status"] == "accepted", result["errors"]
+
+
+def test_timeout_with_infeasible_schedule_is_rejected() -> None:
+    """Proves the checker actually grades a timeout payload rather than waving it
+    through: an infeasible schedule under solver_status="timeout" must still be
+    "rejected", not "accepted" or "error"."""
+    problem, jobs = _load_instance("data_ft06.json")
+    schedule, makespan = _valid_schedule(jobs)
+    schedule[0]["machine"] = (schedule[0]["machine"] + 1) % 6
+    payload = _payload(problem, schedule, makespan)
+    payload["solver_status"] = "timeout"
+    result = _checker.check_payload(payload)
+    assert result["status"] == "rejected"
 
 
 def test_error_verdict_carries_instance_details() -> None:

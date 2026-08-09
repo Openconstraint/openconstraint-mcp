@@ -50,7 +50,7 @@ def test_run_cpsat_python_timeout_recovers_unflushed_partial() -> None:
         "print(json.dumps({'status': 'feasible', 'objective': 5, 'solution': {'x': 2}}))\n"
         "time.sleep(30)\n"
     )
-    result = run_cpsat_python(source, timeout_ms=300)
+    result = run_cpsat_python(source, script_timeout_ms=300)
 
     assert result.timed_out is True
     assert result.status == "timeout"
@@ -159,7 +159,7 @@ def test_checker_self_test_reports_rejections_through_real_children(tmp_path: Pa
     )
 
     result = run_cpsat_python_file_checked(
-        script, checker, timeout_ms=15_000, checker_timeout_ms=10_000, test_checker=True
+        script, checker, script_timeout_ms=15_000, checker_timeout_ms=10_000, test_checker=True
     )
 
     assert result.checker_test is not None

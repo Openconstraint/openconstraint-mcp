@@ -2761,7 +2761,7 @@ async def test_run_cpsat_python_experiment_routes_to_experiment_result(
                 seed=7,
                 config_sha256=None,
                 source_sha256="abc123",
-                timeout_ms=1000,
+                script_timeout_ms=1000,
                 status="optimal",
                 objective=4,
                 accepted=True,
@@ -2885,7 +2885,7 @@ async def test_run_cpsat_python_experiment_forwards_include_winner_stdout(
                 seed=7,
                 config_sha256=None,
                 source_sha256="abc123",
-                timeout_ms=1000,
+                script_timeout_ms=1000,
                 status="optimal",
                 objective=4,
                 accepted=True,
@@ -2956,7 +2956,7 @@ async def test_run_cpsat_python_experiment_prints_warnings_section(
                 seed=7,
                 config_sha256=None,
                 source_sha256="abc123",
-                timeout_ms=1000,
+                script_timeout_ms=1000,
                 status="optimal",
                 objective=4,
                 accepted=True,
@@ -3011,7 +3011,7 @@ async def test_run_cpsat_python_experiment_attempt_line_shows_best_objective_bou
                 seed=None,
                 config_sha256=None,
                 source_sha256="abc123",
-                timeout_ms=1000,
+                script_timeout_ms=1000,
                 status="unknown",
                 objective=None,
                 best_objective_bound=7,
@@ -3646,7 +3646,7 @@ async def test_submit_cpsat_python_file_job_accepts_checker_inputs(
     )
     assert "job_id" in result
     # Default fallback: a checker without checker_timeout_ms echoes timeout_ms.
-    assert result["checker_timeout_ms"] == result["timeout_ms"]
+    assert result["checker_timeout_ms"] == result["script_timeout_ms"]
 
 
 @pytest.mark.asyncio

@@ -235,7 +235,7 @@ def _validate_attempts(
     an ``args`` list whose total encoding exceeds ``MAX_CHILD_ARGV_BYTES``, an
     empty/whitespace-only source, an unusable ``script_path`` (missing, not a
     file, empty, or non-UTF-8), an out-of-range seed, an oversized config, a
-    non-positive ``timeout_ms``, or a name collision (explicit vs. explicit, or
+    non-positive ``script_timeout_ms``, or a name collision (explicit vs. explicit, or
     explicit vs. a defaulted ``attempt-{index}`` label).
     """
     if not attempts:
@@ -296,8 +296,8 @@ def _validate_attempts(
                     f"attempts[{index}].config canonical JSON is {size} bytes, "
                     f"exceeding MAX_EXPERIMENT_CONFIG_BYTES={MAX_EXPERIMENT_CONFIG_BYTES}"
                 )
-        if attempt.timeout_ms is not None and attempt.timeout_ms <= 0:
-            raise ValueError(f"attempts[{index}].timeout_ms must be positive")
+        if attempt.script_timeout_ms is not None and attempt.script_timeout_ms <= 0:
+            raise ValueError(f"attempts[{index}].script_timeout_ms must be positive")
     return names, resolved_paths
 
 
@@ -315,8 +315,12 @@ def _validate_max_parallel_attempts(max_parallel_attempts: object) -> int:
     return max_parallel_attempts
 
 
-def _effective_timeout_ms(attempt: CpsatPythonExperimentAttempt, default_timeout_ms: int) -> int:
-    return attempt.timeout_ms if attempt.timeout_ms is not None else default_timeout_ms
+def _effective_script_timeout_ms(
+    attempt: CpsatPythonExperimentAttempt, default_script_timeout_ms: int
+) -> int:
+    if attempt.script_timeout_ms is not None:
+        return attempt.script_timeout_ms
+    return default_script_timeout_ms
 
 
 class _AttemptBudget(NamedTuple):
@@ -326,7 +330,7 @@ class _AttemptBudget(NamedTuple):
     experiment has no checker — there is nothing to charge a checker budget for.
     """
 
-    timeout_ms: int
+    script_timeout_ms: int
     checker_timeout_ms: int | None
     attempt_budget_ms: int
     checker_budget_ms: int
@@ -336,7 +340,7 @@ class _AttemptBudget(NamedTuple):
 def _attempt_budget_breakdown(
     attempt: CpsatPythonExperimentAttempt,
     *,
-    default_timeout_ms: int,
+    default_script_timeout_ms: int,
     checker_present: bool,
     checker_timeout_ms: int | None,
 ) -> _AttemptBudget:
@@ -347,17 +351,17 @@ def _attempt_budget_breakdown(
     about how a projected total was derived.
     """
     overhead = cpsat_child_timeout_overhead_ms()
-    timeout_ms = _effective_timeout_ms(attempt, default_timeout_ms)
-    attempt_budget_ms = timeout_ms + overhead
+    script_timeout_ms = _effective_script_timeout_ms(attempt, default_script_timeout_ms)
+    attempt_budget_ms = script_timeout_ms + overhead
     effective_checker_ms: int | None = None
     checker_budget_ms = 0
     if checker_present:
         effective_checker_ms = effective_checker_timeout_ms(
-            checker_timeout_ms=checker_timeout_ms, default_timeout_ms=timeout_ms
+            checker_timeout_ms=checker_timeout_ms, default_script_timeout_ms=script_timeout_ms
         )
         checker_budget_ms = effective_checker_ms + overhead
     return _AttemptBudget(
-        timeout_ms=timeout_ms,
+        script_timeout_ms=script_timeout_ms,
         checker_timeout_ms=effective_checker_ms,
         attempt_budget_ms=attempt_budget_ms,
         checker_budget_ms=checker_budget_ms,
@@ -368,7 +372,7 @@ def _attempt_budget_breakdown(
 def _check_wall_clock_budget(
     attempts: Sequence[CpsatPythonExperimentAttempt],
     *,
-    default_timeout_ms: int,
+    default_script_timeout_ms: int,
     max_parallel_attempts: int,
     checker_present: bool,
     checker_timeout_ms: int | None,
@@ -391,7 +395,7 @@ def _check_wall_clock_budget(
     breakdowns = [
         _attempt_budget_breakdown(
             attempt,
-            default_timeout_ms=default_timeout_ms,
+            default_script_timeout_ms=default_script_timeout_ms,
             checker_present=checker_present,
             checker_timeout_ms=checker_timeout_ms,
         )
@@ -424,7 +428,7 @@ def _check_wall_clock_budget(
         #     when it exceeds this machine's own parallelism cap.
         #   - max_slowest_total_ms: MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS //
         #     batches (today's batches, not batches_max) — the ceiling the
-        #     slowest attempt's timeout_ms + overhead + checker budget must
+        #     slowest attempt's script_timeout_ms + overhead + checker budget must
         #     drop under at today's attempt count and parallelism.
         batches_max = MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS // slowest.total_ms
         max_attempts_to_fit = batches_max * max_parallel_attempts
@@ -439,7 +443,7 @@ def _check_wall_clock_budget(
         hint = (
             f"reduce attempt count to <= {max_attempts_to_fit}, or increase "
             f"max_parallel_attempts to >= {min_parallel_to_fit}{parallel_note}, or "
-            "reduce the slowest attempt's timeout_ms + overhead + checker budget "
+            "reduce the slowest attempt's script_timeout_ms + overhead + checker budget "
             f"to <= {max_slowest_total_ms} ms total"
         )
     raise ValueError(
@@ -447,11 +451,11 @@ def _check_wall_clock_budget(
         f"MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS={MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS} ms. "
         f"Breakdown (slowest attempt): attempt_count={len(attempts)}, "
         f"max_parallel_attempts={max_parallel_attempts}, batches={batches}, "
-        f"per_attempt_timeout_ms={slowest.timeout_ms}, "
+        f"script_timeout_ms={slowest.script_timeout_ms}, "
         f"checker_timeout_ms={slowest.checker_timeout_ms}, "
         f"attempt_budget_ms={slowest.attempt_budget_ms}, "
         f"checker_budget_ms={slowest.checker_budget_ms}, "
-        f"overhead_ms={slowest.attempt_budget_ms - slowest.timeout_ms}, "
+        f"overhead_ms={slowest.attempt_budget_ms - slowest.script_timeout_ms}, "
         f"total_budget_ms={projected_ms}, "
         f"max_budget_ms={MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS} ({hint})"
     )
@@ -535,7 +539,7 @@ def _run_attempt(
     name: str,
     *,
     resolved_path: _ResolvedScript | None,
-    default_timeout_ms: int,
+    default_script_timeout_ms: int,
     objective_sense: CpsatObjectiveSense | None,
     checker: str | None,
     problem: str | None,
@@ -556,7 +560,7 @@ def _run_attempt(
     whether the child exited cleanly, errored, or was tree-killed on timeout —
     no config temp file outlives its attempt.
     """
-    timeout_ms = _effective_timeout_ms(attempt, default_timeout_ms)
+    script_timeout_ms = _effective_script_timeout_ms(attempt, default_script_timeout_ms)
     config_hash = config_sha256(attempt.config)
 
     with replay_env_scope(seed=attempt.seed, config=attempt.config) as env:
@@ -567,7 +571,7 @@ def _run_attempt(
             try:
                 result = run_cpsat_python_file(
                     resolved_path.path,
-                    timeout_ms=timeout_ms,
+                    script_timeout_ms=script_timeout_ms,
                     args=attempt.args,
                     tracker=tracker,
                     env=env,
@@ -599,7 +603,7 @@ def _run_attempt(
             assert attempt.source is not None  # guaranteed by _validate_attempts' exactly-one-of
             source_hash = text_sha256(attempt.source)
             result = run_cpsat_python(
-                attempt.source, timeout_ms=timeout_ms, tracker=tracker, env=env
+                attempt.source, script_timeout_ms=script_timeout_ms, tracker=tracker, env=env
             )
 
     base_eligible, base_reject_reason = _attempt_eligibility(result, objective_sense)
@@ -622,7 +626,7 @@ def _run_attempt(
             problem=problem,
             timeout_ms=effective_checker_timeout_ms(
                 checker_timeout_ms=checker_timeout_ms,
-                default_timeout_ms=timeout_ms,
+                default_script_timeout_ms=script_timeout_ms,
             ),
             tracker=tracker,
         )
@@ -641,7 +645,7 @@ def _run_attempt(
         config_sha256=config_hash,
         source_sha256=source_hash,
         used_script_path=resolved_path is not None,
-        timeout_ms=timeout_ms,
+        script_timeout_ms=script_timeout_ms,
         status=result.status,
         objective=result.objective,
         best_objective_bound=result.best_objective_bound,
@@ -683,7 +687,7 @@ def run_cpsat_python_experiment(
     attempts: Sequence[CpsatPythonExperimentAttempt],
     *,
     objective_sense: CpsatObjectiveSense | None = None,
-    default_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+    default_script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
     max_parallel_attempts: int = 1,
     problem: str | None = None,
     checker: str | None = None,
@@ -733,15 +737,15 @@ def run_cpsat_python_experiment(
     """
     validated_objective_sense = _validate_objective_sense(objective_sense)
     validate_checker_args(checker=checker, checker_timeout_ms=checker_timeout_ms)
-    if default_timeout_ms <= 0:
-        raise ValueError("default_timeout_ms must be positive")
+    if default_script_timeout_ms <= 0:
+        raise ValueError("default_script_timeout_ms must be positive")
     validated_max_parallel = _validate_max_parallel_attempts(max_parallel_attempts)
     names, resolved_paths = _validate_attempts(attempts)
     oversubscription_warning = _oversubscription_warning(attempts, names, validated_max_parallel)
 
     _check_wall_clock_budget(
         attempts,
-        default_timeout_ms=default_timeout_ms,
+        default_script_timeout_ms=default_script_timeout_ms,
         max_parallel_attempts=validated_max_parallel,
         checker_present=checker is not None,
         checker_timeout_ms=checker_timeout_ms,
@@ -758,7 +762,7 @@ def run_cpsat_python_experiment(
             attempt,
             names[index],
             resolved_path=resolved_paths[index],
-            default_timeout_ms=default_timeout_ms,
+            default_script_timeout_ms=default_script_timeout_ms,
             objective_sense=validated_objective_sense,
             checker=checker,
             problem=problem,

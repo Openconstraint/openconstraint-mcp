@@ -228,8 +228,8 @@ first line, `Diagnostic: <category> — <message>`, in the error text.
 | `infeasible` | the model is unsatisfiable | relax constraints; try `find_unsat_core` |
 | `unbounded` | the objective is unbounded | add a bound to the objective |
 | `infeasible_or_unbounded` | unsat or unbounded, solver can't tell | add bounds and re-solve to disambiguate |
-| `timeout_no_incumbent` | hit the time limit, no solution found | raise `timeout_ms` or simplify the model |
-| `timeout_with_incumbent` | hit the time limit, best-so-far returned | accept the incumbent or raise `timeout_ms` for a proof |
+| `timeout_no_incumbent` | hit the time limit, no solution found | raise the run's timeout or simplify the model |
+| `timeout_with_incumbent` | hit the time limit, best-so-far returned | accept the incumbent or raise the run's timeout for a proof |
 | `cancelled` | a job was cancelled | resubmit if still needed |
 | `job_failed` | a background job failed with no result | read `message`; fix inputs and resubmit |
 | `child_process_error` | the CP-SAT child failed or broke its output contract | fix the script; check `stderr`/`return_code` |
@@ -1140,7 +1140,7 @@ core profile, so start the server with `openconstraint-mcp stdio --toolset full`
 
 ### Tools
 
-- **`run_cpsat_python(source: str, timeout_ms: int = 30000)`** — execute
+- **`run_cpsat_python(source: str, script_timeout_ms: int = 30000)`** — execute
   LLM-generated OR-Tools CP-SAT Python source in a bounded child process and
   return a `CpsatPythonResult`. The script must emit a final JSON object as
   its last stdout line with all three **required** keys `status`, `objective`,
@@ -1161,9 +1161,10 @@ core profile, so start the server with `openconstraint-mcp stdio --toolset full`
   client. Extra keys are ignored.
 
   Same-shaped **intermediate** JSON objects are allowed and are what makes a
-  timed-out run recoverable — printing one per improved solution lets the
-  server report the last partial answer; only the final object is read as the
-  result.
+  timed-out run recoverable. Bound their cumulative bytes below the executor's
+  combined 1 MiB stdout/stderr cap; the workflow prompt uses a 512 KiB budget,
+  leaving room for the final object and stderr. Each intermediate object must
+  fit that budget. Only the last complete object is read as the result.
 
   On a **clean exit**, a missing or invalid required key is rejected as
   `status="error"` with no solution and a `child_process_error` diagnostic whose
@@ -1189,13 +1190,13 @@ core profile, so start the server with `openconstraint-mcp stdio --toolset full`
   most useful on `status="unknown"`, where `objective` is `null` but the
   solver may still have made bound progress.
 
-  **Partial result on timeout.** A long or optimization run can also print an
-  intermediate JSON object of the same shape on each improved solution (from a
-  `cp_model.CpSolverSolutionCallback`). Because the child is unbuffered, the
-  last such block survives the timeout kill: on `status="timeout"` the
-  server recovers it into `solution`/`objective`/`best_objective_bound` as the
-  best-so-far (unproven — treat as feasible, not optimal), or leaves them null
-  if none was printed in time. The same required-key check applies to that
+  **Partial result on timeout.** A long or optimization run can print
+  same-shaped intermediate JSON from a `cp_model.CpSolverSolutionCallback`, up
+  to a fixed cumulative byte budget. Because the child is unbuffered, the last
+  emitted block survives the timeout kill: on `status="timeout"` the server
+  recovers it into `solution`/`objective`/`best_objective_bound` as an unproven
+  incumbent (which may not be the latest one found), or leaves them null if none
+  was printed in time. The same required-key check applies to that
   block: a malformed partial is not recovered as an incumbent, and the run keeps
   its `timeout` status and timeout diagnostic rather than becoming a contract
   error. The rejection is still reported — the timeout diagnostic's `details`
@@ -1204,7 +1205,7 @@ core profile, so start the server with `openconstraint-mcp stdio --toolset full`
   when no JSON block was printed at all. On a clean run the final block (printed
   after `Solve` returns) is the authoritative result.
 
-- **`run_cpsat_python_file(script_path: str, timeout_ms: int = 30000, args:
+- **`run_cpsat_python_file(script_path: str, script_timeout_ms: int = 30000, args:
   list[str] | None = None, seed: int | None = None, config: dict | None =
   None)`** — path-based sibling of
   `run_cpsat_python`. Pass a local `.py` path instead of pasting the source, so
@@ -1246,7 +1247,7 @@ core profile, so start the server with `openconstraint-mcp stdio --toolset full`
   `run_cpsat_python_file_checked` below.
 
 - **`run_cpsat_python_file_checked(script_path: str, checker_path: str,
-  timeout_ms: int = 30000, args: list[str] | None = None, problem: str | None =
+  script_timeout_ms: int = 30000, args: list[str] | None = None, problem: str | None =
   None, checker_timeout_ms: int | None = None, test_checker: bool = False,
   seed: int | None = None, config: dict | None = None)`** *(full profile only —
   start the server with
@@ -1283,7 +1284,7 @@ core profile, so start the server with `openconstraint-mcp stdio --toolset full`
   relative to the script's directory, not the instance itself.
   `examples/job_shop/checker.py`, for instance, returns `rejected` without it.
 
-  **`checker_timeout_ms`** defaults to `timeout_ms`. When `test_checker` is on,
+  **`checker_timeout_ms`** defaults to `script_timeout_ms`. When `test_checker` is on,
   an omitted value is capped at the largest checker timeout that fits the
   synchronous wall-clock budget, but never derived below **2000 ms** — see the
   wall-clock section. `args`, `seed`, and `config` behave exactly as
@@ -1367,7 +1368,7 @@ core profile, so start the server with `openconstraint-mcp stdio --toolset full`
   `submit_cpsat_python_file_job` has no `test_checker`.
 
   **Wall clock.** This call is nominally
-  `(timeout_ms + ~8 s) + (checker_timeout_ms + ~8 s)` — two sequential children,
+  `(script_timeout_ms + ~8 s) + (checker_timeout_ms + ~8 s)` — two sequential children,
   each plus the process-tree termination grace — plus one further checker child
   per applied mutation, `(applied mutations) × (checker_timeout_ms + ~8 s)`,
   whenever `test_checker` is on. At the 30 s defaults that is about **76.5 s**
@@ -1378,18 +1379,18 @@ core profile, so start the server with `openconstraint-mcp stdio --toolset full`
   worst case to **120 s**, charging each child its timeout plus a conservative
   process-tree termination/poll overhead and assuming all four mutations apply.
   When `checker_timeout_ms` is omitted, the server uses the smaller of
-  `timeout_ms` and the largest checker budget that fits. The 30 s model default
+  `script_timeout_ms` and the largest checker budget that fits. The 30 s model default
   therefore derives an **8100 ms** checker timeout and projects to exactly 120 s,
   so `test_checker: true` works without changing another argument. An explicit
   over-budget checker timeout is rejected before any child runs.
 
-  The derived value shrinks as `timeout_ms` grows, and it becomes the **baseline**
+  The derived value shrinks as `script_timeout_ms` grows, and it becomes the **baseline**
   checker's budget as well as the mutants' — so it is floored at **2000 ms**
-  rather than allowed to dwindle, and a `timeout_ms` that would force it lower
+  rather than allowed to dwindle, and a `script_timeout_ms` that would force it lower
   (above about **60.5 s**) is rejected instead. Without that floor, opting into
   an informational probe could time out a baseline checker that would have been
-  given the full `timeout_ms`, turning a clean run into a `checker_failed` one.
-  The floor bounds only the *derived* cap: a deliberately short `timeout_ms`
+  given the full `script_timeout_ms`, turning a clean run into a `checker_failed` one.
+  The floor bounds only the *derived* cap: a deliberately short `script_timeout_ms`
   still yields a checker timeout that matches it, and an explicit
   `checker_timeout_ms` is honoured as given. The rejection message reports the
   model/checker budgets, child count, overhead, and total. The ceiling exists because the
@@ -1397,7 +1398,7 @@ core profile, so start the server with `openconstraint-mcp stdio --toolset full`
   no background-job equivalent, so an over-budget probe would have nowhere to
   go.
 
-  Without `test_checker`, `timeout_ms` has **no upper bound** by design, because
+  Without `test_checker`, `script_timeout_ms` has **no upper bound** by design, because
   a caller must be able to ask for the solve time the problem needs; every child
   still runs under the executor's own cap with process-tree kill. Set your MCP
   client's tool timeout accordingly in your own client config — a 900 s cap
@@ -1433,7 +1434,7 @@ core profile, so start the server with `openconstraint-mcp stdio --toolset full`
      `{"status": "accepted"|"rejected"|"error", "errors": [...], "details": {...}}`.
      `accepted` with an empty `errors` list is the only passing verdict.
      `checker_timeout_ms` controls the checker's process timeout (defaults
-     to `timeout_ms`). **The checker is not sandboxed** — generate only
+     to `script_timeout_ms`). **The checker is not sandboxed** — generate only
      validation code (no network, no file mutations).
 
   `problem` is one text value — handed to the checker as `payload["problem"]`
@@ -1477,7 +1478,7 @@ core profile, so start the server with `openconstraint-mcp stdio --toolset full`
   The manifest records only a scalar checker summary (status, error count,
   duration, timed_out, truncated) — no stdout/stderr/errors/details. It also
   records a top-level `backend` (`"cpsat_python"`) and, under `verification`,
-  the save-time `timeout_ms` (always) and an explicit `checker_timeout_ms`
+  the save-time `script_timeout_ms` (always) and an explicit `checker_timeout_ms`
   (only when supplied) — enough to choose replay tooling and pace a checked
   replay without guessing.
 
@@ -1497,7 +1498,7 @@ core profile, so start the server with `openconstraint-mcp stdio --toolset full`
 - **`run_cpsat_python_experiment(attempts, objective_sense=None, …)`** — run a list
   of **explicit attempts** and return the best accepted result plus the full
   attempt table. Each attempt is
-  `{name, source | script_path, args, seed, config, timeout_ms}` and must set
+  `{name, source | script_path, args, seed, config, script_timeout_ms}` and must set
   **exactly one** of `source` or `script_path` — both, or neither, is rejected:
   - `source` is a complete, independent inline script (the server never
     generates, diffs, or merges attempts — it only executes what the client
@@ -1620,7 +1621,7 @@ core profile, so start the server with `openconstraint-mcp stdio --toolset full`
       }
     ],
     "objective_sense": "minimize",
-    "default_timeout_ms": 20000
+    "default_script_timeout_ms": 20000
   }
   ```
 
@@ -1717,7 +1718,7 @@ experiment provenance:
   the full attempt table is written as `experiment-log.json` — a
   **provenance summary**, not an archive: every attempt row carries only
   hashes and scalar outcomes (`index`, `name`, `seed`, `source_sha256`,
-  `config_sha256`, `used_script_path`, `timeout_ms`, `status`, `objective`,
+  `config_sha256`, `used_script_path`, `script_timeout_ms`, `status`, `objective`,
   `accepted`, `checker_status`, `message`, `timed_out`, `truncated`,
   `duration_ms`).
   **Non-saved attempts' full `config` objects are never persisted** — only
@@ -1735,11 +1736,11 @@ There is no dedicated inspect/rerun tool: a saved directory is a plain local
 folder, and its manifest is a JSON file a client can read directly.
 
 1. Read `.openconstraint-model.json` in the saved directory. It names the
-   `backend` (`"cpsat_python"`), and — under `verification` — `timeout_ms`,
+   `backend` (`"cpsat_python"`), and — under `verification` — `script_timeout_ms`,
    `replay_seed` when the save was seeded, `replay_config_sha256` when it was
    configured, and `checker_timeout_ms` when one was explicitly supplied.
 2. Call `run_cpsat_python_file` with `script_path` pointing at the saved
-   `model.py`, `timeout_ms` from the manifest, `seed` from
+   `model.py`, `script_timeout_ms` from the manifest, `seed` from
    `verification.replay_seed` when present, and — when a `replay-config.json`
    sibling file exists — its parsed JSON contents as `config`. No manual
    environment variables are needed; the tool builds the
@@ -1755,7 +1756,7 @@ saved checker in the same call, use `run_cpsat_python_file_checked`
 (full profile) with `script_path` = the saved `model.py`, `checker_path` = the
 saved `checker.py`, `problem` = the verbatim contents of `problem.txt`,
 `checker_timeout_ms` from `verification.checker_timeout_ms`, plus the same
-`timeout_ms`/`seed`/`config`.
+`script_timeout_ms`/`seed`/`config`.
 
 For full **gate** replay — every original gate, including the objective
 `expectation` that `run_cpsat_python_file_checked` does not evaluate — call
@@ -1767,7 +1768,7 @@ saved source (read from `model.py`), checker (read from `checker.py`), `seed`,
 `config`, and — whenever the saved directory or manifest has them — the
 original `problem` (read verbatim from `problem.txt`), `expectation`
 (rebuilt from `verification.expectation.objective_sense` /
-`objective_threshold`), and `timeout_ms` (from `verification.timeout_ms`).
+`objective_threshold`), and `script_timeout_ms` (from `verification.script_timeout_ms`).
 Omitting any of these replays something different from the original:
 `problem` is passed straight through to the checker payload, so a
 **data-driven checker** — one that parses its instance out of
@@ -1776,7 +1777,7 @@ Omitting any of these replays something different from the original:
 different input, or returns `error` outright, when it is dropped or
 reworded; `expectation` is a gate that runs and can fail *before* the
 checker ever does, so leaving it out silently skips the objective-threshold
-check; and `timeout_ms` is the re-run budget (and the checker's timeout too,
+check; and `script_timeout_ms` is the re-run budget (and the checker's timeout too,
 unless `checker_timeout_ms` was set explicitly) — a different value is a
 looser or stricter re-run, not a weaker one. This is not a
 new tool; it is the same save path already documented above, applied to a
@@ -1784,12 +1785,12 @@ saved artifact's own inputs.
 
 ### Background CP-SAT jobs
 
-For long-running CP-SAT solves (`timeout_ms` of minutes), the synchronous
+For long-running CP-SAT solves (`script_timeout_ms` of minutes), the synchronous
 `run_cpsat_python` / `run_cpsat_python_file` tools will block past most MCP
 client per-call timeouts. Use the background-job surface instead — the
 CP-SAT analogue of the MiniZinc `submit_solve_job` / `get_solve_job` pair:
 
-- **`submit_cpsat_python_job(source: str, timeout_ms: int = 30000, problem:
+- **`submit_cpsat_python_job(source: str, script_timeout_ms: int = 30000, problem:
   str | None = None, checker: str | None = None, checker_timeout_ms: int |
   None = None)`** — submit inline OR-Tools CP-SAT Python source as a
   background job. Returns a `CpsatPythonJobStatus` with an opaque `job_id` and
@@ -1798,7 +1799,7 @@ CP-SAT analogue of the MiniZinc `submit_solve_job` / `get_solve_job` pair:
   `problem` / `checker` / `checker_timeout_ms` attach the same optional
   problem-specific checker as `save_verified_cpsat_python`'s checker gate —
   see the checked-jobs note below.
-- **`submit_cpsat_python_file_job(script_path: str, timeout_ms: int = 30000,
+- **`submit_cpsat_python_file_job(script_path: str, script_timeout_ms: int = 30000,
   args: list[str] | None = None, problem: str | None = None, checker: str |
   None = None, checker_path: str | None = None, checker_timeout_ms: int | None
   = None)`** — submit a local
@@ -1832,7 +1833,7 @@ CP-SAT analogue of the MiniZinc `submit_solve_job` / `get_solve_job` pair:
   job (the child ran and produced a result); `"failed"` means the job machinery
   raised before any result was produced. A `"timeout"` job carries its partial
   `CpsatPythonResult` (`timed_out=True`, best-so-far `solution`/`objective`).
-  Pace polling against `timeout_ms - elapsed_ms` (plus `checker_timeout_ms`
+  Pace polling against `script_timeout_ms - elapsed_ms` (plus `checker_timeout_ms`
   for a checked job).
 - **`cancel_cpsat_python_job(job_id: str)`** — terminate a running job's child
   process tree (the solver child, or the checker child if the job is in its
@@ -1851,9 +1852,9 @@ on-disk checker run in its own directory) — runs the checker as a
 second bounded child after the solver child finishes — but only when the
 result carries a usable incumbent (`status` of `optimal`, `feasible`, or
 `timeout` with a non-empty `solution`). While the checker runs, the job stays
-`"running"`: `timeout_ms` caps the solver child only, and the job status
+`"running"`: `script_timeout_ms` caps the solver child only, and the job status
 echoes the effective `checker_timeout_ms` (the supplied value, else
-`timeout_ms`) so a polling client can pace the checker phase too.
+`script_timeout_ms`) so a polling client can pace the checker phase too.
 
 > **Note:** `examples/` is no longer tracked in this repository (see git
 > history for the last tracked snapshot); the `open(...)` calls below are
@@ -2605,7 +2606,7 @@ listed, not that it is exhaustive.
 | `examples/cpsat_python/scheduling.py` | scheduling/rostering | CP-SAT direct solve | `run_cpsat_python` | `tests/pyexec/test_core_integration.py::test_run_cpsat_python_solves_scheduling_example` | none |
 | `examples/cpsat_python/graph_coloring.py` + `graph_coloring_checker.py` | assignment/allocation | checker-backed solve, incl. a violation | `run_cpsat_python`, checker protocol | `tests/test_cpsat_python_examples.py::test_graph_coloring_checker_*` | none |
 | `examples/cpsat_python/clinic_roster_checker.py` | scheduling/rostering | checker rejecting a plausible-looking wrong answer | checker protocol | `tests/test_cpsat_python_examples.py::test_clinic_roster_checker_*` | exercised standalone against synthetic payloads; no paired `model.py` producing a live solve |
-| `examples/online_printing_shop` | scheduling/optimization | checker-backed CP-SAT solve with resumable operations, machine calendars, and sequence-dependent setups | `run_cpsat_python_file`, `run_cpsat_python_file_checked` | `tests/examples/test_online_printing_shop.py` | only `data_sops1.json` proves optimality quickly (<1s) on the default single worker; `data_mops1.json` and `data_lops.json` need `config={"max_time_in_seconds": N}` (set below `timeout_ms`) so CP-SAT stops itself and returns a checkable incumbent — without it the child is killed at `timeout_ms` and the checker refuses the resulting `status="timeout"`. `data_lops.json` additionally needs `num_workers` above the default 1, read from that same `config`: on one worker it spends a 150s limit and still reports `status="unknown"` with no incumbent (which the checker refuses too), while `config={"max_time_in_seconds": 150, "num_workers": 8}` reaches an accepted feasible schedule. The script streams a full envelope per improving solution *only* when no `max_time_in_seconds` is set, so that a run killed at `timeout_ms` stays recoverable; on a parallel `data_lops.json` run those envelopes would otherwise cross the executor's 1 MiB stdout cap partway through and report the whole run as `status="error"` with no solution |
+| `examples/online_printing_shop` | scheduling/optimization | checker-backed CP-SAT solve with resumable operations, machine calendars, and sequence-dependent setups | `run_cpsat_python_file`, `run_cpsat_python_file_checked` | `tests/examples/test_online_printing_shop.py` | only `data_sops1.json` proves optimality quickly (<1s) on the default single worker; `data_mops1.json` and `data_lops1.json` benefit from `config={"solver_time_limit_seconds": N}` (set well below `script_timeout_ms`, leaving room for parsing, model building, and serialization — nothing validates the two against each other) so CP-SAT stops itself and returns a clean `status="feasible"`/`"optimal"` with `return_code=0` — without it the child is killed at `script_timeout_ms`, but the checker now grades a recovered `status="timeout"` incumbent too (the checker's `solver_status` gate admits `optimal`/`feasible`/`timeout`, mirroring `pyexec/eligibility.py`), so a plain timeout kill still reaches an accepted verdict as long as a well-formed schedule was recovered. `data_lops1.json` additionally needs `num_workers` above the default 1, read from that same `config`: on one worker it spends a 150s limit and still reports `status="unknown"` with no incumbent (which the checker still refuses, since `unknown` carries no claimed solution), while `config={"solver_time_limit_seconds": 150, "num_workers": 8}` reaches an accepted feasible schedule. The callback stays installed regardless of `solver_time_limit_seconds`, because that limit cannot prove the script finishes before `script_timeout_ms`, but caps intermediate envelopes at 512 KiB total. Search continues after that budget is exhausted; a later kill recovers the last envelope that fit, while a clean run still prints its final best result |
 | `examples/golomb_ruler/cpsat_python` | general CSP | checked save (expectation + checker gates) | `save_verified_cpsat_python` | none (manually re-verified live during this closeout, see `problem.txt`) | the saved objective is not exactly reproducible run to run (documented in `problem.txt`) — an expected CP-SAT property, not a bug; the manifest fixture was also dropped when `examples/` was untracked, so `test_examples_manifest.py` no longer covers this example |
 | `examples/social_golfers/cpsat` + `cpsat_best` | scheduling/rostering | CP-SAT background job, saved artifact, and file-based replay | `submit_cpsat_python_file_job`, `get_cpsat_python_job`, `save_verified_cpsat_python` | `tests/pyexec/test_jobs_integration.py::test_submit_file_with_real_checker_reaches_optimal_and_accepted` | `cpsat/` (reported gate only, no checker) is superseded by `cpsat_best`; kept only for the reported-vs-checked contrast. `cpsat_best/replay-config.json` came from a `config`-only save, not an attached `experiment_result`, so this directory has no `experiment-log.json` — `RESULT.md` is a hand-written substitute for that provenance, not the generated artifact; see the explicit-experiment row below |
 | `examples/social_golfers/cpsat_24` | scheduling/rostering | CP-SAT saved artifact for the 8-3-11 boundary instance | `save_verified_cpsat_python` | none | reported gate only; no checker or live replay integration test; the manifest fixture was also dropped when `examples/` was untracked, so `test_examples_manifest.py` no longer covers this example |

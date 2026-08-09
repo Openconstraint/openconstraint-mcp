@@ -115,10 +115,15 @@ class ChildExecutionResult:
     truncation_killed: bool = False
 
 
-def validate_timeout_ms(timeout_ms: int) -> None:
-    """Reject a non-positive child timeout."""
+def validate_timeout_ms(timeout_ms: int, *, label: str = "timeout_ms") -> None:
+    """Reject a non-positive child timeout.
+
+    ``label`` names the caller's own parameter in the message, so a CP-SAT tool
+    (whose cap is ``script_timeout_ms``) does not report a name its signature no
+    longer has. Mirrors ``validate_cpsat_random_seed``'s ``label``.
+    """
     if timeout_ms <= 0:
-        raise ValueError("timeout_ms must be positive")
+        raise ValueError(f"{label} must be positive")
 
 
 def _read_capped(path: Path, limit: int = MAX_OUTPUT_BYTES) -> tuple[str, int]:

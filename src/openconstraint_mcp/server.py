@@ -523,7 +523,7 @@ def _env_int(name: str, default: int, *, minimum: int) -> int:
 def _run_cpsat_python_file_with_replay(
     script_path: Path,
     *,
-    timeout_ms: int,
+    script_timeout_ms: int,
     args: list[str] | None,
     seed: int | None,
     config: dict[str, Any] | None,
@@ -540,7 +540,7 @@ def _run_cpsat_python_file_with_replay(
     """
     with replay_env_scope(seed=seed, config=config) as env:
         return run_cpsat_python_file(
-            script_path, timeout_ms=timeout_ms, args=args, tracker=tracker, env=env
+            script_path, script_timeout_ms=script_timeout_ms, args=args, tracker=tracker, env=env
         )
 
 
@@ -549,7 +549,7 @@ def _run_cpsat_python_file_checked_with_replay(
     checker_path: Path,
     *,
     problem: str | None,
-    timeout_ms: int,
+    script_timeout_ms: int,
     checker_timeout_ms: int | None,
     args: list[str] | None,
     test_checker: bool,
@@ -568,7 +568,7 @@ def _run_cpsat_python_file_checked_with_replay(
             script_path,
             checker_path,
             problem=problem,
-            timeout_ms=timeout_ms,
+            script_timeout_ms=script_timeout_ms,
             checker_timeout_ms=checker_timeout_ms,
             args=args,
             test_checker=test_checker,
@@ -1016,14 +1016,14 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
     @_as_mcp_error(ValueError, JobRejectedError)
     def submit_cpsat_python_job(
         source: str,
-        timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
         problem: ProblemText = None,
         checker: str | None = None,
         checker_timeout_ms: int | None = None,
     ) -> CpsatPythonJobStatus:
         job_id = cpsat_registry.submit_source(
             source,
-            timeout_ms=timeout_ms,
+            script_timeout_ms=script_timeout_ms,
             problem=problem,
             checker=checker,
             checker_timeout_ms=checker_timeout_ms,
@@ -1037,7 +1037,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
     @_as_mcp_error(ValueError, JobRejectedError)
     def submit_cpsat_python_file_job(
         script_path: str,
-        timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
         args: list[str] | None = None,
         problem: ProblemText = None,
         checker: str | None = None,
@@ -1046,7 +1046,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
     ) -> CpsatPythonJobStatus:
         job_id = cpsat_registry.submit_file(
             Path(script_path),
-            timeout_ms=timeout_ms,
+            script_timeout_ms=script_timeout_ms,
             args=args,
             problem=problem,
             checker=checker,
@@ -1073,7 +1073,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
     @_as_mcp_error(ValueError)
     async def run_cpsat_python_tool(
         source: str,
-        timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
         ctx: Context | None = None,
     ) -> CpsatPythonResult:
         # No MCP-facing seed/config for this inline tool (see module docstring on
@@ -1086,7 +1086,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
             functools.partial(
                 run_cpsat_python,
                 source,
-                timeout_ms=timeout_ms,
+                script_timeout_ms=script_timeout_ms,
                 tracker=child_tracker,
                 env=seed_config_env(seed=None, config_path=None),
             ),
@@ -1096,7 +1096,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
     @_as_mcp_error(ValueError)
     async def run_cpsat_python_file_tool(
         script_path: str,
-        timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
         args: list[str] | None = None,
         seed: StrictInt | None = None,
         config: dict[str, JsonValue] | None = None,
@@ -1109,7 +1109,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
             functools.partial(
                 _run_cpsat_python_file_with_replay,
                 Path(script_path),
-                timeout_ms=timeout_ms,
+                script_timeout_ms=script_timeout_ms,
                 seed=validated_seed,
                 config=normalized_config,
                 args=args,
@@ -1127,7 +1127,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
     async def run_cpsat_python_file_checked_tool(
         script_path: str,
         checker_path: str,
-        timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
         args: list[str] | None = None,
         problem: ProblemText = None,
         checker_timeout_ms: int | None = None,
@@ -1145,7 +1145,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
                 Path(script_path),
                 Path(checker_path),
                 problem=problem,
-                timeout_ms=timeout_ms,
+                script_timeout_ms=script_timeout_ms,
                 checker_timeout_ms=checker_timeout_ms,
                 args=args,
                 test_checker=test_checker,
@@ -1164,7 +1164,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
     async def run_cpsat_python_experiment_tool(
         attempts: list[CpsatPythonExperimentAttempt],
         objective_sense: CpsatObjectiveSense | None = None,
-        default_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+        default_script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
         max_parallel_attempts: int = 1,
         problem: ProblemText = None,
         checker: str | None = None,
@@ -1179,7 +1179,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
                 run_cpsat_python_experiment,
                 attempts,
                 objective_sense=objective_sense,
-                default_timeout_ms=default_timeout_ms,
+                default_script_timeout_ms=default_script_timeout_ms,
                 max_parallel_attempts=max_parallel_attempts,
                 problem=problem,
                 checker=checker,
@@ -1199,7 +1199,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         expectation: CpsatExpectation | None = None,
         checker: str | None = None,
         checker_timeout_ms: int | None = None,
-        timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
         overwrite: bool = False,
         verify_only: bool = False,
         seed: StrictInt | None = None,
@@ -1219,7 +1219,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
                 expectation=expectation,
                 checker=checker,
                 checker_timeout_ms=checker_timeout_ms,
-                timeout_ms=timeout_ms,
+                script_timeout_ms=script_timeout_ms,
                 overwrite=overwrite,
                 verify_only=verify_only,
                 seed=seed,

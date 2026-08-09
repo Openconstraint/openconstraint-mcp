@@ -88,7 +88,7 @@ def _run_with_mocked_proc(
     returncode: int = 0,
     timeout: bool = False,
     large_output: bool = False,
-    timeout_ms: int = 5000,
+    script_timeout_ms: int = 5000,
     tracker: Any = None,
 ) -> CpsatPythonResult:
     """Run run_cpsat_python with all subprocess/proc calls patched."""
@@ -150,7 +150,7 @@ def _run_with_mocked_proc(
         ),
         patch("openconstraint_mcp.shared.childrun.terminate_process_tree") as mock_kill,
     ):
-        result = run_cpsat_python(source, timeout_ms=timeout_ms, tracker=tracker)
+        result = run_cpsat_python(source, script_timeout_ms=script_timeout_ms, tracker=tracker)
     result._mock_kill = mock_kill  # type: ignore[attr-defined]
     return result
 
@@ -202,8 +202,10 @@ def test_validate_checker_args_rejects_blank_checker() -> None:
 
 
 def test_effective_checker_timeout_uses_explicit_value_or_default() -> None:
-    assert effective_checker_timeout_ms(checker_timeout_ms=250, default_timeout_ms=1000) == 250
-    assert effective_checker_timeout_ms(checker_timeout_ms=None, default_timeout_ms=1000) == 1000
+    explicit = effective_checker_timeout_ms(checker_timeout_ms=250, default_script_timeout_ms=1000)
+    fallback = effective_checker_timeout_ms(checker_timeout_ms=None, default_script_timeout_ms=1000)
+
+    assert (explicit, fallback) == (250, 1000)
 
 
 @pytest.mark.parametrize("seed", [-2_147_483_648, -1, 0, 2_147_483_647])
@@ -274,7 +276,7 @@ def test_run_cpsat_python_nonzero_exit_yields_error() -> None:
 
 # (c) timeout → timed_out, status="timeout", tree-kill invoked
 def test_run_cpsat_python_timeout_kills_tree_and_sets_status() -> None:
-    result = _run_with_mocked_proc(timeout=True, timeout_ms=50)
+    result = _run_with_mocked_proc(timeout=True, script_timeout_ms=50)
 
     assert result.status == "timeout"
     assert result.timed_out is True
@@ -283,11 +285,11 @@ def test_run_cpsat_python_timeout_kills_tree_and_sets_status() -> None:
 
 # (c1) a non-positive timeout is rejected before any child is spawned, matching
 # the MiniZinc path's validate_model_and_timeout.
-@pytest.mark.parametrize("timeout_ms", [0, -1])
-def test_run_cpsat_python_non_positive_timeout_raises(timeout_ms: int) -> None:
+@pytest.mark.parametrize("script_timeout_ms", [0, -1])
+def test_run_cpsat_python_non_positive_timeout_raises(script_timeout_ms: int) -> None:
     with patch("openconstraint_mcp.shared.childrun.popen_process_group") as fake_popen:
-        with pytest.raises(ValueError, match="timeout_ms must be positive"):
-            run_cpsat_python("print('x')", timeout_ms=timeout_ms)
+        with pytest.raises(ValueError, match="script_timeout_ms must be positive"):
+            run_cpsat_python("print('x')", script_timeout_ms=script_timeout_ms)
     fake_popen.assert_not_called()
 
 
@@ -316,7 +318,7 @@ def test_run_cpsat_python_launches_child_unbuffered() -> None:
         ),
         patch("openconstraint_mcp.shared.childrun.terminate_process_tree"),
     ):
-        run_cpsat_python("print('hi')", timeout_ms=5000)
+        run_cpsat_python("print('hi')", script_timeout_ms=5000)
 
     cmd = captured["cmd"]
     assert cmd[0] == sys.executable
@@ -327,7 +329,7 @@ def test_run_cpsat_python_launches_child_unbuffered() -> None:
 # recovered into solution/objective; status stays the executor-owned "timeout".
 def test_run_cpsat_python_timeout_recovers_partial_solution() -> None:
     partial = json.dumps({"status": "feasible", "objective": 3, "solution": {"x": 1}})
-    result = _run_with_mocked_proc(timeout=True, stdout_content=partial, timeout_ms=50)
+    result = _run_with_mocked_proc(timeout=True, stdout_content=partial, script_timeout_ms=50)
 
     assert result.status == "timeout"
     assert result.timed_out is True
@@ -337,7 +339,9 @@ def test_run_cpsat_python_timeout_recovers_partial_solution() -> None:
 
 # (c4) timeout with no parseable JSON keeps solution/objective None.
 def test_run_cpsat_python_timeout_without_partial_has_no_solution() -> None:
-    result = _run_with_mocked_proc(timeout=True, stdout_content="searching...\n", timeout_ms=50)
+    result = _run_with_mocked_proc(
+        timeout=True, stdout_content="searching...\n", script_timeout_ms=50
+    )
 
     assert result.status == "timeout"
     assert result.solution is None
@@ -349,7 +353,7 @@ def test_run_cpsat_python_timeout_without_partial_has_no_solution() -> None:
 # timeout is not misread as a child error. The mock sets returncode=-15 on wait, so
 # this fails if the executor forwards it instead of overriding to None.
 def test_run_cpsat_python_timeout_return_code_is_none() -> None:
-    result = _run_with_mocked_proc(timeout=True, returncode=-15, timeout_ms=50)
+    result = _run_with_mocked_proc(timeout=True, returncode=-15, script_timeout_ms=50)
 
     assert result.status == "timeout"
     assert result.timed_out is True
@@ -439,7 +443,7 @@ def test_run_cpsat_python_timeout_recovers_partial_best_objective_bound() -> Non
     partial = json.dumps(
         {"status": "feasible", "objective": 3, "solution": {"x": 1}, "best_objective_bound": 1}
     )
-    result = _run_with_mocked_proc(timeout=True, stdout_content=partial, timeout_ms=50)
+    result = _run_with_mocked_proc(timeout=True, stdout_content=partial, script_timeout_ms=50)
 
     assert result.status == "timeout"
     assert result.best_objective_bound == 1
@@ -579,7 +583,7 @@ def test_run_cpsat_python_non_finite_solution_drops_the_incumbent() -> None:
 def test_run_cpsat_python_non_finite_timeout_partial_is_not_recovered() -> None:
     # Timeout stays executor-owned: the partial is dropped, not promoted to an error.
     partial = '{"status": "feasible", "objective": 3, "solution": {"t": [{"s": NaN}]}}'
-    result = _run_with_mocked_proc(timeout=True, stdout_content=partial, timeout_ms=50)
+    result = _run_with_mocked_proc(timeout=True, stdout_content=partial, script_timeout_ms=50)
 
     assert result.status == "timeout"
     assert result.solution is None
@@ -750,7 +754,7 @@ def test_run_cpsat_python_empty_solution_fails_the_incumbent_eligibility_gate() 
 
 def test_run_cpsat_python_malformed_timeout_partial_is_not_recovered() -> None:
     partial = json.dumps({"status": "feasible", "solution": {"x": 1}})  # no `objective`
-    result = _run_with_mocked_proc(timeout=True, stdout_content=partial, timeout_ms=50)
+    result = _run_with_mocked_proc(timeout=True, stdout_content=partial, script_timeout_ms=50)
 
     assert result.solution is None
 
@@ -759,7 +763,7 @@ def test_run_cpsat_python_off_vocabulary_timeout_partial_is_not_recovered() -> N
     # An intermediate block is where a script is most likely to invent a status;
     # the envelope gate drops it rather than recovering an unclassifiable partial.
     partial = json.dumps({"status": "in_progress", "objective": 3, "solution": {"x": 1}})
-    result = _run_with_mocked_proc(timeout=True, stdout_content=partial, timeout_ms=50)
+    result = _run_with_mocked_proc(timeout=True, stdout_content=partial, script_timeout_ms=50)
 
     assert result.solution is None
 
@@ -768,7 +772,7 @@ def test_run_cpsat_python_malformed_timeout_partial_keeps_the_timeout_diagnostic
     # Timeout is executor-owned and its diagnostic keeps precedence: a malformed
     # partial must never turn the run into a protocol error.
     partial = json.dumps({"status": "feasible", "solution": {"x": 1}})
-    result = _run_with_mocked_proc(timeout=True, stdout_content=partial, timeout_ms=50)
+    result = _run_with_mocked_proc(timeout=True, stdout_content=partial, script_timeout_ms=50)
 
     assert result.status == "timeout"
     assert result.diagnostic is not None
@@ -780,7 +784,7 @@ def test_run_cpsat_python_malformed_timeout_partial_reports_the_rejected_field()
     # row carries no stdout, so the diagnostic is the only place a client can
     # learn a partial existed and why it was rejected.
     partial = json.dumps({"status": "feasible", "solution": {"x": 1}})
-    result = _run_with_mocked_proc(timeout=True, stdout_content=partial, timeout_ms=50)
+    result = _run_with_mocked_proc(timeout=True, stdout_content=partial, script_timeout_ms=50)
 
     assert result.diagnostic is not None
     assert result.diagnostic.details is not None
@@ -790,7 +794,9 @@ def test_run_cpsat_python_malformed_timeout_partial_reports_the_rejected_field()
 def test_run_cpsat_python_timeout_without_partial_reports_no_rejected_field() -> None:
     # No JSON block at all is not a rejected partial; the key must be absent
     # rather than null, so its presence always means "a block was dropped".
-    result = _run_with_mocked_proc(timeout=True, stdout_content="searching...", timeout_ms=50)
+    result = _run_with_mocked_proc(
+        timeout=True, stdout_content="searching...", script_timeout_ms=50
+    )
 
     assert result.diagnostic is not None
     assert result.diagnostic.details is not None
@@ -829,7 +835,7 @@ def test_run_cpsat_python_fast_exit_large_output_is_flagged_truncated() -> None:
         ),
         patch("openconstraint_mcp.shared.childrun.terminate_process_tree"),
     ):
-        result = run_cpsat_python("print('hi')", timeout_ms=5000)
+        result = run_cpsat_python("print('hi')", script_timeout_ms=5000)
 
     assert result.truncated is True
     assert result.status == "error"
@@ -843,7 +849,7 @@ def _run_file_with_mocked_proc(
     *,
     stdout_content: str = _VALID_STDOUT,
     returncode: int = 0,
-    timeout_ms: int = 5000,
+    script_timeout_ms: int = 5000,
     args: list[str] | None = None,
     tracker: Any = None,
     env: dict[str, str] | None = None,
@@ -873,7 +879,7 @@ def _run_file_with_mocked_proc(
         patch("openconstraint_mcp.shared.childrun.terminate_process_tree"),
     ):
         result = run_cpsat_python_file(
-            script_path, timeout_ms=timeout_ms, args=args, tracker=tracker, env=env
+            script_path, script_timeout_ms=script_timeout_ms, args=args, tracker=tracker, env=env
         )
     return result, captured
 
@@ -991,7 +997,7 @@ def test_run_cpsat_python_file_on_start_called_once(tmp_path: Path) -> None:
         ),
         patch("openconstraint_mcp.shared.childrun.terminate_process_tree"),
     ):
-        run_cpsat_python_file(script, timeout_ms=5000, on_start=lambda p: received.append(p))
+        run_cpsat_python_file(script, script_timeout_ms=5000, on_start=lambda p: received.append(p))
 
     assert len(received) == 1
     assert received[0].pid == 7777
@@ -1028,14 +1034,16 @@ def test_run_cpsat_python_file_non_utf8_raises(tmp_path: Path) -> None:
 
 
 # (k8) a non-positive timeout is rejected before any child is spawned.
-@pytest.mark.parametrize("timeout_ms", [0, -1])
-def test_run_cpsat_python_file_non_positive_timeout_raises(tmp_path: Path, timeout_ms: int) -> None:
+@pytest.mark.parametrize("script_timeout_ms", [0, -1])
+def test_run_cpsat_python_file_non_positive_timeout_raises(
+    tmp_path: Path, script_timeout_ms: int
+) -> None:
     script = tmp_path / "model.py"
     script.write_text("print('x')", encoding="utf-8")
 
     with patch("openconstraint_mcp.shared.childrun.popen_process_group") as fake_popen:
-        with pytest.raises(ValueError, match="timeout_ms must be positive"):
-            run_cpsat_python_file(script, timeout_ms=timeout_ms)
+        with pytest.raises(ValueError, match="script_timeout_ms must be positive"):
+            run_cpsat_python_file(script, script_timeout_ms=script_timeout_ms)
     fake_popen.assert_not_called()
 
 
@@ -1109,7 +1117,7 @@ def _capture_popen_env(source: str, *, env: dict[str, str | None] | None) -> dic
         patch("openconstraint_mcp.shared.childrun.popen_process_group", side_effect=_fake_popen),
         patch("openconstraint_mcp.shared.childrun.terminate_process_tree"),
     ):
-        run_cpsat_python(source, timeout_ms=1000, env=env)
+        run_cpsat_python(source, script_timeout_ms=1000, env=env)
     return captured["env"]
 
 
@@ -1449,7 +1457,7 @@ def test_checked_run_defaults_the_checker_timeout_to_the_run_timeout(
         monkeypatch, _checked_result("optimal", solution={"x": 1}), _checker_report("accepted")
     )
 
-    result = run_cpsat_python_file_checked(script, checker, timeout_ms=12_345)
+    result = run_cpsat_python_file_checked(script, checker, script_timeout_ms=12_345)
 
     assert calls[0]["timeout_ms"] == 12_345
     assert result.checker_timeout_ms == 12_345
@@ -1480,7 +1488,7 @@ def test_checked_run_explicit_checker_timeout_wins(
     )
 
     result = run_cpsat_python_file_checked(
-        script, checker, timeout_ms=12_345, checker_timeout_ms=999
+        script, checker, script_timeout_ms=12_345, checker_timeout_ms=999
     )
 
     assert calls[0]["timeout_ms"] == 999
@@ -1514,8 +1522,10 @@ def test_checked_run_rejects_a_non_positive_timeout_before_the_model_runs(
     script, checker = _checked_pair(tmp_path)
 
     with patch("openconstraint_mcp.pyexec.core.run_cpsat_python_file") as fake_run:
-        with pytest.raises(ValueError, match="timeout_ms must be positive"):
-            run_cpsat_python_file_checked(script, checker, timeout_ms=0, test_checker=test_checker)
+        with pytest.raises(ValueError, match="script_timeout_ms must be positive"):
+            run_cpsat_python_file_checked(
+                script, checker, script_timeout_ms=0, test_checker=test_checker
+            )
 
     fake_run.assert_not_called()
 
@@ -1524,11 +1534,11 @@ def test_checked_run_rejects_a_non_positive_timeout_before_the_model_runs(
     "kwargs",
     [
         {"test_checker": True, "checker_timeout_ms": 30_000},
-        {"test_checker": True, "timeout_ms": 600_000},
+        {"test_checker": True, "script_timeout_ms": 600_000},
         # The derived checker timeout is the BASELINE checker's budget too, so a
         # model timeout that squeezes it under the floor must reject rather than
         # let an opt-in probe time out the primary verdict.
-        {"test_checker": True, "timeout_ms": 65_000},
+        {"test_checker": True, "script_timeout_ms": 65_000},
     ],
     ids=[
         "explicit-checker-timeout",
@@ -1559,7 +1569,7 @@ def test_checked_run_without_a_self_test_has_no_wall_clock_ceiling(
         monkeypatch, _checked_result("optimal", solution={"x": 1}), _checker_report("accepted")
     )
 
-    result = run_cpsat_python_file_checked(script, checker, timeout_ms=600_000)
+    result = run_cpsat_python_file_checked(script, checker, script_timeout_ms=600_000)
 
     assert result.checker is not None
 
@@ -1593,7 +1603,7 @@ def test_inline_run_spawn_failure_returns_structured_error(tmp_path: Path) -> No
         "openconstraint_mcp.pyexec.core.execute_child",
         side_effect=ChildSpawnError(7, "Argument list too long"),
     ):
-        result = run_cpsat_python("print(1)", timeout_ms=1000)
+        result = run_cpsat_python("print(1)", script_timeout_ms=1000)
     assert result.status == "error"
 
 
@@ -1603,7 +1613,7 @@ def test_spawn_failure_reports_no_return_code(tmp_path: Path) -> None:
         "openconstraint_mcp.pyexec.core.execute_child",
         side_effect=ChildSpawnError(7, "Argument list too long"),
     ):
-        result = run_cpsat_python("print(1)", timeout_ms=1000)
+        result = run_cpsat_python("print(1)", script_timeout_ms=1000)
     assert result.return_code is None
 
 
@@ -1612,7 +1622,7 @@ def test_spawn_failure_surfaces_the_os_error_in_stderr() -> None:
         "openconstraint_mcp.pyexec.core.execute_child",
         side_effect=ChildSpawnError(7, "Argument list too long"),
     ):
-        result = run_cpsat_python("print(1)", timeout_ms=1000)
+        result = run_cpsat_python("print(1)", script_timeout_ms=1000)
     assert "failed to start the Python child process" in result.stderr
     assert "Argument list too long" in result.stderr
 
@@ -1624,7 +1634,7 @@ def test_file_run_spawn_failure_returns_structured_error(tmp_path: Path) -> None
         "openconstraint_mcp.pyexec.core.execute_child",
         side_effect=ChildSpawnError(24, "Too many open files"),
     ):
-        result = run_cpsat_python_file(script, timeout_ms=1000)
+        result = run_cpsat_python_file(script, script_timeout_ms=1000)
     assert result.status == "error"
     assert "Too many open files" in result.stderr
 
@@ -1635,7 +1645,7 @@ def test_spawn_failure_result_carries_a_diagnostic() -> None:
         "openconstraint_mcp.pyexec.core.execute_child",
         side_effect=ChildSpawnError(12, "Cannot allocate memory"),
     ):
-        result = run_cpsat_python("print(1)", timeout_ms=1000)
+        result = run_cpsat_python("print(1)", script_timeout_ms=1000)
     assert result.diagnostic is not None
 
 

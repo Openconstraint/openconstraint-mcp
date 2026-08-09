@@ -42,6 +42,12 @@ CpsatIntVar = cp_model.IntVar
 CpsatIntervalVar = cp_model.IntervalVar
 CpsatLiteral = cp_model.LiteralT
 
+# Half the executor's combined 1 MiB stdout/stderr cap, leaving room for the
+# final envelope and any stderr after intermediate incumbent streaming.
+# Caveat: one envelope must fit this half-cap; use a more compact solution
+# schema if larger incumbents need timeout recovery.
+_MAX_INTERMEDIATE_OUTPUT_BYTES: int = 512 * 1024
+
 
 class ClosedModel(BaseModel):
     """Base for strict objects that reject misspelled or unsupported fields."""
@@ -279,15 +285,17 @@ def _solver_config() -> dict[str, Any]:
     return config
 
 
-def _time_limit_seconds(config: dict[str, Any]) -> float | None:
-    """Return the caller's CP-SAT wall-clock limit, or None to solve unbounded.
+def _solver_time_limit_seconds(config: dict[str, Any]) -> float | None:
+    """Return the caller's CP-SAT SEARCH limit, or None to search unbounded.
 
-    Without a ``max_time_in_seconds`` entry the solve stays unbounded — the small
-    instances prove optimality in well under a second, while a larger one needs
-    a limit to return an incumbent instead of being killed at the tool timeout.
+    Bounds ``solver.solve`` only — not reading the instance, building the model,
+    or serializing the schedule. Without a ``solver_time_limit_seconds`` entry
+    the search stays unbounded: the small instances prove optimality in well
+    under a second, while a larger one needs a limit to return a clean status
+    instead of being killed at the tool's ``script_timeout_ms``.
     """
 
-    limit: Any = config.get("max_time_in_seconds")
+    limit: Any = config.get("solver_time_limit_seconds")
     return None if limit is None else float(limit)
 
 
@@ -647,36 +655,48 @@ def solve(instance: OPSInstance) -> Solution:
         return schedule
 
     class _BestSolution(cp_model.CpSolverSolutionCallback):
+        _remaining_output_bytes: int
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._remaining_output_bytes = _MAX_INTERMEDIATE_OUTPUT_BYTES
+
         def on_solution_callback(self) -> None:
-            # Stream each improving incumbent; the final return below repeats the
-            # terminal solution as the script's last stdout envelope.
-            write_output(
-                serialize_solution(
-                    Solution(
-                        status="feasible",
-                        schedule=extract_schedule(self),
-                        objective=self.value(makespan),
-                        best_objective_bound=float(self.best_objective_bound),
-                    )
+            if self._remaining_output_bytes == 0:
+                return
+            payload: dict[str, Any] = serialize_solution(
+                Solution(
+                    status="feasible",
+                    schedule=extract_schedule(self),
+                    objective=self.value(makespan),
+                    best_objective_bound=float(self.best_objective_bound),
                 )
             )
+            line: str = json.dumps(payload)
+            line_bytes: int = len((line + os.linesep).encode("utf-8"))
+            if line_bytes > self._remaining_output_bytes:
+                self._remaining_output_bytes = 0
+                return
+            print(line)
+            self._remaining_output_bytes -= line_bytes
 
     config: dict[str, Any] = _solver_config()
     solver: cp_model.CpSolver = cp_model.CpSolver()
     solver.parameters.random_seed = int(os.environ.get("OPENCONSTRAINT_MCP_CPSAT_SEED", "42"))
     solver.parameters.num_workers = _num_workers(config)
-    time_limit_seconds: float | None = _time_limit_seconds(config)
-    if time_limit_seconds is not None:
-        solver.parameters.max_time_in_seconds = time_limit_seconds
+    solver_time_limit_seconds: float | None = _solver_time_limit_seconds(config)
+    if solver_time_limit_seconds is not None:
+        solver.parameters.max_time_in_seconds = solver_time_limit_seconds
     # Intermediate envelopes exist for one reason: a child killed at the tool's
-    # timeout_ms leaves only stdout behind, and the executor recovers the last
-    # complete block from it. A self-imposed max_time_in_seconds makes the solve
-    # return normally and main() print that final block anyway, so streaming then
-    # buys nothing and spends the executor's 1 MiB stdout budget — a parallel
-    # run on data_lops.json emits a full 79-operation schedule per improvement
-    # and crosses the cap partway through, which discards the whole result.
-    callback: _BestSolution | None = None if time_limit_seconds is not None else _BestSolution()
-    status_code: cp_model.CpSolverStatus = solver.solve(model, callback)
+    # script_timeout_ms leaves only stdout behind, and the executor recovers the
+    # last complete block from it. A search limit does NOT make that redundant —
+    # it bounds CP-SAT's search alone, not input parsing, model building, or
+    # serialization, and nothing validates it against the executor's deadline,
+    # which this script cannot observe. So it can never prove the solve returns
+    # first, and streaming stays unconditional. The callback caps intermediate
+    # JSON at 512 KiB; after that, search continues without more intermediate
+    # envelopes and a clean run still prints its final result below.
+    status_code: cp_model.CpSolverStatus = solver.solve(model, _BestSolution())
     status_map: dict[
         cp_model.CpSolverStatus, Literal["optimal", "feasible", "infeasible", "unknown", "error"]
     ] = {
