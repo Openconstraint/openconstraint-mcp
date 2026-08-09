@@ -478,15 +478,25 @@ User problem:
    directly in the script rather than a named "scenario" that needs a
    `config` to resolve. Reserve the cooperative `config` /
    `OPENCONSTRAINT_MCP_CPSAT_CONFIG` protocol (step 6) for EXPLICIT
-   multi-attempt or configured experiments — it is not the default modeling
-   style for a one-off save.
+   multi-attempt or configured experiments when choosing WHICH INSTANCE OR
+   SCENARIO to solve — config-driven instance selection is not the default
+   modeling style for a one-off save.
+   - Solver-run controls are a separate concern from instance selection, and
+     every generated script should always cooperate with them: define one
+     `_solver_config() -> dict` helper that reads the JSON file named by
+     `OPENCONSTRAINT_MCP_CPSAT_CONFIG` and returns `{{}}` when the variable is
+     unset (omitted config and `{{}}` are equivalent), then apply only
+     `num_workers` (default 1) and — only when present — `max_time_in_seconds`
+     from it, exactly as the example below does. This keeps an omitted or
+     empty config preserving today's defaults: seed 42, one worker, and no
+     CP-SAT-owned time limit.
    - For a REPRODUCIBLE saved artifact, READ the seed from the environment
-     (falling back to 42) and keep a single search worker, exactly as the
-     example below does. `save_verified_cpsat_python`'s optional `seed`
-     argument sets the `OPENCONSTRAINT_MCP_CPSAT_SEED` environment variable
-     for the replay re-run; a script that hardcodes the seed instead
-     silently ignores the replay — the server cannot force a seed into
-     arbitrary Python.
+     (falling back to 42) and default to a single search worker via the
+     config helper, exactly as the example below does.
+     `save_verified_cpsat_python`'s optional `seed` argument sets the
+     `OPENCONSTRAINT_MCP_CPSAT_SEED` environment variable for the replay
+     re-run; a script that hardcodes the seed instead silently ignores
+     the replay — the server cannot force a seed into arbitrary Python.
    - Emit a FINAL JSON object as the LAST line of stdout (same-shaped
      intermediate objects during search are allowed — see the improved-
      solution callback below — and only the last one is read as the
@@ -551,6 +561,14 @@ User problem:
          return ProblemInstance(items, int(raw["capacity"]), min_items)
 
 
+     def _solver_config() -> dict:
+         config_path = os.environ.get("OPENCONSTRAINT_MCP_CPSAT_CONFIG")
+         if not config_path:
+             return {{}}
+         with open(config_path) as config_file:
+             return json.load(config_file)
+
+
      def solve(instance: ProblemInstance) -> Solution:
          model = cp_model.CpModel()
          take = [model.new_bool_var(item.name) for item in instance.items]
@@ -560,11 +578,15 @@ User problem:
          total_value = sum(item.value * v for item, v in pairs)
          model.maximize(total_value)
 
+         config = _solver_config()
          solver = cp_model.CpSolver()
          solver.parameters.random_seed = int(
              os.environ.get("OPENCONSTRAINT_MCP_CPSAT_SEED", "42")
          )
-         solver.parameters.num_workers = 1
+         solver.parameters.num_workers = config.get("num_workers", 1)
+         max_time_in_seconds = config.get("max_time_in_seconds")
+         if max_time_in_seconds is not None:
+             solver.parameters.max_time_in_seconds = max_time_in_seconds
          status_code = solver.solve(model)
 
          status_map = {{
@@ -640,7 +662,8 @@ User problem:
      intermediate JSON object of the SAME shape on each improved solution,
      from a `cp_model.CpSolverSolutionCallback`. Replace the example's WHOLE
      `solve()` function with the one below, which reuses the same
-     `Solution` record, `serialize_solution()`, and `write_output()`:
+     `Solution` record, `serialize_solution()`, `write_output()`, and
+     `_solver_config()`:
      ```
      def solve(instance: ProblemInstance) -> Solution:
          model = cp_model.CpModel()
@@ -676,13 +699,27 @@ User problem:
                      ),
                  )))
 
+         config = _solver_config()
          solver = cp_model.CpSolver()
          solver.parameters.random_seed = int(
              os.environ.get("OPENCONSTRAINT_MCP_CPSAT_SEED", "42")
          )
-         solver.parameters.num_workers = 1
+         solver.parameters.num_workers = config.get("num_workers", 1)
+         max_time_in_seconds = config.get("max_time_in_seconds")
+         if max_time_in_seconds is not None:
+             solver.parameters.max_time_in_seconds = max_time_in_seconds
          names = [item.name for item in instance.items]
-         status_code = solver.solve(model, _Best(names, take, model.has_objective()))
+         # A self-imposed time limit makes the solve return normally and print
+         # its final envelope anyway, so streaming then buys nothing and only
+         # spends the executor's 1 MiB stdout budget on a long run (see
+         # examples/online_printing_shop/models.py). Skip the callback whenever
+         # max_time_in_seconds is set.
+         callback = (
+             None
+             if max_time_in_seconds is not None
+             else _Best(names, take, model.has_objective())
+         )
+         status_code = solver.solve(model, callback)
 
          status_map = {{
              cp_model.OPTIMAL: "optimal",
@@ -716,7 +753,9 @@ User problem:
      callback fires on every found solution, not just optimization runs.
      The child runs unbuffered, so on a timeout the server recovers the
      last such block as the best-so-far. The final block (printed after
-     `solve` returns) remains the authoritative result on a clean run.
+     `solve` returns) remains the authoritative result on a clean run. Keep
+     the callback's own `max_time_in_seconds is not None` guard — see the
+     comment above it — rather than dropping it.
    - SAFETY: generate only CP-SAT modeling code — no network access, no
      file writes or deletes, no subprocess spawning — unless the user
      explicitly requested it. The server executes this code locally in a

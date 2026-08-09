@@ -459,10 +459,16 @@ def check_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "num_machines": len(instance.machines),
         "num_operations": len(instance.operations),
     }
+    # "timeout" is included alongside "optimal"/"feasible" because a timed-out
+    # run can still hand back a well-formed recovered incumbent (see
+    # pyexec/eligibility.py's DIAGNOSTIC_ACCEPT_STATUSES, which this set
+    # mirrors); it asserts no optimality claim, so grading it is safe.
     protocol_errors: list[str] = []
     solver_status = payload.get("solver_status")
-    if solver_status not in {"optimal", "feasible"}:
-        protocol_errors.append(f"solver_status is {solver_status!r}, expected optimal or feasible")
+    if solver_status not in {"optimal", "feasible", "timeout"}:
+        protocol_errors.append(
+            f"solver_status is {solver_status!r}, expected optimal, feasible, or timeout"
+        )
     solution, solution_errors = _load_solution(payload.get("solution"))
     protocol_errors.extend(solution_errors)
     if protocol_errors:

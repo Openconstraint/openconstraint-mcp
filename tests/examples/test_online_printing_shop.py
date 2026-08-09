@@ -10,6 +10,7 @@ from examples.online_printing_shop.audit_instance import audit_instance
 from examples.online_printing_shop.checker import (
     _required_processing as _checker_required_processing,
 )
+from examples.online_printing_shop.checker import check_payload
 from examples.online_printing_shop.models import (
     _num_workers,
     _required_processing,
@@ -17,6 +18,7 @@ from examples.online_printing_shop.models import (
     _time_limit_seconds,
     parse_input,
     read_input,
+    serialize_solution,
     solve,
 )
 from openconstraint_mcp.server import create_mcp_server
@@ -44,6 +46,52 @@ def test_sops1_model_proves_the_known_optimum() -> None:
     result = solve(parse_input(load_instance()))
 
     assert (result.status, result.objective) == ("optimal", 274)
+
+
+def _checker_payload(solver_status: str) -> dict[str, Any]:
+    """A checker payload built from a real solve of data_sops1.json, so its
+    schedule is genuinely well-formed and feasible."""
+    envelope = serialize_solution(solve(parse_input(load_instance())))
+    return {
+        "problem": INSTANCE_PATH.read_text(encoding="utf-8"),
+        "solution": envelope["solution"],
+        "objective": envelope["objective"],
+        "solver_status": solver_status,
+    }
+
+
+def test_checker_accepts_timeout_with_valid_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A timeout with a recovered, well-formed schedule asserts no optimality
+    claim, so the checker must grade it like any other feasible solution."""
+    monkeypatch.delenv("OPENCONSTRAINT_MCP_CPSAT_CONFIG", raising=False)
+    result = check_payload(_checker_payload("timeout"))
+
+    assert result["status"] == "accepted", result["errors"]
+
+
+def test_checker_rejects_timeout_with_infeasible_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Proves the checker actually grades a timeout payload rather than waving
+    it through: an infeasible schedule under solver_status="timeout" must still
+    be "rejected", not "accepted" or "error"."""
+    monkeypatch.delenv("OPENCONSTRAINT_MCP_CPSAT_CONFIG", raising=False)
+    payload = _checker_payload("timeout")
+    payload["solution"]["schedule"][0]["machine"] = "no-such-machine"
+
+    result = check_payload(payload)
+
+    assert result["status"] == "rejected"
+
+
+def test_checker_errors_on_malformed_solution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unchanged behavior: a solution that is not a well-formed schedule claim
+    stays "error" regardless of solver_status."""
+    monkeypatch.delenv("OPENCONSTRAINT_MCP_CPSAT_CONFIG", raising=False)
+    payload = _checker_payload("optimal")
+    payload["solution"] = {"makespan": payload["solution"]["makespan"]}
+
+    result = check_payload(payload)
+
+    assert result["status"] == "error"
 
 
 def test_missing_successor_reference_is_rejected() -> None:

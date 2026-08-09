@@ -190,8 +190,10 @@ data_sops1.json
     Nothing. It proves optimality in well under a second on one worker.
 
 data_mops1.json
-    max_time_in_seconds, so CP-SAT stops itself and returns an incumbent the
-    checker can verify.
+    Benefits from max_time_in_seconds: CP-SAT then stops itself and returns a
+    clean status instead of running until the timeout kill. Without it, the
+    streaming callback still leaves a recoverable incumbent on stdout, and
+    the checker now grades that "timeout" verdict too.
 
 data_lops.json
     Both, for example {"max_time_in_seconds": 150, "num_workers": 8}. On one

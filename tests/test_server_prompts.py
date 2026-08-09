@@ -1130,12 +1130,80 @@ async def test_auto_tune_prompt_still_selects_a_finalist_rather_than_passing_all
 async def test_cpsat_python_solution_workflow_prompt_teaches_seed_protocol() -> None:
     # The client-facing protocol must not drift from the env-var contract the
     # save replay relies on: read OPENCONSTRAINT_MCP_CPSAT_SEED, fall back to
-    # 42, single worker.
+    # 42, single worker by default. Keyed on a whole-prompt count (step 6's
+    # mini-example plus both solve() examples) rather than the bare literal,
+    # which is already present once in the unedited prompt and would measure
+    # nothing.
     text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
     assert "OPENCONSTRAINT_MCP_CPSAT_SEED" in text
     assert "42" in text
-    assert "num_workers = 1" in text
+    assert text.count('config.get("num_workers", 1)') == 3
     assert "save_verified_cpsat_python" in text
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_defines_a_solver_config_helper() -> None:
+    # Keyed on `_solver_config`, not on the env var name: the env var was
+    # already read three times before this edit, so a guard phrased as
+    # "the prompt mentions OPENCONSTRAINT_MCP_CPSAT_CONFIG" would be green
+    # before any edit is made.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+
+    assert "def _solver_config" in text
+    assert "OPENCONSTRAINT_MCP_CPSAT_CONFIG" in text
+    assert "return {}" in text
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_both_examples_call_the_config_helper() -> None:
+    # The half-edit guard: updating only the step-3 example (one definition,
+    # one call) leaves this count at 1, not 2. Keyed on "= _solver_config()"
+    # rather than the bare "_solver_config()" -- the bare token also matches
+    # its own `def _solver_config() -> dict:` line and prose mentions naming
+    # the helper (e.g. the streaming fence calling it out as a reused
+    # dependency), so it isn't a count of call sites: it moves with unrelated
+    # prose edits to those mentions, not just with calls being added or
+    # dropped. Excluding the prose and the definition keeps the count pinned
+    # to call sites only.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+
+    assert text.count("= _solver_config()") == 2
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_time_limit_is_conditional() -> None:
+    # max_time_in_seconds carries this test; num_workers defaulting to 1 is
+    # confirmatory only, already covered by the seed-protocol test above.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "max_time_in_seconds" in text
+    assert 'config.get("max_time_in_seconds")' in text
+    assert "if max_time_in_seconds is not none" in normalized
+    assert 'config.get("num_workers", 1)' in text
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_gates_the_streaming_callback() -> None:
+    # A self-imposed time limit makes the solve return normally and print its
+    # final envelope anyway, so the streaming example must skip the callback
+    # rather than spend the executor's output cap on intermediate lines.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "callback = (" in text
+    assert "none if max_time_in_seconds is not none else _best(names" in normalized
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_still_teaches_direct_instance_values() -> None:
+    # Config is for solver-run controls and explicit multi-attempt scenario
+    # selection, not for a one-off problem instance's own values.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "hardcode the actual parameter values" in normalized
+    assert "config-driven instance selection is not the default modeling style" in normalized
 
 
 @pytest.mark.asyncio
