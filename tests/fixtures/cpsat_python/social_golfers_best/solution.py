@@ -96,7 +96,7 @@ model.add_decision_strategy(
     cp_model.SELECT_MIN_VALUE,
 )
 solver = cp_model.CpSolver()
-solver.parameters.max_time_in_seconds = float(cfg.get("max_time_in_seconds", 60.0))
+solver.parameters.max_time_in_seconds = float(cfg.get("search_time_limit_seconds", 60.0))
 solver.parameters.num_workers = int(cfg.get("num_workers", 8))
 solver.parameters.random_seed = int(
     os.environ.get("OPENCONSTRAINT_MCP_CPSAT_SEED", cfg.get("random_seed", 21))

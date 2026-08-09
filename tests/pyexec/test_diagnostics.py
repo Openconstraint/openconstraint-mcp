@@ -365,7 +365,7 @@ def _attempt_row(status: CpsatStatus) -> CpsatPythonExperimentAttemptResult:
         index=0,
         name="a",
         source_sha256="0" * 64,
-        timeout_ms=1000,
+        script_timeout_ms=1000,
         status=status,
         objective=None,
         accepted=False,
@@ -402,7 +402,7 @@ def _cpsat_record(
 ) -> _CpsatJobRecord:
     return _CpsatJobRecord(
         job_id="job-1",
-        request=_CpsatJobRequest(source="print()", script_path=None, timeout_ms=1000),
+        request=_CpsatJobRequest(source="print()", script_path=None, script_timeout_ms=1000),
         submitted_at_ms=0,
         state=state,  # type: ignore[arg-type]
         result=result,

@@ -79,9 +79,9 @@ _MARKER_GATED_OVERWRITE = (
 )
 
 _PACE_POLLING_NOTE = (
-    "PACE polling against the job's budget: a `running` job has roughly "
-    "`timeout_ms - elapsed_ms` left; wait a fraction of the remaining budget "
-    "between polls rather than looping tightly."
+    "PACE polling against the job's budget: a `running` job has roughly its "
+    "echoed timeout minus `elapsed_ms` left; wait a fraction of the remaining "
+    "budget between polls rather than looping tightly."
 )
 
 
@@ -174,7 +174,9 @@ MCP_SERVER_INSTRUCTIONS = (
     "text is advisory: nothing is verified until an MCP execution tool "
     "actually runs the script.\n"
     "\n"
-    "LONG RUNS: the synchronous tools default to a 30 s `timeout_ms` and hold "
+    "LONG RUNS: the synchronous tools default to a 30 s wall-clock cap "
+    "(`timeout_ms` on the MiniZinc tools, `script_timeout_ms` on the CP-SAT "
+    "ones) and hold "
     "the connection open. If a run may outlast the client's own tool-call "
     "limit, submit it instead — submit_solve_job, submit_portfolio_job, "
     "submit_cpsat_python_job, submit_cpsat_python_file_job — and poll the "
@@ -732,7 +734,7 @@ _RUN_CPSAT_PYTHON_PROMPT_REF = (
 
 _RUN_CPSAT_PYTHON_MID = (
     "Returns a CpsatPythonResult: `status` (one of the above, or `timeout` if the "
-    "process exceeded `timeout_ms`), `solution` (the parsed dict or null), "
+    "process exceeded `script_timeout_ms`), `solution` (the parsed dict or null), "
     "`objective` (parsed float/int or null), `best_objective_bound` (parsed "
     "float/int or null; OR-Tools' `solver.best_objective_bound` — diagnostic "
     'only, not a proven objective, and useful even on `status="unknown"` when '
@@ -823,7 +825,7 @@ _RUN_CPSAT_PYTHON_FILE_SHAPE_FULL = (
     "checker fields — this tool runs the script and reports what it printed, "
     "nothing more. To also VERIFY the result against a checker script that is "
     "already on disk, call `run_cpsat_python_file_checked` instead: same "
-    "`script_path`/`args`/`timeout_ms`, plus a required `checker_path`, and it "
+    "`script_path`/`args`/`script_timeout_ms`, plus a required `checker_path`, and it "
     "returns a CpsatPythonCheckedResult (every CpsatPythonResult field plus `checker`, "
     "`checker_skipped_reason`, `checker_timeout_ms`, and `checker_test`). "
 )
@@ -933,9 +935,9 @@ RUN_CPSAT_PYTHON_FILE_CHECKED_DESCRIPTION = (
     "checker that reads `payload['problem']` will reject without it, and it "
     "CANNOT be inferred from `args` (those name a data file relative to the "
     "script's directory, not the instance itself). "
-    "`checker_timeout_ms` defaults to `timeout_ms`; when `test_checker` is on, "
+    "`checker_timeout_ms` defaults to `script_timeout_ms`; when `test_checker` is on, "
     "an omitted value is capped at the largest checker timeout that fits the "
-    "synchronous wall-clock budget, never derived below 2000 ms (a `timeout_ms` "
+    "synchronous wall-clock budget, never derived below 2000 ms (a `script_timeout_ms` "
     "that would force it lower is rejected). `args` is appended after `script_path` as "
     "the model script's `sys.argv[1:]`; `seed`/`config` are the same replay aids "
     "`run_cpsat_python_file` documents. "
@@ -965,7 +967,7 @@ RUN_CPSAT_PYTHON_FILE_CHECKED_DESCRIPTION = (
     "The generic probes are not known-invalid: a rejection is non-vacuity "
     "evidence, while zero rejections is inconclusive. Self-testing is "
     "synchronous-only and has a projected 120 s cap. Without `test_checker`, "
-    "`timeout_ms` has no upper bound. For a longer run, use "
+    "`script_timeout_ms` has no upper bound. For a longer run, use "
     "`submit_cpsat_python_file_job`, which takes the same path-based "
     "`checker_path` (so a sibling-file checker still resolves) but offers no "
     "self-test. "
@@ -1013,7 +1015,7 @@ RUN_CPSAT_PYTHON_EXPERIMENT_DESCRIPTION = (
     "alongside `source` rather than silently ignored), `seed` (optional "
     "non-bool integer "
     "in the CP-SAT random_seed signed-int32 range), `config` (optional JSON "
-    "object, default `{}`), `timeout_ms` (optional per-attempt override)}). "
+    "object, default `{}`), `script_timeout_ms` (optional per-attempt override)}). "
     + _CPSAT_ARGS_LIMITS
     + "A `script_path` attempt runs with `cwd` set to the script's own parent "
     "directory — exactly like `run_cpsat_python_file` — so a relative `open()` "
@@ -1027,7 +1029,7 @@ RUN_CPSAT_PYTHON_EXPERIMENT_DESCRIPTION = (
     "be used as `save_verified_cpsat_python` provenance (see that tool). "
     "Optional: `objective_sense` ('maximize'|'minimize' for optimization; omit "
     "or pass null for feasibility), `default_timeout_ms` "
-    "(fallback for attempts with no `timeout_ms`), `max_parallel_attempts` "
+    "(fallback for attempts with no `script_timeout_ms`), `max_parallel_attempts` "
     "(default 1 = serial; capped at min(server CPU count, 4) and rejected above "
     "that), `problem` (forwarded to the checker payload), `checker` (a Python "
     "checker source string), `checker_timeout_ms` (defaults to the effective "
@@ -1120,7 +1122,7 @@ SAVE_VERIFIED_CPSAT_PYTHON_DESCRIPTION = (
     "(`accepted`|`rejected`|`error`) and `errors` (a string list), plus optional "
     "object-valued `details`. "
     "Only `accepted` with an empty `errors` list passes. Supply `checker_timeout_ms` "
-    "to override the checker's timeout (defaults to `timeout_ms`). "
+    "to override the checker's timeout (defaults to `script_timeout_ms`). "
     "Optional `seed` (a non-bool integer in the CP-SAT random_seed signed-int32 "
     "range) and optional `config` (a JSON object; `{}` is treated as omitted) are "
     "replay aids for this one re-run, never gate changes: the re-run sets "
@@ -1194,7 +1196,7 @@ _CPSAT_JOB_CHECKER_NOTE = (
     "OPTIONAL DIAGNOSTIC CHECKER: pass `checker` (a Python checker source "
     "string, same protocol as save_verified_cpsat_python's checker gate), plus "
     "optional `problem` (forwarded to the checker payload) and "
-    "`checker_timeout_ms` (defaults to `timeout_ms`; echoed on the job status "
+    "`checker_timeout_ms` (defaults to `script_timeout_ms`; echoed on the job status "
     "as the effective value). After the solver child finishes with a non-empty "
     "solution and status `optimal`/`feasible`/`timeout`, the checker runs as a "
     "second bounded child while the job stays `running`; its "
@@ -1209,7 +1211,7 @@ _CPSAT_JOB_CHECKER_NOTE = (
 SUBMIT_CPSAT_PYTHON_JOB_DESCRIPTION = (
     "Submit an OR-Tools CP-SAT Python INLINE SOURCE as a BACKGROUND JOB and return "
     "immediately, so a long solve cannot hit a synchronous MCP client timeout. "
-    "Takes the same `source` and `timeout_ms` as `run_cpsat_python`. "
+    "Takes the same `source` and `script_timeout_ms` as `run_cpsat_python`. "
     + _CPSAT_JSON_CONTRACT
     + " "
     + _CPSAT_JOB_CHECKER_NOTE
@@ -1272,12 +1274,12 @@ SUBMIT_CPSAT_PYTHON_FILE_JOB_DESCRIPTION = (
 GET_CPSAT_PYTHON_JOB_DESCRIPTION = (
     "Poll a background CP-SAT Python job by its `job_id` (from "
     "`submit_cpsat_python_job` or `submit_cpsat_python_file_job`). "
-    "Returns a CpsatPythonJobStatus: `job_id`, `state`, `timeout_ms`, "
+    "Returns a CpsatPythonJobStatus: `job_id`, `state`, `script_timeout_ms`, "
     "`submitted_at_ms`, `started_at_ms`, `finished_at_ms`, `elapsed_ms`, an "
     "optional `result` (the full CpsatPythonResult), an optional `message`, and "
     "— when the job was submitted with a checker — the diagnostic checker "
     "outcome: `checker` (a CpsatCheckerReport) or `checker_skipped_reason`, "
-    "plus the effective `checker_timeout_ms` echo. `timeout_ms` caps the SOLVER "
+    "plus the effective `checker_timeout_ms` echo. `script_timeout_ms` caps the SOLVER "
     "child only; when the solver result is checker-eligible (non-empty "
     "solution, status `optimal`/`feasible`/`timeout`) the job stays `running` "
     "through the checker phase for up to an additional `checker_timeout_ms`; "

@@ -506,7 +506,7 @@ async def test_tool_experiment_budget_exposes_invalid_request() -> None:
     fn = _tool_fn("run_cpsat_python_experiment")
     attempt = CpsatPythonExperimentAttempt(source="print('x')")
     with pytest.raises(RuntimeError) as exc_info:
-        await fn(attempts=[attempt], default_timeout_ms=10_000_000)
+        await fn(attempts=[attempt], default_script_timeout_ms=10_000_000)
     assert str(exc_info.value).startswith("Diagnostic: invalid_request — ")
     assert "budget" in str(exc_info.value)
 

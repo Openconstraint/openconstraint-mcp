@@ -218,7 +218,7 @@ _SOLVE_CONSTRAINT_PROBLEM_TAIL = """
      data file exists). Never recommend a bare `minizinc` from the user's
      PATH — that bypasses the managed runtime.
    - CP-SAT: call `run_cpsat_python(source=<complete script>,
-     timeout_ms=<milliseconds>)`, or `run_cpsat_python_file(script_path=<the
+     script_timeout_ms=<milliseconds>)`, or `run_cpsat_python_file(script_path=<the
      existing script's path>)` for a script on disk.
 
 5. Present the result in the user's own terms: a plain-language status, then
@@ -486,10 +486,13 @@ User problem:
      `_solver_config() -> dict` helper that reads the JSON file named by
      `OPENCONSTRAINT_MCP_CPSAT_CONFIG` and returns `{{}}` when the variable is
      unset (omitted config and `{{}}` are equivalent), then apply only
-     `num_workers` (default 1) and — only when present — `max_time_in_seconds`
+     `num_workers` (default 1) and — only when present — `search_time_limit_seconds`
      from it, exactly as the example below does. This keeps an omitted or
      empty config preserving today's defaults: seed 42, one worker, and no
-     CP-SAT-owned time limit.
+     CP-SAT-owned time limit. When you DO set `search_time_limit_seconds`,
+     keep it well under the call's `script_timeout_ms`: it caps CP-SAT's
+     search only, so parsing, model building, and serialization still have to
+     fit in what is left, and the server does not check one against the other.
    - For a REPRODUCIBLE saved artifact, READ the seed from the environment
      (falling back to 42) and default to a single search worker via the
      config helper, exactly as the example below does.
@@ -584,9 +587,9 @@ User problem:
              os.environ.get("OPENCONSTRAINT_MCP_CPSAT_SEED", "42")
          )
          solver.parameters.num_workers = config.get("num_workers", 1)
-         max_time_in_seconds = config.get("max_time_in_seconds")
-         if max_time_in_seconds is not None:
-             solver.parameters.max_time_in_seconds = max_time_in_seconds
+         search_time_limit_seconds = config.get("search_time_limit_seconds")
+         if search_time_limit_seconds is not None:
+             solver.parameters.max_time_in_seconds = search_time_limit_seconds
          status_code = solver.solve(model)
 
          status_map = {{
@@ -658,7 +661,7 @@ User problem:
      (`optimal`/`feasible`), emit `best_objective_bound` only for
      `optimal`/`feasible`/`unknown`, and emit `null`, not a fabricated
      number, in every other case.
-   - For a long or optimization run that may hit `timeout_ms`, ALSO emit an
+   - For a long or optimization run that may hit `script_timeout_ms`, ALSO emit an
      intermediate JSON object of the SAME shape on each improved solution,
      from a `cp_model.CpSolverSolutionCallback`. Replace the example's WHOLE
      `solve()` function with the one below, which reuses the same
@@ -705,21 +708,11 @@ User problem:
              os.environ.get("OPENCONSTRAINT_MCP_CPSAT_SEED", "42")
          )
          solver.parameters.num_workers = config.get("num_workers", 1)
-         max_time_in_seconds = config.get("max_time_in_seconds")
-         if max_time_in_seconds is not None:
-             solver.parameters.max_time_in_seconds = max_time_in_seconds
+         search_time_limit_seconds = config.get("search_time_limit_seconds")
+         if search_time_limit_seconds is not None:
+             solver.parameters.max_time_in_seconds = search_time_limit_seconds
          names = [item.name for item in instance.items]
-         # A self-imposed time limit makes the solve return normally and print
-         # its final envelope anyway, so streaming then buys nothing and only
-         # spends the executor's 1 MiB stdout budget on a long run (see
-         # examples/online_printing_shop/models.py). Skip the callback whenever
-         # max_time_in_seconds is set.
-         callback = (
-             None
-             if max_time_in_seconds is not None
-             else _Best(names, take, model.has_objective())
-         )
-         status_code = solver.solve(model, callback)
+         status_code = solver.solve(model, _Best(names, take, model.has_objective()))
 
          status_map = {{
              cp_model.OPTIMAL: "optimal",
@@ -753,9 +746,14 @@ User problem:
      callback fires on every found solution, not just optimization runs.
      The child runs unbuffered, so on a timeout the server recovers the
      last such block as the best-so-far. The final block (printed after
-     `solve` returns) remains the authoritative result on a clean run. Keep
-     the callback's own `max_time_in_seconds is not None` guard — see the
-     comment above it — rather than dropping it.
+     `solve` returns) remains the authoritative result on a clean run.
+     Install the callback UNCONDITIONALLY — never gate it on a configured
+     CP-SAT limit. That limit bounds SEARCH only (not parsing, model
+     building, or serialization), nothing checks it against
+     `script_timeout_ms`, and the script cannot read that deadline, so it
+     can never prove the solve returns first. Gate the callback and a run
+     killed mid-search prints nothing at all, and every solution CP-SAT
+     found is lost.
    - SAFETY: generate only CP-SAT modeling code — no network access, no
      file writes or deletes, no subprocess spawning — unless the user
      explicitly requested it. The server executes this code locally in a
@@ -767,7 +765,7 @@ User problem:
     + CPSAT_OUTPUT_CONTRACT_GUIDANCE
     + """
 4. Call `run_cpsat_python(source=<complete script>,
-   timeout_ms=<milliseconds>)`. The server runs it locally in a child
+   script_timeout_ms=<milliseconds>)`. The server runs it locally in a child
    process (not remote, not sandboxed) and returns a `CpsatPythonResult`
    with `status`, `solution`, `objective`, `best_objective_bound`
    (diagnostic only — see step 3), `stdout`, `stderr`, `return_code`,
@@ -784,7 +782,7 @@ User problem:
    - Distinguish `optimal` (proven best) from `feasible` (valid but
      unproven optimal). Never describe a `feasible` result as optimal.
    - For `infeasible` or `error`, say so plainly; point at `stderr` on
-     `error`. For `timeout`, the child process exceeded `timeout_ms`; a
+     `error`. For `timeout`, the child process exceeded `script_timeout_ms`; a
      populated `solution` is the best found so far (unproven, treat as
      feasible-not-optimal), otherwise none was reached in time.
    - For `unknown` (no incumbent found), mention `best_objective_bound`
@@ -812,7 +810,7 @@ User problem:
    diffs, or merges attempts — it only executes what you give it, verifies
    acceptance, and selects a winner.
    - Each attempt is
-     `{{name, source | script_path, args, seed, config, timeout_ms}}`. Set
+     `{{name, source | script_path, args, seed, config, script_timeout_ms}}`. Set
      EXACTLY ONE of `source` (a full, independent inline script, same SAFETY
      rule as step 3) or `script_path` (a local path to an existing script);
      setting both, or neither, is rejected before anything runs. `args` is a
@@ -872,16 +870,16 @@ User problem:
      `stdout`, or `stderr`. Before repairing anything on an `error` or
      `timeout` verdict, RE-RUN that one attempt to get the full checker
      report, replaying its EXACT inputs — the same `problem`, `seed`, `config`,
-     `timeout_ms`, and `checker_timeout_ms` — because a CP-SAT run is seed- and
+     `script_timeout_ms`, and `checker_timeout_ms` — because a CP-SAT run is seed- and
      config-dependent and a rerun under different ones diagnoses a different solve:
      - Attempt used inline `source`: call `save_verified_cpsat_python(source=…,
        problem=…, checker=…, checker_timeout_ms=…, seed=…, config=…,
-       timeout_ms=…, verify_only=true)`. Despite the name this SAVES NOTHING and
+       script_timeout_ms=…, verify_only=true)`. Despite the name this SAVES NOTHING and
        needs no `target_dir` — it re-runs and re-grades, returning the full report
        in `checker`.
      - Attempt used `script_path`: call `run_cpsat_python_file_checked(
        script_path=…, checker_path=…, problem=…, checker_timeout_ms=…,
-       args=…, seed=…, config=…, timeout_ms=…)`, writing the checker source to a
+       args=…, seed=…, config=…, script_timeout_ms=…)`, writing the checker source to a
        file first since that tool takes a path.
      Do NOT use `submit_cpsat_python_job` / `submit_cpsat_python_file_job` for
      this: they accept no `seed` or `config`, so for a seeded or configured
@@ -901,7 +899,7 @@ User problem:
    - Present the winner plus the full attempt table (every attempt's
      status, objective, and whether it was accepted/rejected and why). A
      `timeout` winner is a best-so-far incumbent, not proven optimal, and
-     not yet savable — re-run just that attempt with a larger `timeout_ms`
+     not yet savable — re-run just that attempt with a larger `script_timeout_ms`
      first.
 
 7. Persist only if the user asks: call
@@ -1037,7 +1035,7 @@ User problem:
    verification.checker_timeout_ms>, seed=..., config=...)` in one step — it
    returns the checker's verdict alongside the result and persists nothing.
    Omitting `checker_timeout_ms` there silently replays the checker under
-   `timeout_ms` instead of the cap the save recorded. Use
+   `script_timeout_ms` instead of the cap the save recorded. Use
    `save_verified_cpsat_python` again
    with `verify_only=true` when the save also recorded an objective
    `expectation` you need re-checked — which re-runs every gate and needs no
@@ -1047,12 +1045,12 @@ User problem:
    whenever the manifest or saved directory has them — the original
    `problem` (read from `problem.txt` if a `problem` artifact is listed),
    `expectation` (rebuilt from `verification.expectation.objective_sense` /
-   `objective_threshold` if present), and `timeout_ms` (from
-   `verification.timeout_ms`). Omitting any of these changes what gets
+   `objective_threshold` if present), and `script_timeout_ms` (from
+   `verification.script_timeout_ms`). Omitting any of these changes what gets
    replayed: `problem` feeds the checker's payload directly, so a checker
    that reads it validates against different input; `expectation` is a gate
    that runs and can fail *before* the checker ever runs, so leaving it out
-   silently skips the objective-threshold check; and `timeout_ms` is the
+   silently skips the objective-threshold check; and `script_timeout_ms` is the
    solver's re-run budget (and, when `checker_timeout_ms` was not set
    explicitly, the checker's timeout too) — a different value can reach a
    different result under the same gates. Passing all of them reproduces
@@ -1157,11 +1155,11 @@ save-tool provenance.
    dzn>, solver=<a solver it will race with>)`, then
    `check_minizinc_model(model=<candidate>, data=<smoke dzn>, solver=<a
    solver it will race with>)`;
-   `run_cpsat_python(source=<smoke script>, timeout_ms=<short budget>)`.
+   `run_cpsat_python(source=<smoke script>, script_timeout_ms=<short budget>)`.
    For a candidate that already exists on disk (step 2), use the path-based
    tools instead — `inspect_minizinc_files`/`check_minizinc_files` with
    `model_path`/`data_path`, and `run_cpsat_python_file(script_path=<the
-   existing model.py>, timeout_ms=<short budget>)` — they run from the
+   existing model.py>, script_timeout_ms=<short budget>)` — they run from the
    file's own directory, so relative includes and sibling data resolve.
    When that script reads `sys.argv` for its data file, add
    `args=[<data file>]`; without it the script silently falls back to its
@@ -1230,7 +1228,7 @@ save-tool provenance.
    7's combined JSON object for the instance THIS run solves when the checker parses
    it>)`, where
    each attempt is
-   `{{name, source | script_path, args, seed, config, timeout_ms}}` with
+   `{{name, source | script_path, args, seed, config, script_timeout_ms}}` with
    EXACTLY ONE of a complete, independent inline `source` or a
    `script_path` to an existing on-disk script (both set, or neither, is
    rejected). `script_path` runs each script from its own directory — use it
@@ -1261,7 +1259,7 @@ save-tool provenance.
       `submit_cpsat_python_job(source=<full-instance script>, checker=<the
       CP-SAT checker>, problem=<step 9's `problem` value, rebuilt for
       the FULL instance>,
-      timeout_ms=<budget>)`. `run_cpsat_python` has no `checker`
+      script_timeout_ms=<budget>)`. `run_cpsat_python` has no `checker`
       parameter at all. Keep this exact full-instance `source` for the final
       job and any save.
     - Stop on MiniZinc's `unsatisfiable`/`error` or CP-SAT's

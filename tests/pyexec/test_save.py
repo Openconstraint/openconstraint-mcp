@@ -164,10 +164,10 @@ def test_save_verified_cpsat_python_manifest_records_timeout_ms(
 ) -> None:
     _patch_executor(monkeypatch, _OPTIMAL_RESULT)
     target = tmp_path / "my_solution"
-    save_verified_cpsat_python(_SCRIPT, target_dir=target, timeout_ms=12_345)
+    save_verified_cpsat_python(_SCRIPT, target_dir=target, script_timeout_ms=12_345)
 
     manifest = json.loads((target / MANIFEST_FILENAME).read_text())
-    assert manifest["verification"]["timeout_ms"] == 12_345
+    assert manifest["verification"]["script_timeout_ms"] == 12_345
 
 
 # (a2d) manifest records an explicit checker_timeout_ms
@@ -1015,7 +1015,7 @@ def _winning_attempt_row(**overrides: object) -> CpsatPythonExperimentAttemptRes
         "seed": None,
         "config_sha256": None,
         "source_sha256": text_sha256(_SCRIPT),
-        "timeout_ms": 5000,
+        "script_timeout_ms": 5000,
         "status": "optimal",
         "objective": 3.0,
         "accepted": True,
@@ -1036,7 +1036,7 @@ def _losing_attempt_row(**overrides: object) -> CpsatPythonExperimentAttemptResu
         "seed": None,
         "config_sha256": None,
         "source_sha256": "some-other-hash",
-        "timeout_ms": 5000,
+        "script_timeout_ms": 5000,
         "status": "feasible",
         "objective": 1.0,
         "accepted": True,
@@ -1100,7 +1100,7 @@ def test_save_with_matching_experiment_result_writes_experiment_log(
             "source_sha256",
             "config_sha256",
             "used_script_path",
-            "timeout_ms",
+            "script_timeout_ms",
             "status",
             "objective",
             "accepted",

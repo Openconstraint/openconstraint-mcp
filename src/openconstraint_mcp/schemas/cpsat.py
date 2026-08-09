@@ -223,7 +223,7 @@ class CpsatPythonCheckedResult(CpsatPythonResult):
       ``checker``/``checker_skipped_reason`` is set — unlike
       ``CpsatPythonJobStatus``, where neither is set if no checker was supplied.
     - ``checker_timeout_ms`` echoes the effective checker cap (the explicit
-      value, else ``timeout_ms``); it is always set, since this tool always
+      value, else ``script_timeout_ms``); it is always set, since this tool always
       requests a check.
 
     - ``checker_test`` is set only when the caller opted into ``test_checker``
@@ -288,9 +288,9 @@ class CpsatPythonJobStatus(BaseModel):
     result-bearing terminal state (``succeeded`` or ``timeout``), absent for
     ``queued``/``running`` and for ``failed``/``cancelled``. The invariant
     ``result present ⇔ state ∈ {succeeded, timeout}`` is enforced.
-    ``timeout_ms`` echoes the caller's SOLVER-child cap only, so a polling
-    client can pace the solve phase (``remaining ≈ timeout_ms - elapsed_ms``).
-    A checked job may remain ``running`` beyond ``timeout_ms`` for the checker
+    ``script_timeout_ms`` echoes the caller's SOLVER-child cap only, so a polling
+    client can pace the solve phase (``remaining ≈ script_timeout_ms - elapsed_ms``).
+    A checked job may remain ``running`` beyond ``script_timeout_ms`` for the checker
     phase, up to the echoed ``checker_timeout_ms``. ``message`` carries
     failure/cancel detail; a ``failed`` job has no result so its diagnostic
     lives only in ``message``.
@@ -303,15 +303,15 @@ class CpsatPythonJobStatus(BaseModel):
     - ``checker_skipped_reason`` is set only when a supplied checker did not
       run (result not checker-eligible). Mutually exclusive with ``checker``,
       and both are restricted to result-bearing states.
-    - ``checker_timeout_ms`` is a request echo like ``timeout_ms`` (constant
+    - ``checker_timeout_ms`` is a request echo like ``script_timeout_ms`` (constant
       across states): the effective checker timeout when a checker was
-      supplied (the explicit value, else the ``timeout_ms`` default), ``None``
+      supplied (the explicit value, else the ``script_timeout_ms`` default), ``None``
       when no checker was supplied.
     """
 
     job_id: str
     state: JobState
-    timeout_ms: int
+    script_timeout_ms: int
     submitted_at_ms: int
     started_at_ms: int | None = None
     finished_at_ms: int | None = None
@@ -479,7 +479,7 @@ class CpsatPythonExperimentAttempt(BaseModel):
     parameters itself; only a cooperating script that reads the env var and
     applies fields it understands benefits from it. An empty ``config`` (``{}``)
     is normalized to "no config" everywhere (no temp file, no env var, no hash).
-    ``timeout_ms`` overrides the request's ``default_timeout_ms`` for this one
+    ``script_timeout_ms`` overrides the request's ``default_script_timeout_ms`` for this one
     attempt.
     """
 
@@ -489,7 +489,7 @@ class CpsatPythonExperimentAttempt(BaseModel):
     args: list[str] | None = None
     seed: StrictInt | None = None
     config: dict[str, JsonValue] = Field(default_factory=dict)
-    timeout_ms: int | None = None
+    script_timeout_ms: int | None = None
 
 
 class CpsatPythonExperimentAttemptResult(BaseModel):
@@ -531,7 +531,7 @@ class CpsatPythonExperimentAttemptResult(BaseModel):
     config_sha256: str | None = None
     source_sha256: str
     used_script_path: bool = False
-    timeout_ms: int
+    script_timeout_ms: int
     status: CpsatStatus
     objective: float | int | None
     best_objective_bound: float | int | None = None

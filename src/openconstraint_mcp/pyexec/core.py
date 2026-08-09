@@ -136,11 +136,11 @@ MAX_CPSAT_SELF_TEST_WALL_CLOCK_MS: int = 120_000
 _CPSAT_EXECUTOR_POLL_SLACK_MS: int = 250
 
 # Floor for a checker timeout DERIVED from the self-test budget. The derived
-# value shrinks as `timeout_ms` grows, and it feeds the BASELINE checker as well
+# value shrinks as `script_timeout_ms` grows, and it feeds the BASELINE checker as well
 # as the mutants — so an unfloored derivation would let an opt-in diagnostic
 # starve the primary verdict, timing out a checker that would have been given
-# the full `timeout_ms` had the caller not asked for the probe. Below this the
-# call rejects instead, which sends the caller to a smaller `timeout_ms`.
+# the full `script_timeout_ms` had the caller not asked for the probe. Below this the
+# call rejects instead, which sends the caller to a smaller `script_timeout_ms`.
 # Well above interpreter startup, so it never fails a checker that would run.
 _MIN_SELF_TEST_CHECKER_TIMEOUT_MS: int = 2_000
 
@@ -218,9 +218,11 @@ def validate_checker_args(
         raise ValueError("checker must be non-empty after stripping whitespace")
 
 
-def effective_checker_timeout_ms(*, checker_timeout_ms: int | None, default_timeout_ms: int) -> int:
+def effective_checker_timeout_ms(
+    *, checker_timeout_ms: int | None, default_script_timeout_ms: int
+) -> int:
     """Return the checker timeout after applying the tool's default timeout fallback."""
-    return checker_timeout_ms if checker_timeout_ms is not None else default_timeout_ms
+    return checker_timeout_ms if checker_timeout_ms is not None else default_script_timeout_ms
 
 
 def cpsat_child_timeout_overhead_ms() -> int:
@@ -228,7 +230,9 @@ def cpsat_child_timeout_overhead_ms() -> int:
     return process_tree_terminate_worst_case_ms() + _CPSAT_EXECUTOR_POLL_SLACK_MS
 
 
-def _resolve_checked_checker_timeout_ms(*, timeout_ms: int, checker_timeout_ms: int | None) -> int:
+def _resolve_checked_checker_timeout_ms(
+    *, script_timeout_ms: int, checker_timeout_ms: int | None
+) -> int:
     """Resolve a SELF-TESTING checker timeout within the synchronous ceiling.
 
     Enforced only for ``test_checker=True``, which is what turns one checker
@@ -244,7 +248,7 @@ def _resolve_checked_checker_timeout_ms(*, timeout_ms: int, checker_timeout_ms: 
     """
     overhead_ms = cpsat_child_timeout_overhead_ms()
     checker_runs = 1 + len(CPSAT_MUTATION_NAMES)
-    model_budget_ms = timeout_ms + overhead_ms
+    model_budget_ms = script_timeout_ms + overhead_ms
     fixed_budget_ms = model_budget_ms + checker_runs * overhead_ms
     no_fallback = "checker self-testing has no background-job equivalent"
     if checker_timeout_ms is None:
@@ -253,26 +257,27 @@ def _resolve_checked_checker_timeout_ms(*, timeout_ms: int, checker_timeout_ms: 
         ) // checker_runs
         if max_checker_timeout_ms < _MIN_SELF_TEST_CHECKER_TIMEOUT_MS:
             raise ValueError(
-                f"fixed budget {fixed_budget_ms} ms (timeout_ms={timeout_ms} + "
+                f"fixed budget {fixed_budget_ms} ms (script_timeout_ms={script_timeout_ms} + "
                 f"{checker_runs} checker runs x {overhead_ms} ms overhead) leaves only "
                 f"{max_checker_timeout_ms} ms per checker child, under the "
                 f"{_MIN_SELF_TEST_CHECKER_TIMEOUT_MS} ms floor "
                 f"(MAX_CPSAT_SELF_TEST_WALL_CLOCK_MS={MAX_CPSAT_SELF_TEST_WALL_CLOCK_MS} ms; "
-                f"reduce timeout_ms, or drop test_checker — {no_fallback})"
+                f"reduce script_timeout_ms, or drop test_checker — {no_fallback})"
             )
         # The floor bounds the DERIVED cap, not the caller's own model timeout: a
-        # deliberately short `timeout_ms` still yields a checker timeout that
+        # deliberately short `script_timeout_ms` still yields a checker timeout that
         # matches it, since that caller asked for a fast run end to end.
-        checker_timeout_ms = min(timeout_ms, max_checker_timeout_ms)
+        checker_timeout_ms = min(script_timeout_ms, max_checker_timeout_ms)
     checker_budget_ms = checker_timeout_ms + overhead_ms
     projected_ms = model_budget_ms + checker_runs * checker_budget_ms
     if projected_ms <= MAX_CPSAT_SELF_TEST_WALL_CLOCK_MS:
         return checker_timeout_ms
     raise ValueError(
-        f"projected budget {projected_ms} ms (timeout_ms={timeout_ms} + "
+        f"projected budget {projected_ms} ms (script_timeout_ms={script_timeout_ms} + "
         f"checker_timeout_ms={checker_timeout_ms}, x{checker_runs} runs incl. overhead) "
         f"exceeds MAX_CPSAT_SELF_TEST_WALL_CLOCK_MS={MAX_CPSAT_SELF_TEST_WALL_CLOCK_MS} ms "
-        f"(reduce timeout_ms and/or checker_timeout_ms, or drop test_checker — {no_fallback})"
+        f"(reduce script_timeout_ms and/or checker_timeout_ms, or drop test_checker "
+        f"— {no_fallback})"
     )
 
 
@@ -678,7 +683,7 @@ def _python_script_argv(script: Path, args: list[str] | None = None) -> list[str
 def run_cpsat_python(
     source: str,
     *,
-    timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+    script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
     tracker: ChildProcessTracker | None = None,
     on_start: Callable[[Popen[str]], None] | None = None,
     env: dict[str, str | None] | None = None,
@@ -692,7 +697,7 @@ def run_cpsat_python(
     (stderr gets what stdout leaves). Returns a ``CpsatPythonResult`` with the
     parsed solution and execution metadata.
 
-    Raises ``ValueError`` on a non-positive ``timeout_ms`` — matching the
+    Raises ``ValueError`` on a non-positive ``script_timeout_ms`` — matching the
     MiniZinc path's ``validate_model_and_timeout`` so a zero/negative cap is
     rejected up front rather than spawning a child only to kill it immediately.
 
@@ -715,6 +720,7 @@ def run_cpsat_python(
     For an existing local file, use ``run_cpsat_python_file`` instead — it runs
     the script in its own directory so relative file/import references resolve.
     """
+    validate_timeout_ms(script_timeout_ms, label="script_timeout_ms")
     with tempfile.TemporaryDirectory() as tmp_dir:
         tmp = Path(tmp_dir)
         script = tmp / "script.py"
@@ -724,7 +730,7 @@ def run_cpsat_python(
             child = execute_child(
                 _python_script_argv(script),
                 cwd=tmp,
-                timeout_ms=timeout_ms,
+                timeout_ms=script_timeout_ms,
                 tracker=tracker,
                 on_start=on_start,
                 env=env,
@@ -739,7 +745,7 @@ def run_cpsat_python(
 def run_cpsat_python_file(
     script_path: Path,
     *,
-    timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+    script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
     args: list[str] | None = None,
     tracker: ChildProcessTracker | None = None,
     on_start: Callable[[Popen[str]], None] | None = None,
@@ -770,11 +776,12 @@ def run_cpsat_python_file(
     """
     resolved = validate_script_path(script_path)
     validate_script_args(args)
+    validate_timeout_ms(script_timeout_ms, label="script_timeout_ms")
     try:
         child = execute_child(
             _python_script_argv(resolved, args),
             cwd=resolved.parent,
-            timeout_ms=timeout_ms,
+            timeout_ms=script_timeout_ms,
             tracker=tracker,
             on_start=on_start,
             env=env,
@@ -930,7 +937,7 @@ def run_cpsat_python_file_checked(
     checker_path: Path,
     *,
     problem: str | None = None,
-    timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+    script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
     checker_timeout_ms: int | None = None,
     args: list[str] | None = None,
     test_checker: bool = False,
@@ -943,7 +950,7 @@ def run_cpsat_python_file_checked(
     synchronous call. Both paths are resolved and validated (exists / regular
     file / non-empty / UTF-8) BEFORE any child is spawned, with a ``ValueError``
     naming the offending parameter; ``checker_timeout_ms`` must be positive when
-    given and otherwise defaults to ``timeout_ms``. With ``test_checker`` on, an
+    given and otherwise defaults to ``script_timeout_ms``. With ``test_checker`` on, an
     omitted checker timeout is capped at the largest value that fits the
     synchronous wall-clock budget.
 
@@ -970,7 +977,7 @@ def run_cpsat_python_file_checked(
     The probe never alters the run's own ``status``/``objective``/``solution``.
 
     Projected worst-case wall clock is additive:
-    ``(timeout_ms + tree-kill grace) + (checker_timeout_ms + tree-kill grace)``,
+    ``(script_timeout_ms + tree-kill grace) + (checker_timeout_ms + tree-kill grace)``,
     plus ``(applied mutations) × (checker_timeout_ms + tree-kill grace)`` when
     ``test_checker`` is on. Only the ``test_checker`` projection is GATED: with
     the self-test on, the call conservatively assumes all four mutations apply
@@ -978,26 +985,26 @@ def run_cpsat_python_file_checked(
     before any child runs. An omitted ``checker_timeout_ms`` is reduced to fit
     — the derived value is the BASELINE checker's budget too, so the call
     rejects instead of deriving one under the self-test floor.
-    A plain checked run stays ungated — ``timeout_ms`` has no upper bound, since
+    A plain checked run stays ungated — ``script_timeout_ms`` has no upper bound, since
     a caller must be able to ask for the solve time the problem needs. Background
     jobs have no checker self-test.
     """
     resolved_script = validate_script_path(script_path)
     resolved_checker = validate_script_path(checker_path, parameter="checker_path")
     validate_checker_timeout_ms(checker_timeout_ms)
-    validate_timeout_ms(timeout_ms)
+    validate_timeout_ms(script_timeout_ms, label="script_timeout_ms")
     if test_checker:
-        effective_timeout_ms = _resolve_checked_checker_timeout_ms(
-            timeout_ms=timeout_ms, checker_timeout_ms=checker_timeout_ms
+        effective_checker_timeout = _resolve_checked_checker_timeout_ms(
+            script_timeout_ms=script_timeout_ms, checker_timeout_ms=checker_timeout_ms
         )
     else:
-        effective_timeout_ms = effective_checker_timeout_ms(
-            checker_timeout_ms=checker_timeout_ms, default_timeout_ms=timeout_ms
+        effective_checker_timeout = effective_checker_timeout_ms(
+            checker_timeout_ms=checker_timeout_ms, default_script_timeout_ms=script_timeout_ms
         )
 
     run_result = run_cpsat_python_file(
         resolved_script,
-        timeout_ms=timeout_ms,
+        script_timeout_ms=script_timeout_ms,
         args=args,
         tracker=tracker,
         env=env,
@@ -1010,7 +1017,7 @@ def run_cpsat_python_file_checked(
             resolved_checker,
             run_result,
             problem=problem,
-            timeout_ms=effective_timeout_ms,
+            timeout_ms=effective_checker_timeout,
             tracker=tracker,
         )
 
@@ -1020,7 +1027,7 @@ def run_cpsat_python_file_checked(
             resolved_checker,
             run_result,
             problem=problem,
-            timeout_ms=effective_timeout_ms,
+            timeout_ms=effective_checker_timeout,
             tracker=tracker,
         )
 
@@ -1029,6 +1036,6 @@ def run_cpsat_python_file_checked(
         diagnostic=checked_result_diagnostic(run_result, report),
         checker=report,
         checker_skipped_reason=skipped_reason,
-        checker_timeout_ms=effective_timeout_ms,
+        checker_timeout_ms=effective_checker_timeout,
         checker_test=checker_test,
     )

@@ -167,7 +167,7 @@ def format_cpsat_experiment_content(result: CpsatPythonExperimentResult) -> str:
             lines.append(
                 "Note: the winner is a best-so-far incumbent (status=timeout), NOT "
                 "savable as-is — save_verified_cpsat_python requires "
-                "optimal/feasible. Re-run this attempt with a larger timeout_ms "
+                "optimal/feasible. Re-run this attempt with a larger script_timeout_ms "
                 "until it reports optimal/feasible, then save."
             )
     else:

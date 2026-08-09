@@ -63,7 +63,7 @@ class _CpsatJobRequest:
 
     source: str | None
     script_path: Path | None
-    timeout_ms: int
+    script_timeout_ms: int
     problem: str | None = None
     checker: str | None = None
     checker_path: Path | None = None
@@ -92,7 +92,8 @@ class _CpsatJobRequest:
         if not self.has_checker:
             return None
         return effective_checker_timeout_ms(
-            checker_timeout_ms=self.checker_timeout_ms, default_timeout_ms=self.timeout_ms
+            checker_timeout_ms=self.checker_timeout_ms,
+            default_script_timeout_ms=self.script_timeout_ms,
         )
 
 
@@ -163,25 +164,25 @@ class CpsatJobRegistry:
         self,
         source: str,
         *,
-        timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
         problem: str | None = None,
         checker: str | None = None,
         checker_timeout_ms: int | None = None,
     ) -> str:
         """Admit an inline CP-SAT source as a background job; return ``job_id``.
 
-        Validates ``timeout_ms`` (positive gate) and the optional checker args
+        Validates ``script_timeout_ms`` (positive gate) and the optional checker args
         up front, then admits under the lock. Returns immediately; raises
         ``ValueError`` on bad args or ``JobRejectedError`` when the bounded
         queue is full.
         """
-        if timeout_ms <= 0:
-            raise ValueError("timeout_ms must be positive")
+        if script_timeout_ms <= 0:
+            raise ValueError("script_timeout_ms must be positive")
         validate_checker_args(checker=checker, checker_timeout_ms=checker_timeout_ms)
         request = _CpsatJobRequest(
             source=source,
             script_path=None,
-            timeout_ms=timeout_ms,
+            script_timeout_ms=script_timeout_ms,
             problem=problem,
             checker=checker,
             checker_timeout_ms=checker_timeout_ms,
@@ -195,7 +196,7 @@ class CpsatJobRegistry:
         self,
         script_path: Path,
         *,
-        timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
         args: list[str] | None = None,
         problem: str | None = None,
         checker: str | None = None,
@@ -204,7 +205,7 @@ class CpsatJobRegistry:
     ) -> str:
         """Admit a CP-SAT script file as a background job; return ``job_id``.
 
-        Validates ``timeout_ms``, the optional checker args, the path
+        Validates ``script_timeout_ms``, the optional checker args, the path
         (exists / regular file / non-empty / UTF-8), AND ``args`` (no embedded
         NUL, bounded total encoding) before admission so a bad argument raises
         ``ValueError`` synchronously and no job record is created — either would
@@ -223,8 +224,8 @@ class CpsatJobRegistry:
         ``script_path`` is; a file deleted between admission and the checker
         phase surfaces as a ``status="error"`` checker report, not a rejection.
         """
-        if timeout_ms <= 0:
-            raise ValueError("timeout_ms must be positive")
+        if script_timeout_ms <= 0:
+            raise ValueError("script_timeout_ms must be positive")
         validate_checker_args(
             checker=checker, checker_timeout_ms=checker_timeout_ms, checker_path=checker_path
         )
@@ -238,7 +239,7 @@ class CpsatJobRegistry:
         request = _CpsatJobRequest(
             source=None,
             script_path=resolved,
-            timeout_ms=timeout_ms,
+            script_timeout_ms=script_timeout_ms,
             problem=problem,
             checker=checker,
             checker_path=resolved_checker,
@@ -349,7 +350,7 @@ class CpsatJobRegistry:
         return CpsatPythonJobStatus(
             job_id=record.job_id,
             state=record.state,
-            timeout_ms=record.request.timeout_ms,
+            script_timeout_ms=record.request.script_timeout_ms,
             submitted_at_ms=record.submitted_at_ms,
             started_at_ms=record.started_at_ms,
             finished_at_ms=record.finished_at_ms,
@@ -444,7 +445,7 @@ class CpsatJobRegistry:
                 assert request.script_path is not None
                 result = run_cpsat_python_file(
                     request.script_path,
-                    timeout_ms=request.timeout_ms,
+                    script_timeout_ms=request.script_timeout_ms,
                     args=list(request.args) if request.args is not None else None,
                     on_start=lambda proc: self._on_start(job_id, proc),
                     env=seed_config_env(seed=None, config_path=None),
@@ -454,7 +455,7 @@ class CpsatJobRegistry:
                 assert request.source is not None
                 result = run_cpsat_python(
                     request.source,
-                    timeout_ms=request.timeout_ms,
+                    script_timeout_ms=request.script_timeout_ms,
                     on_start=lambda proc: self._on_start(job_id, proc),
                     env=seed_config_env(seed=None, config_path=None),
                     spawn_failure_as_result=False,

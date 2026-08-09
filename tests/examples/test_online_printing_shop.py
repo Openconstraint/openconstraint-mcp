@@ -14,8 +14,8 @@ from examples.online_printing_shop.checker import check_payload
 from examples.online_printing_shop.models import (
     _num_workers,
     _required_processing,
+    _search_time_limit_seconds,
     _solver_config,
-    _time_limit_seconds,
     parse_input,
     read_input,
     serialize_solution,
@@ -237,7 +237,7 @@ def test_no_config_file_yields_an_empty_config(monkeypatch: pytest.MonkeyPatch) 
 def test_no_config_file_leaves_the_solve_unbounded(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENCONSTRAINT_MCP_CPSAT_CONFIG", raising=False)
 
-    assert _time_limit_seconds(_solver_config()) is None
+    assert _search_time_limit_seconds(_solver_config()) is None
 
 
 def test_config_without_a_time_limit_leaves_the_solve_unbounded(
@@ -245,15 +245,15 @@ def test_config_without_a_time_limit_leaves_the_solve_unbounded(
 ) -> None:
     _write_config(tmp_path, monkeypatch, {"num_workers": 4})
 
-    assert _time_limit_seconds(_solver_config()) is None
+    assert _search_time_limit_seconds(_solver_config()) is None
 
 
 def test_config_time_limit_is_read_as_seconds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _write_config(tmp_path, monkeypatch, {"max_time_in_seconds": 20})
+    _write_config(tmp_path, monkeypatch, {"search_time_limit_seconds": 20})
 
-    assert _time_limit_seconds(_solver_config()) == 20.0
+    assert _search_time_limit_seconds(_solver_config()) == 20.0
 
 
 def test_no_config_file_keeps_the_single_reproducible_worker(
@@ -267,7 +267,7 @@ def test_no_config_file_keeps_the_single_reproducible_worker(
 def test_config_without_workers_keeps_the_single_reproducible_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _write_config(tmp_path, monkeypatch, {"max_time_in_seconds": 20})
+    _write_config(tmp_path, monkeypatch, {"search_time_limit_seconds": 20})
 
     assert _num_workers(_solver_config()) == 1
 
@@ -284,16 +284,19 @@ def test_unbounded_solve_streams_recoverable_incumbents(
     assert capsys.readouterr().out.strip() != ""
 
 
-def test_time_limited_solve_streams_nothing(
+def test_time_limited_solve_still_streams_recoverable_incumbents(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A self-imposed limit returns normally and main() prints the final envelope,
-    # so streaming would only spend the executor's 1 MiB stdout budget.
-    _write_config(tmp_path, monkeypatch, {"max_time_in_seconds": 30})
+    # A CP-SAT limit bounds SEARCH only — not input parsing, model building, or
+    # serialization — and the script cannot see the executor's own deadline, so it
+    # can never prove it will exit first. Suppressing the stream here loses every
+    # solution CP-SAT found whenever the limit does not fit inside the executor
+    # budget (see test_search_limit_above_the_script_timeout_still_recovers).
+    _write_config(tmp_path, monkeypatch, {"search_time_limit_seconds": 30})
 
     solve(parse_input(load_instance()))
 
-    assert capsys.readouterr().out == ""
+    assert capsys.readouterr().out.strip() != ""
 
 
 def test_config_workers_raise_the_cpsat_portfolio(
@@ -301,7 +304,7 @@ def test_config_workers_raise_the_cpsat_portfolio(
 ) -> None:
     # data_lops.json finds no incumbent on one worker; the caller needs this key
     # to reach a checkable solution at all.
-    _write_config(tmp_path, monkeypatch, {"max_time_in_seconds": 20, "num_workers": 8})
+    _write_config(tmp_path, monkeypatch, {"search_time_limit_seconds": 20, "num_workers": 8})
 
     assert _num_workers(_solver_config()) == 8
 
@@ -394,7 +397,7 @@ async def test_sops1_model_and_checker_reach_the_known_optimum_through_mcp() -> 
             "checker_path": str(EXAMPLE_DIR / "checker.py"),
             "args": ["data_sops1.json"],
             "problem": "data_sops1.json",
-            "timeout_ms": 30_000,
+            "script_timeout_ms": 30_000,
             "test_checker": True,
         },
     )
@@ -413,3 +416,32 @@ async def test_sops1_model_and_checker_reach_the_known_optimum_through_mcp() -> 
     assert {entry["operation"] for entry in schedule} == set(load_instance()["operations"])
     fixed = next(entry for entry in schedule if entry["operation"] == "6")
     assert (fixed["machine"], fixed["start"]) == ("1", 79)
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_search_limit_above_the_script_timeout_still_recovers() -> None:
+    # The regression this pins: a CP-SAT search limit ABOVE the executor's own
+    # deadline leaves the child tree-killed mid-search, so the final envelope
+    # main() would print never happens. The streamed incumbents are then the only
+    # record of what CP-SAT found. Nothing validates the two limits against each
+    # other, and the script cannot see the executor's, so gating the stream on
+    # "a limit was set" reported timeout_no_incumbent and discarded a schedule the
+    # solver had already proven feasible.
+    mcp = create_mcp_server("full")
+
+    call_result = await mcp.call_tool(
+        "run_cpsat_python_file",
+        {
+            "script_path": str(EXAMPLE_DIR / "models.py"),
+            "args": ["data_mops1.json"],
+            "script_timeout_ms": 15_000,
+            "config": {"search_time_limit_seconds": 300, "num_workers": 8},
+        },
+    )
+    assert call_result.structured_content is not None
+    result: dict[str, Any] = call_result.structured_content
+
+    assert result["status"] == "timeout"
+    assert result["diagnostic"]["category"] == "timeout_with_incumbent"
+    assert result["solution"]["schedule"]

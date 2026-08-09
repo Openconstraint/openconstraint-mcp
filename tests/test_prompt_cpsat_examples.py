@@ -14,7 +14,10 @@ import json
 import os
 import textwrap
 from collections.abc import Generator
+from pathlib import Path
 from typing import Any
+
+import pytest
 
 from openconstraint_mcp.protocol_text.prompts import SOLVE_CPSAT_PYTHON_PROMPT
 
@@ -213,21 +216,24 @@ def test_cpsat_prompt_callback_example_repeats_the_main_examples_guards() -> Non
     assert main_guards.strip() == callback_guards.strip()
 
 
-def test_cpsat_prompt_callback_example_replaces_the_whole_solve_function() -> None:
-    # The prompt instructs replacing the whole solve() function with the
-    # callback variant, so the two fences must compose into one runnable script
-    # that emits intermediate JSON lines before the authoritative final line.
+def _composed_callback_script() -> str:
+    """Splice the callback fence's solve() into the main fence, as the prompt says to."""
     main, callback = _rendered_code_fences()
     assert main.count(_SOLVE_SIGNATURE) == 1
     assert callback.startswith(_SOLVE_SIGNATURE)
-    composed = (
+    return (
         main[: main.index(_SOLVE_SIGNATURE)]
         + callback.strip()
         + "\n\n\n"
         + main[main.index("def serialize_solution(") :]
     )
 
-    lines = _run_capturing_stdout(composed)
+
+def test_cpsat_prompt_callback_example_replaces_the_whole_solve_function() -> None:
+    # The prompt instructs replacing the whole solve() function with the
+    # callback variant, so the two fences must compose into one runnable script
+    # that emits intermediate JSON lines before the authoritative final line.
+    lines = _run_capturing_stdout(_composed_callback_script())
 
     assert len(lines) >= 2, "callback should emit at least one intermediate line"
     intermediate = json.loads(lines[0])
@@ -235,3 +241,29 @@ def test_cpsat_prompt_callback_example_replaces_the_whole_solve_function() -> No
     assert set(intermediate) == _CONTRACT_KEYS
     final = json.loads(lines[-1])
     assert final["status"] == "optimal"
+
+
+def test_cpsat_prompt_callback_example_still_streams_under_a_configured_search_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression: the callback used to be gated on the config's CP-SAT limit, so a
+    # CONFIGURED run emitted nothing until solve() returned. A child tree-killed at
+    # the executor's deadline before that left no JSON on stdout at all, and timeout
+    # recovery reported no incumbent — discarding every solution CP-SAT had found.
+    # A search limit bounds search alone and is never validated against the executor
+    # deadline, which the script cannot see, so streaming must stay unconditional.
+    # Every other example test runs with the config env var cleared, which is why
+    # this path went uncovered.
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"search_time_limit_seconds": 30}), encoding="utf-8")
+    monkeypatch.setenv("OPENCONSTRAINT_MCP_CPSAT_CONFIG", str(config_path))
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        exec(  # noqa: S102 - the prompt's own example, executed to prove it works
+            compile(_composed_callback_script(), "<prompt-example>", "exec"),
+            {"__name__": "__main__"},
+        )
+    lines = [line for line in out.getvalue().strip().splitlines() if line]
+
+    assert len(lines) >= 2, "a configured search limit must not suppress the stream"

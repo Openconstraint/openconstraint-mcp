@@ -235,7 +235,7 @@ def _build_experiment_log(experiment_result: CpsatPythonExperimentResult) -> dic
                 "source_sha256": attempt.source_sha256,
                 "config_sha256": attempt.config_sha256,
                 "used_script_path": attempt.used_script_path,
-                "timeout_ms": attempt.timeout_ms,
+                "script_timeout_ms": attempt.script_timeout_ms,
                 "status": attempt.status,
                 "objective": attempt.objective,
                 "accepted": attempt.accepted,
@@ -264,7 +264,7 @@ def _write_staged_artifacts(
     seed: int | None,
     config: dict[str, Any] | None,
     experiment_result: CpsatPythonExperimentResult | None,
-    timeout_ms: int,
+    script_timeout_ms: int,
     checker_timeout_ms: int | None,
 ) -> list[SavedModelArtifact]:
     texts: list[tuple[SavedArtifactRole, str, str]] = [("model", SCRIPT_FILENAME, source)]
@@ -309,7 +309,7 @@ def _write_staged_artifacts(
         "level": verification_level,
         "reported_status": run_result.status,
         "objective": run_result.objective,
-        "timeout_ms": timeout_ms,
+        "script_timeout_ms": script_timeout_ms,
     }
     if checker_timeout_ms is not None:
         verification["checker_timeout_ms"] = checker_timeout_ms
@@ -380,7 +380,7 @@ def save_verified_cpsat_python(
     expectation: CpsatExpectation | None = None,
     checker: str | None = None,
     checker_timeout_ms: int | None = None,
-    timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+    script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
     overwrite: bool = False,
     verify_only: bool = False,
     seed: int | None = None,
@@ -439,7 +439,7 @@ def save_verified_cpsat_python(
 
     effective_checker_timeout = effective_checker_timeout_ms(
         checker_timeout_ms=checker_timeout_ms,
-        default_timeout_ms=timeout_ms,
+        default_script_timeout_ms=script_timeout_ms,
     )
 
     target: Path | None = None
@@ -452,7 +452,7 @@ def save_verified_cpsat_python(
         target = validate_save_target(target_dir, overwrite=overwrite)
     with replay_env_scope(seed=seed, config=normalized_config) as replay_env:
         run_result = run_cpsat_python(
-            source, timeout_ms=timeout_ms, tracker=tracker, env=replay_env
+            source, script_timeout_ms=script_timeout_ms, tracker=tracker, env=replay_env
         )
 
     # --- Reported gate ---
@@ -538,7 +538,7 @@ def save_verified_cpsat_python(
                 seed=seed,
                 config=normalized_config,
                 experiment_result=experiment_result,
-                timeout_ms=timeout_ms,
+                script_timeout_ms=script_timeout_ms,
                 checker_timeout_ms=checker_timeout_ms,
             )
 

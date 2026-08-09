@@ -173,10 +173,12 @@ models.py reads three settings:
 random seed
     OPENCONSTRAINT_MCP_CPSAT_SEED, default 42.
 
-max_time_in_seconds
-    The CP-SAT wall-clock limit. Without it the solve runs unbounded, and a run
-    started through an MCP tool is killed at timeout_ms instead of stopping on
-    its own. Set it below timeout_ms.
+search_time_limit_seconds
+    The CP-SAT SEARCH limit. Without it the solve runs unbounded, and a run
+    started through an MCP tool is killed at script_timeout_ms instead of
+    stopping on its own. Set it well below script_timeout_ms: it bounds search
+    only, so parsing, model building, and serialization still have to fit in
+    what remains, and nothing validates the two limits against each other.
 
 num_workers
     The CP-SAT worker count, default 1. One worker keeps a seeded run
@@ -190,22 +192,26 @@ data_sops1.json
     Nothing. It proves optimality in well under a second on one worker.
 
 data_mops1.json
-    Benefits from max_time_in_seconds: CP-SAT then stops itself and returns a
-    clean status instead of running until the timeout kill. Without it, the
-    streaming callback still leaves a recoverable incumbent on stdout, and
-    the checker now grades that "timeout" verdict too.
+    Benefits from search_time_limit_seconds: CP-SAT then stops itself and
+    returns a clean status instead of running until the timeout kill. Either
+    way the streaming callback leaves a recoverable incumbent on stdout, and
+    the checker grades that "timeout" verdict too.
 
 data_lops.json
-    Both, for example {"max_time_in_seconds": 150, "num_workers": 8}. On one
+    Both, for example {"search_time_limit_seconds": 150, "num_workers": 8}. On one
     worker it spends the whole limit and still reports status "unknown" with no
     incumbent, which the checker refuses.
 
-Streaming follows the same switch. With no max_time_in_seconds the solution
-callback prints a complete envelope for every improving solution, so a child
-killed at timeout_ms still leaves a recoverable incumbent on stdout. With a
-limit set the solve returns on its own and only the final envelope is printed,
-which is what keeps a long parallel run inside the executor's 1 MiB output cap
-— crossing that cap discards the whole result, incumbent included.
+Streaming does NOT follow that switch. The solution callback always prints a
+complete envelope for every improving solution, so a child killed at
+script_timeout_ms always leaves a recoverable incumbent on stdout. Gating it on
+search_time_limit_seconds would be unsound: that limit bounds search alone, the
+script cannot read script_timeout_ms, and nothing checks one against the other,
+so the script can never prove it will exit before the kill — and a run killed
+mid-search would then print nothing at all, reporting timeout_no_incumbent and
+discarding solutions CP-SAT had already found. The cost stays inside the
+executor's 1 MiB output cap because improvements taper off: data_lops.json on 8
+workers plateaus around 0.75 MiB, adding one envelope between 120 s and 210 s.
 
 Top-level fields
 ~~~~~~~~~~~~~~~~

@@ -74,7 +74,7 @@ def test_cpsat_python_job_status_succeeded_round_trips_with_result() -> None:
     status = CpsatPythonJobStatus(
         job_id="cj1",
         state="succeeded",
-        timeout_ms=30000,
+        script_timeout_ms=30000,
         submitted_at_ms=1000,
         started_at_ms=1001,
         finished_at_ms=1050,
@@ -89,7 +89,7 @@ def test_cpsat_python_job_status_succeeded_round_trips_with_result() -> None:
 
 def test_cpsat_python_job_status_queued_serializes_without_result() -> None:
     status = CpsatPythonJobStatus(
-        job_id="cj-q", state="queued", timeout_ms=30000, submitted_at_ms=5
+        job_id="cj-q", state="queued", script_timeout_ms=30000, submitted_at_ms=5
     )
     dumped = status.model_dump(mode="json")
     assert dumped["state"] == "queued"
@@ -101,7 +101,7 @@ def test_cpsat_python_job_status_rejects_running_carrying_a_result() -> None:
         CpsatPythonJobStatus(
             job_id="cj-bad",
             state="running",
-            timeout_ms=30000,
+            script_timeout_ms=30000,
             submitted_at_ms=1,
             result=_cpsat_result("optimal"),
         )
@@ -112,7 +112,7 @@ def test_cpsat_python_job_status_rejects_succeeded_without_a_result() -> None:
         CpsatPythonJobStatus(
             job_id="cj-bad2",
             state="succeeded",
-            timeout_ms=30000,
+            script_timeout_ms=30000,
             submitted_at_ms=1,
         )
 
@@ -121,7 +121,7 @@ def test_cpsat_python_job_status_timeout_carries_result() -> None:
     status = CpsatPythonJobStatus(
         job_id="cj-to",
         state="timeout",
-        timeout_ms=5000,
+        script_timeout_ms=5000,
         submitted_at_ms=1,
         result=_cpsat_result("timeout", timed_out=True),
     )
@@ -133,7 +133,7 @@ def test_cpsat_python_job_status_cancelled_has_no_result() -> None:
     status = CpsatPythonJobStatus(
         job_id="cj-c",
         state="cancelled",
-        timeout_ms=5000,
+        script_timeout_ms=5000,
         submitted_at_ms=1,
         message="Cancelled by client",
     )
@@ -157,7 +157,7 @@ def test_cpsat_python_job_status_succeeded_carries_checker_report() -> None:
     status = CpsatPythonJobStatus(
         job_id="cj-ck",
         state="succeeded",
-        timeout_ms=30000,
+        script_timeout_ms=30000,
         submitted_at_ms=1,
         result=_cpsat_result("optimal"),
         checker=_job_checker_report(),
@@ -172,7 +172,7 @@ def test_cpsat_python_job_status_rejects_checker_and_skipped_reason_together() -
         CpsatPythonJobStatus(
             job_id="cj-ck-bad",
             state="succeeded",
-            timeout_ms=30000,
+            script_timeout_ms=30000,
             submitted_at_ms=1,
             result=_cpsat_result("optimal"),
             checker=_job_checker_report(),
@@ -188,7 +188,7 @@ def test_cpsat_python_job_status_rejects_checker_on_non_result_bearing_state(
         CpsatPythonJobStatus(
             job_id="cj-ck-bad2",
             state=state,  # type: ignore[arg-type]
-            timeout_ms=30000,
+            script_timeout_ms=30000,
             submitted_at_ms=1,
             checker=_job_checker_report(),
         )
@@ -202,19 +202,19 @@ def test_cpsat_python_job_status_rejects_skipped_reason_on_non_result_bearing_st
         CpsatPythonJobStatus(
             job_id="cj-ck-bad3",
             state=state,  # type: ignore[arg-type]
-            timeout_ms=30000,
+            script_timeout_ms=30000,
             submitted_at_ms=1,
             checker_skipped_reason="solution is missing or empty",
         )
 
 
 def test_cpsat_python_job_status_checker_timeout_echo_allowed_while_running() -> None:
-    # checker_timeout_ms is a request echo like timeout_ms: constant across
+    # checker_timeout_ms is a request echo like script_timeout_ms: constant across
     # states, present even before any checker outcome exists.
     status = CpsatPythonJobStatus(
         job_id="cj-ck-run",
         state="running",
-        timeout_ms=30000,
+        script_timeout_ms=30000,
         submitted_at_ms=1,
         checker_timeout_ms=7000,
     )
@@ -429,7 +429,7 @@ def _experiment_attempt_row(**overrides: object) -> CpsatPythonExperimentAttempt
         "seed": None,
         "config_sha256": None,
         "source_sha256": "hash0",
-        "timeout_ms": 5000,
+        "script_timeout_ms": 5000,
         "status": "optimal",
         "objective": 3.0,
         "accepted": True,

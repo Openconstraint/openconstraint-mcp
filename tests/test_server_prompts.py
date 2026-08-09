@@ -195,7 +195,8 @@ async def test_solve_constraint_problem_prompt_names_the_cpsat_execution_path() 
     text = await _get_core_prompt_text("solve_constraint_problem", {"problem": SAMPLE_PROBLEM})
     normalized = " ".join(text.split())
 
-    assert "`run_cpsat_python(source=<complete script>, timeout_ms=<milliseconds>)`" in normalized
+    call = "`run_cpsat_python(source=<complete script>, script_timeout_ms=<milliseconds>)`"
+    assert call in normalized
 
 
 @pytest.mark.asyncio
@@ -1060,7 +1061,7 @@ async def test_cpsat_python_solution_workflow_prompt_offers_script_path_attempts
     text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
     normalized = " ".join(text.split()).lower()
 
-    assert "`{name, source | script_path, args, seed, config, timeout_ms}`" in normalized
+    assert "`{name, source | script_path, args, seed, config, script_timeout_ms}`" in normalized
     assert "exactly one of `source`" in normalized
 
 
@@ -1172,27 +1173,30 @@ async def test_cpsat_python_solution_workflow_prompt_both_examples_call_the_conf
 
 @pytest.mark.asyncio
 async def test_cpsat_python_solution_workflow_prompt_time_limit_is_conditional() -> None:
-    # max_time_in_seconds carries this test; num_workers defaulting to 1 is
+    # search_time_limit_seconds carries this test; num_workers defaulting to 1 is
     # confirmatory only, already covered by the seed-protocol test above.
     text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
     normalized = " ".join(text.split()).lower()
 
-    assert "max_time_in_seconds" in text
-    assert 'config.get("max_time_in_seconds")' in text
-    assert "if max_time_in_seconds is not none" in normalized
+    assert "search_time_limit_seconds" in text
+    assert 'config.get("search_time_limit_seconds")' in text
+    assert "if search_time_limit_seconds is not none" in normalized
     assert 'config.get("num_workers", 1)' in text
 
 
 @pytest.mark.asyncio
-async def test_cpsat_python_solution_workflow_prompt_gates_the_streaming_callback() -> None:
-    # A self-imposed time limit makes the solve return normally and print its
-    # final envelope anyway, so the streaming example must skip the callback
-    # rather than spend the executor's output cap on intermediate lines.
+async def test_cpsat_python_solution_workflow_prompt_always_installs_the_streaming_callback() -> (
+    None
+):
+    # The script cannot observe the executor's own deadline, so a CP-SAT search
+    # limit never proves the solve returns before the kill. Gating the callback on
+    # that limit discards every solution found whenever the limit does not fit
+    # inside the executor budget, which nothing validates.
     text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
     normalized = " ".join(text.split()).lower()
 
-    assert "callback = (" in text
-    assert "none if max_time_in_seconds is not none else _best(names" in normalized
+    assert "callback = (" not in text
+    assert "solver.solve(model, _best(names" in normalized
 
 
 @pytest.mark.asyncio
@@ -1428,7 +1432,8 @@ async def test_experiment_guidance_escalates_to_a_seed_preserving_rerun() -> Non
     section = _section(lower, _EXPERIMENT_RERUN_ANCHOR, _EXPERIMENT_SECTION_END)
 
     assert "replaying its exact inputs" in section
-    assert "the same `problem`, `seed`, `config`, `timeout_ms`, and `checker_timeout_ms`" in section
+    echoed = "the same `problem`, `seed`, `config`, `script_timeout_ms`, and `checker_timeout_ms`"
+    assert echoed in section
     assert "save_verified_cpsat_python" in section
     assert "run_cpsat_python_file_checked" in section
 
@@ -1782,7 +1787,7 @@ async def test_auto_tune_constraint_problem_prompt_offers_script_path_attempts()
     text = await _get_prompt_text("auto_tune_constraint_problem", {"problem": SAMPLE_PROBLEM})
     lower = " ".join(text.split()).lower()
 
-    assert "`{name, source | script_path, args, seed, config, timeout_ms}`" in lower
+    assert "`{name, source | script_path, args, seed, config, script_timeout_ms}`" in lower
     assert "exactly one of a complete, independent inline `source` or a `script_path`" in lower
     # The tool gained a path option on attempts only — checker/problem stay inline.
     assert "`checker`/`problem` stay inline text for the whole call" in lower

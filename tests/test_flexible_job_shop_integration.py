@@ -82,7 +82,7 @@ async def test_mk01_model_and_checker_reach_an_accepted_verdict_through_the_mcp_
             "checker_path": str(_EXAMPLE_DIR / "checker.py"),
             "args": ["data_mk01.json", "10"],
             "problem": "data_mk01.json",
-            "timeout_ms": 60_000,
+            "script_timeout_ms": 60_000,
         },
     )
     assert call_result.structured_content is not None
@@ -132,7 +132,7 @@ async def test_results_dir_write_matches_final_stdout(tmp_path: Path) -> None:
             # An absolute 3rd argument is taken as given (model.py's own
             # docstring), so no cwd-relative resolution games are needed.
             "args": ["data_mk01.json", "10", str(tmp_path)],
-            "timeout_ms": 60_000,
+            "script_timeout_ms": 60_000,
         },
     )
     assert call_result.structured_content is not None
@@ -166,7 +166,7 @@ async def test_seed_env_var_changes_solver_search_stats() -> None:
         {
             "script_path": str(_EXAMPLE_DIR / "model.py"),
             "args": ["data_mk01.json", "10"],
-            "timeout_ms": 60_000,
+            "script_timeout_ms": 60_000,
         },
     )
     seeded_result = await mcp.call_tool(
@@ -174,7 +174,7 @@ async def test_seed_env_var_changes_solver_search_stats() -> None:
         {
             "script_path": str(_EXAMPLE_DIR / "model.py"),
             "args": ["data_mk01.json", "10"],
-            "timeout_ms": 60_000,
+            "script_timeout_ms": 60_000,
             "seed": 12345,
         },
     )

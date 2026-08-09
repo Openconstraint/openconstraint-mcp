@@ -72,10 +72,15 @@ def _patch_runner(
     results_by_source: dict[str, CpsatPythonResult],
     calls: list[dict[str, Any]] | None = None,
 ) -> None:
-    def _fake(source: str, *, timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
+    def _fake(source: str, *, script_timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
         if calls is not None:
             calls.append(
-                {"source": source, "env": env, "tracker": tracker, "timeout_ms": timeout_ms}
+                {
+                    "source": source,
+                    "env": env,
+                    "tracker": tracker,
+                    "script_timeout_ms": script_timeout_ms,
+                }
             )
         return results_by_source[source]
 
@@ -353,7 +358,7 @@ def test_failed_attempts_recorded_but_ignored(monkeypatch: pytest.MonkeyPatch) -
     result = run_cpsat_python_experiment(
         [_attempt("a"), _attempt("b"), _attempt("c")],
         objective_sense="minimize",
-        default_timeout_ms=1000,
+        default_script_timeout_ms=1000,
     )
 
     assert result.winner_index == 2
@@ -595,7 +600,7 @@ def test_config_written_to_temp_file_and_env_points_at_it(monkeypatch: pytest.Mo
 def test_config_file_contents_are_the_supplied_json(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    def _fake(source: str, *, timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
+    def _fake(source: str, *, script_timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
         config_path = Path(env["OPENCONSTRAINT_MCP_CPSAT_CONFIG"])
         captured["contents"] = json.loads(config_path.read_text())
         return _result()
@@ -612,7 +617,7 @@ def test_config_file_contents_are_the_supplied_json(monkeypatch: pytest.MonkeyPa
 def test_config_temp_file_cleaned_up_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    def _fake(source: str, *, timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
+    def _fake(source: str, *, script_timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
         config_path = Path(env["OPENCONSTRAINT_MCP_CPSAT_CONFIG"])
         captured["existed_during_call"] = config_path.exists()
         captured["path"] = config_path
@@ -706,7 +711,7 @@ def test_checker_rejection_removes_best_candidate(monkeypatch: pytest.MonkeyPatc
         [_attempt("a"), _attempt("b")],
         objective_sense="minimize",
         checker="print('x')",
-        default_timeout_ms=1000,
+        default_script_timeout_ms=1000,
     )
 
     assert result.winner_index == 1
@@ -730,7 +735,7 @@ def test_checker_runs_only_on_base_eligible_attempts(monkeypatch: pytest.MonkeyP
         [_attempt("a"), _attempt("b")],
         objective_sense="minimize",
         checker="print('x')",
-        default_timeout_ms=1000,
+        default_script_timeout_ms=1000,
     )
 
     assert len(calls) == 1
@@ -762,7 +767,7 @@ def test_unsupplied_checker_timeout_resolves_to_default(monkeypatch: pytest.Monk
         [_attempt("a")],
         objective_sense="minimize",
         checker="print('x')",
-        default_timeout_ms=1234,
+        default_script_timeout_ms=1234,
     )
 
     assert calls[0]["timeout_ms"] == 1234
@@ -779,10 +784,10 @@ def test_unsupplied_checker_timeout_uses_attempt_timeout(
     _patch_checker(monkeypatch, "accepted", calls=calls)
 
     run_cpsat_python_experiment(
-        [_attempt("a"), _attempt("b", timeout_ms=321)],
+        [_attempt("a"), _attempt("b", script_timeout_ms=321)],
         objective_sense="minimize",
         checker="print('x')",
-        default_timeout_ms=1234,
+        default_script_timeout_ms=1234,
     )
 
     assert [call["timeout_ms"] for call in calls] == [1234, 321]
@@ -797,7 +802,7 @@ def test_supplied_checker_timeout_used_verbatim(monkeypatch: pytest.MonkeyPatch)
         [_attempt("a")],
         objective_sense="minimize",
         checker="print('x')",
-        default_timeout_ms=1234,
+        default_script_timeout_ms=1234,
         checker_timeout_ms=999,
     )
 
@@ -812,11 +817,13 @@ def test_per_attempt_timeout_overrides_default(monkeypatch: pytest.MonkeyPatch) 
     _patch_runner(monkeypatch, {"a": _result()}, calls=calls)
 
     result = run_cpsat_python_experiment(
-        [_attempt("a", timeout_ms=1500)], objective_sense="minimize", default_timeout_ms=5000
+        [_attempt("a", script_timeout_ms=1500)],
+        objective_sense="minimize",
+        default_script_timeout_ms=5000,
     )
 
-    assert calls[0]["timeout_ms"] == 1500
-    assert result.attempts[0].timeout_ms == 1500
+    assert calls[0]["script_timeout_ms"] == 1500
+    assert result.attempts[0].script_timeout_ms == 1500
 
 
 # --- parallel scheduling ---------------------------------------------------------
@@ -827,7 +834,7 @@ def test_results_are_ordered_by_attempt_order_not_completion_order(
 ) -> None:
     order: list[str] = []
 
-    def _fake(source: str, *, timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
+    def _fake(source: str, *, script_timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
         order.append(source)
         # "slow" finishes after "fast" despite running first, to prove that
         # result ordering follows attempt (input) order, not completion order.
@@ -853,7 +860,7 @@ def test_max_parallel_attempts_runs_concurrently(monkeypatch: pytest.MonkeyPatch
     max_seen = 0
     lock = threading.Lock()
 
-    def _fake(source: str, *, timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
+    def _fake(source: str, *, script_timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
         nonlocal concurrent_count, max_seen
         with lock:
             concurrent_count += 1
@@ -879,7 +886,7 @@ def test_max_parallel_attempts_defaults_to_serial(monkeypatch: pytest.MonkeyPatc
     max_seen = 0
     lock = threading.Lock()
 
-    def _fake(source: str, *, timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
+    def _fake(source: str, *, script_timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
         nonlocal concurrent_count, max_seen
         with lock:
             concurrent_count += 1
@@ -925,7 +932,7 @@ def test_projected_budget_over_cap_rejected(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(experiment, "_max_parallel_attempts_cap", lambda: 4)
     with pytest.raises(ValueError, match="MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS") as exc_info:
         run_cpsat_python_experiment(
-            [_attempt("a", timeout_ms=MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS)],
+            [_attempt("a", script_timeout_ms=MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS)],
             objective_sense="minimize",
         )
 
@@ -967,7 +974,7 @@ def test_budget_rejection_reuses_overhead_from_breakdown_without_recomputing(
 
     with pytest.raises(ValueError, match="MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS") as exc_info:
         run_cpsat_python_experiment(
-            [_attempt("a", timeout_ms=MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS)],
+            [_attempt("a", script_timeout_ms=MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS)],
             objective_sense="minimize",
         )
 
@@ -984,12 +991,12 @@ def test_budget_rejection_from_batching_hints_at_concrete_fit_values(
     formula by hand."""
     monkeypatch.setattr(experiment, "_max_parallel_attempts_cap", lambda: 4)
     per_attempt_timeout = (MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS // 2) - 1000
-    attempts = [_attempt("a", timeout_ms=per_attempt_timeout) for _ in range(3)]
+    attempts = [_attempt("a", script_timeout_ms=per_attempt_timeout) for _ in range(3)]
 
     with pytest.raises(ValueError, match="MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS") as exc_info:
         experiment._check_wall_clock_budget(
             attempts,
-            default_timeout_ms=30_000,
+            default_script_timeout_ms=30_000,
             max_parallel_attempts=1,
             checker_present=False,
             checker_timeout_ms=None,
@@ -1004,7 +1011,7 @@ def test_budget_rejection_from_batching_hints_at_concrete_fit_values(
     assert "reduce attempt count to <= 1" in message
     assert "increase max_parallel_attempts to >= 3" in message
     assert (
-        "reduce the slowest attempt's timeout_ms + overhead + checker budget "
+        "reduce the slowest attempt's script_timeout_ms + overhead + checker budget "
         "to <= 70000 ms total" in message
     )
     assert "exceeds this machine's max_parallel_attempts cap" not in message
@@ -1018,12 +1025,12 @@ def test_budget_rejection_hint_flags_unfittable_parallelism_cap(
     cap, the hint says so instead of silently suggesting an unreachable value."""
     monkeypatch.setattr(experiment, "_max_parallel_attempts_cap", lambda: 2)
     per_attempt_timeout = (MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS // 2) - 1000
-    attempts = [_attempt("a", timeout_ms=per_attempt_timeout) for _ in range(3)]
+    attempts = [_attempt("a", script_timeout_ms=per_attempt_timeout) for _ in range(3)]
 
     with pytest.raises(ValueError, match="MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS") as exc_info:
         experiment._check_wall_clock_budget(
             attempts,
-            default_timeout_ms=30_000,
+            default_script_timeout_ms=30_000,
             max_parallel_attempts=1,
             checker_present=False,
             checker_timeout_ms=None,
@@ -1037,7 +1044,7 @@ def test_budget_rejection_hint_flags_unfittable_parallelism_cap(
 def test_budget_gate_fires_before_any_child_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     called = False
 
-    def _fake(source: str, *, timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
+    def _fake(source: str, *, script_timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
         nonlocal called
         called = True
         return _result()
@@ -1047,7 +1054,7 @@ def test_budget_gate_fires_before_any_child_runs(monkeypatch: pytest.MonkeyPatch
 
     with pytest.raises(ValueError, match="MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS"):
         run_cpsat_python_experiment(
-            [_attempt("a", timeout_ms=MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS)],
+            [_attempt("a", script_timeout_ms=MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS)],
             objective_sense="minimize",
         )
 
@@ -1058,11 +1065,11 @@ def test_projected_budget_exactly_at_cap_accepted(monkeypatch: pytest.MonkeyPatc
     # A single attempt whose projected total lands exactly on the cap is
     # admitted (the gate uses <=, not <).
     overhead = experiment.cpsat_child_timeout_overhead_ms()
-    timeout_ms = MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS - overhead
+    script_timeout_ms = MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS - overhead
     _patch_runner(monkeypatch, {"a": _result()})
 
     result = run_cpsat_python_experiment(
-        [_attempt("a", timeout_ms=timeout_ms)], objective_sense="minimize"
+        [_attempt("a", script_timeout_ms=script_timeout_ms)], objective_sense="minimize"
     )
 
     assert result.status == "winner"
@@ -1071,10 +1078,10 @@ def test_projected_budget_exactly_at_cap_accepted(monkeypatch: pytest.MonkeyPatc
 def test_projected_budget_one_ms_over_cap_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     # One ms past the same boundary is rejected before any child runs.
     overhead = experiment.cpsat_child_timeout_overhead_ms()
-    timeout_ms = MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS - overhead + 1
+    script_timeout_ms = MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS - overhead + 1
     called = False
 
-    def _fake(source: str, *, timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
+    def _fake(source: str, *, script_timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
         nonlocal called
         called = True
         return _result()
@@ -1083,7 +1090,7 @@ def test_projected_budget_one_ms_over_cap_rejected(monkeypatch: pytest.MonkeyPat
 
     with pytest.raises(ValueError, match="MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS"):
         run_cpsat_python_experiment(
-            [_attempt("a", timeout_ms=timeout_ms)], objective_sense="minimize"
+            [_attempt("a", script_timeout_ms=script_timeout_ms)], objective_sense="minimize"
         )
 
     assert called is False
@@ -1094,13 +1101,13 @@ def test_higher_max_parallel_attempts_can_fit_a_budget_that_serial_cannot(
 ) -> None:
     monkeypatch.setattr(experiment, "_max_parallel_attempts_cap", lambda: 4)
     per_attempt_timeout = (MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS // 2) - 1000
-    attempts = [_attempt("a", timeout_ms=per_attempt_timeout) for _ in range(3)]
+    attempts = [_attempt("a", script_timeout_ms=per_attempt_timeout) for _ in range(3)]
 
     # Serial (implicit batches=3) is over budget...
     with pytest.raises(ValueError, match="MAX_CPSAT_EXPERIMENT_WALL_CLOCK_MS"):
         experiment._check_wall_clock_budget(
             attempts,
-            default_timeout_ms=30_000,
+            default_script_timeout_ms=30_000,
             max_parallel_attempts=1,
             checker_present=False,
             checker_timeout_ms=None,
@@ -1108,7 +1115,7 @@ def test_higher_max_parallel_attempts_can_fit_a_budget_that_serial_cannot(
     # ...but with 3-way parallelism (batches=1) it fits.
     experiment._check_wall_clock_budget(
         attempts,
-        default_timeout_ms=30_000,
+        default_script_timeout_ms=30_000,
         max_parallel_attempts=3,
         checker_present=False,
         checker_timeout_ms=None,
@@ -1129,14 +1136,16 @@ def test_empty_source_rejected() -> None:
 
 
 def test_non_positive_attempt_timeout_rejected() -> None:
-    with pytest.raises(ValueError, match="timeout_ms must be positive"):
-        run_cpsat_python_experiment([_attempt("a", timeout_ms=0)], objective_sense="minimize")
+    with pytest.raises(ValueError, match="script_timeout_ms must be positive"):
+        run_cpsat_python_experiment(
+            [_attempt("a", script_timeout_ms=0)], objective_sense="minimize"
+        )
 
 
 def test_non_positive_default_timeout_rejected() -> None:
-    with pytest.raises(ValueError, match="default_timeout_ms must be positive"):
+    with pytest.raises(ValueError, match="default_script_timeout_ms must be positive"):
         run_cpsat_python_experiment(
-            [_attempt("a")], objective_sense="minimize", default_timeout_ms=0
+            [_attempt("a")], objective_sense="minimize", default_script_timeout_ms=0
         )
 
 
@@ -1155,7 +1164,7 @@ def test_whitespace_only_checker_rejected() -> None:
 def test_invalid_objective_sense_rejected_before_running(monkeypatch: pytest.MonkeyPatch) -> None:
     called = False
 
-    def _fake(source: str, *, timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
+    def _fake(source: str, *, script_timeout_ms: int, tracker: Any = None, env: Any = None) -> Any:
         nonlocal called
         called = True
         return _result()
@@ -1228,7 +1237,7 @@ def test_tracker_forwarded_to_runner_and_checker(monkeypatch: pytest.MonkeyPatch
         [_attempt("a"), _attempt("b")],
         objective_sense="minimize",
         checker="print('x')",
-        default_timeout_ms=1000,
+        default_script_timeout_ms=1000,
         tracker=sentinel,  # type: ignore[arg-type]
     )
 
@@ -1373,7 +1382,7 @@ def _patch_file_runner(
     def _fake(
         script_path: Path,
         *,
-        timeout_ms: int,
+        script_timeout_ms: int,
         args: list[str] | None = None,
         tracker: Any = None,
         env: Any = None,
@@ -1383,7 +1392,7 @@ def _patch_file_runner(
                 {
                     "script_path": script_path,
                     "args": args,
-                    "timeout_ms": timeout_ms,
+                    "script_timeout_ms": script_timeout_ms,
                     "tracker": tracker,
                     "env": env,
                 }
@@ -1565,7 +1574,7 @@ def test_script_path_attempt_forwards_args_and_resolved_path_to_the_file_runner(
     run_cpsat_python_experiment(
         [
             CpsatPythonExperimentAttempt(
-                script_path=str(script), args=["--seed", "7"], timeout_ms=1234
+                script_path=str(script), args=["--seed", "7"], script_timeout_ms=1234
             )
         ],
         objective_sense="minimize",
@@ -1574,7 +1583,7 @@ def test_script_path_attempt_forwards_args_and_resolved_path_to_the_file_runner(
     assert len(calls) == 1
     assert calls[0]["args"] == ["--seed", "7"]
     assert calls[0]["script_path"] == script.resolve()
-    assert calls[0]["timeout_ms"] == 1234
+    assert calls[0]["script_timeout_ms"] == 1234
 
 
 def test_mixed_inline_and_script_path_attempts_race_in_one_experiment(
