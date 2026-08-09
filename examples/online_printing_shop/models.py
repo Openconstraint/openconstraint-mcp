@@ -44,7 +44,7 @@ CpsatLiteral = cp_model.LiteralT
 
 # Half the executor's combined 1 MiB stdout/stderr cap, leaving room for the
 # final envelope and any stderr after intermediate incumbent streaming.
-# ponytail: one envelope must fit this half-cap; use a more compact solution
+# Caveat: one envelope must fit this half-cap; use a more compact solution
 # schema if larger incumbents need timeout recovery.
 _MAX_INTERMEDIATE_OUTPUT_BYTES: int = 512 * 1024
 
