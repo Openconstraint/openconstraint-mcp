@@ -1621,7 +1621,7 @@ core profile, so start the server with `openconstraint-mcp stdio --toolset full`
       }
     ],
     "objective_sense": "minimize",
-    "default_timeout_ms": 20000
+    "default_script_timeout_ms": 20000
   }
   ```
 

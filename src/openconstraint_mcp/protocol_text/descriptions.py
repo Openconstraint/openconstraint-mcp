@@ -1028,7 +1028,7 @@ RUN_CPSAT_PYTHON_EXPERIMENT_DESCRIPTION = (
     "that ran from `script_path` is marked `used_script_path: true` and CANNOT "
     "be used as `save_verified_cpsat_python` provenance (see that tool). "
     "Optional: `objective_sense` ('maximize'|'minimize' for optimization; omit "
-    "or pass null for feasibility), `default_timeout_ms` "
+    "or pass null for feasibility), `default_script_timeout_ms` "
     "(fallback for attempts with no `script_timeout_ms`), `max_parallel_attempts` "
     "(default 1 = serial; capped at min(server CPU count, 4) and rejected above "
     "that), `problem` (forwarded to the checker payload), `checker` (a Python "
