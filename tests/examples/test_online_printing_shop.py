@@ -299,6 +299,21 @@ def test_time_limited_solve_still_streams_recoverable_incumbents(
     assert capsys.readouterr().out.strip() != ""
 
 
+def test_solve_callback_honors_the_intermediate_byte_budget(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    budget: int = 4 * 1024
+    monkeypatch.delenv("OPENCONSTRAINT_MCP_CPSAT_CONFIG", raising=False)
+    monkeypatch.setattr(
+        "examples.online_printing_shop.models._MAX_INTERMEDIATE_OUTPUT_BYTES", budget
+    )
+
+    solve(parse_input(load_instance()))
+
+    output: str = capsys.readouterr().out
+    assert 0 < len(output.encode("utf-8")) <= budget
+
+
 def test_config_workers_raise_the_cpsat_portfolio(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -50,10 +50,10 @@ and is reported as an envelope violation of ``status``. Like every other
 violation this yields NO incumbent: the block's ``solution``/``objective`` are
 dropped rather than attached to a status the executor could not classify.
 
-The child runs unbuffered (``python -u``), so a script MAY print intermediate
-result blocks of the same shape during search (e.g. one per improved solution
-from a ``CpSolverSolutionCallback``). On a clean exit the final block wins as
-usual; on a timeout the executor recovers the last intermediate block's
+The child runs unbuffered (``python -u``), so a script MAY print byte-bounded
+intermediate result blocks of the same shape during search from a
+``CpSolverSolutionCallback``. On a clean exit the final block wins as usual; on
+a timeout the executor recovers the last intermediate block's
 ``solution``/``objective``/``best_objective_bound`` (status stays ``"timeout"``
 — a partial is unproven), and only when that block satisfies the same required
 envelope shape — a malformed partial is not recovered as an incumbent. The drop

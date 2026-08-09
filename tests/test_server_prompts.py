@@ -338,6 +338,13 @@ def test_output_contract_fragment_ties_intermediate_objects_to_timeout_recovery(
     assert "recover a partial answer when the run hits its timeout" in normalized
 
 
+def test_output_contract_fragment_bounds_intermediate_output() -> None:
+    normalized = " ".join(CPSAT_OUTPUT_CONTRACT_GUIDANCE_CORE.split())
+
+    assert "Bound their cumulative bytes" in normalized
+    assert "512 KiB" in normalized
+
+
 def test_output_contract_fragment_scopes_the_error_status_to_a_clean_exit() -> None:
     # Unqualified, this promised an outcome the timeout path does not produce.
     normalized = " ".join(CPSAT_OUTPUT_CONTRACT_GUIDANCE_CORE.split())

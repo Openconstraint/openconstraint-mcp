@@ -42,6 +42,12 @@ CpsatIntVar = cp_model.IntVar
 CpsatIntervalVar = cp_model.IntervalVar
 CpsatLiteral = cp_model.LiteralT
 
+# Half the executor's combined 1 MiB stdout/stderr cap, leaving room for the
+# final envelope and any stderr after intermediate incumbent streaming.
+# ponytail: one envelope must fit this half-cap; use a more compact solution
+# schema if larger incumbents need timeout recovery.
+_MAX_INTERMEDIATE_OUTPUT_BYTES: int = 512 * 1024
+
 
 class ClosedModel(BaseModel):
     """Base for strict objects that reject misspelled or unsupported fields."""
@@ -649,19 +655,30 @@ def solve(instance: OPSInstance) -> Solution:
         return schedule
 
     class _BestSolution(cp_model.CpSolverSolutionCallback):
+        _remaining_output_bytes: int
+
+        def __init__(self) -> None:
+            super().__init__()
+            self._remaining_output_bytes = _MAX_INTERMEDIATE_OUTPUT_BYTES
+
         def on_solution_callback(self) -> None:
-            # Stream each improving incumbent; the final return below repeats the
-            # terminal solution as the script's last stdout envelope.
-            write_output(
-                serialize_solution(
-                    Solution(
-                        status="feasible",
-                        schedule=extract_schedule(self),
-                        objective=self.value(makespan),
-                        best_objective_bound=float(self.best_objective_bound),
-                    )
+            if self._remaining_output_bytes == 0:
+                return
+            payload: dict[str, Any] = serialize_solution(
+                Solution(
+                    status="feasible",
+                    schedule=extract_schedule(self),
+                    objective=self.value(makespan),
+                    best_objective_bound=float(self.best_objective_bound),
                 )
             )
+            line: str = json.dumps(payload)
+            line_bytes: int = len((line + os.linesep).encode("utf-8"))
+            if line_bytes > self._remaining_output_bytes:
+                self._remaining_output_bytes = 0
+                return
+            print(line)
+            self._remaining_output_bytes -= line_bytes
 
     config: dict[str, Any] = _solver_config()
     solver: cp_model.CpSolver = cp_model.CpSolver()
@@ -676,9 +693,9 @@ def solve(instance: OPSInstance) -> Solution:
     # it bounds CP-SAT's search alone, not input parsing, model building, or
     # serialization, and nothing validates it against the executor's deadline,
     # which this script cannot observe. So it can never prove the solve returns
-    # first, and streaming stays unconditional. The cost is bounded in practice:
-    # improvements taper off, so data_lops.json on 8 workers plateaus near
-    # 0.75 MiB of the 1 MiB cap, adding one envelope between 120 s and 210 s.
+    # first, and streaming stays unconditional. The callback caps intermediate
+    # JSON at 512 KiB; after that, search continues without more intermediate
+    # envelopes and a clean run still prints its final result below.
     status_code: cp_model.CpSolverStatus = solver.solve(model, _BestSolution())
     status_map: dict[
         cp_model.CpSolverStatus, Literal["optimal", "feasible", "infeasible", "unknown", "error"]

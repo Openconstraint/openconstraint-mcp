@@ -26,9 +26,11 @@ checker must be able to grade:
   keys: `status` (str), `objective` (a number or null — the key is present
   even for a pure feasibility model), and `solution` (a JSON object; an empty
   object when there is no incumbent). Extra keys are ignored. Same-shaped
-  intermediate objects ARE allowed and encouraged — printing one per improved
-  solution is what lets the server recover a partial answer when the run hits
-  its timeout; only the last one is read as the final result.
+  intermediate objects ARE allowed and encouraged — they let the server recover
+  a partial answer when the run hits its timeout. Bound their cumulative bytes
+  below the executor's combined 1 MiB stdout/stderr cap; the callback example
+  uses 512 KiB so the final envelope and stderr retain room. Only the last
+  complete object is read as the result.
 - On a CLEAN EXIT, a missing or invalid required key makes the whole run
   `status="error"` with no solution and a `child_process_error` diagnostic
   naming the offending field. On a TIMEOUT the status stays `"timeout"`: the
@@ -661,11 +663,11 @@ User problem:
      (`optimal`/`feasible`), emit `best_objective_bound` only for
      `optimal`/`feasible`/`unknown`, and emit `null`, not a fabricated
      number, in every other case.
-   - For a long or optimization run that may hit `script_timeout_ms`, ALSO emit an
-     intermediate JSON object of the SAME shape on each improved solution,
-     from a `cp_model.CpSolverSolutionCallback`. Replace the example's WHOLE
-     `solve()` function with the one below, which reuses the same
-     `Solution` record, `serialize_solution()`, `write_output()`, and
+   - For a long or optimization run that may hit `script_timeout_ms`, ALSO emit
+     intermediate JSON objects of the SAME shape from a
+     `cp_model.CpSolverSolutionCallback`, within a fixed cumulative byte budget.
+     Replace the example's WHOLE `solve()` function with the one below, which
+     reuses the same `Solution` record, `serialize_solution()`, and
      `_solver_config()`:
      ```
      def solve(instance: ProblemInstance) -> Solution:
@@ -683,9 +685,12 @@ User problem:
                  self._names = names
                  self._variables = variables
                  self._has_objective = has_objective
+                 self._remaining_output_bytes = 512 * 1024
 
              def on_solution_callback(self):
-                 write_output(serialize_solution(Solution(
+                 if self._remaining_output_bytes == 0:
+                     return
+                 payload = serialize_solution(Solution(
                      status="feasible",
                      selected=[
                          name
@@ -700,7 +705,14 @@ User problem:
                          if self._has_objective
                          else None
                      ),
-                 )))
+                 ))
+                 line = json.dumps(payload)
+                 line_bytes = len((line + os.linesep).encode("utf-8"))
+                 if line_bytes > self._remaining_output_bytes:
+                     self._remaining_output_bytes = 0
+                     return
+                 print(line)
+                 self._remaining_output_bytes -= line_bytes
 
          config = _solver_config()
          solver = cp_model.CpSolver()
@@ -744,8 +756,15 @@ User problem:
      Pass `model.has_objective()` into the callback so the same
      `0.0`-vs-`null` guard applies there too — a feasibility problem's
      callback fires on every found solution, not just optimization runs.
+     Its 512 KiB budget counts UTF-8 bytes including each platform newline. Once exhausted,
+     it stops printing but search continues; a later timeout can therefore
+     recover the last emitted incumbent, which may not be the latest one found.
+     A single intermediate envelope must fit that budget; keep the solution
+     schema compact if larger incumbents need timeout recovery.
+     The final block printed after a clean solve is outside that intermediate
+     budget, leaving the other half available for final output and stderr.
      The child runs unbuffered, so on a timeout the server recovers the
-     last such block as the best-so-far. The final block (printed after
+     last emitted incumbent. The final block (printed after
      `solve` returns) remains the authoritative result on a clean run.
      Install the callback UNCONDITIONALLY — never gate it on a configured
      CP-SAT limit. That limit bounds SEARCH only (not parsing, model

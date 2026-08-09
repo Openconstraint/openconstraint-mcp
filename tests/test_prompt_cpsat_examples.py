@@ -243,6 +243,18 @@ def test_cpsat_prompt_callback_example_replaces_the_whole_solve_function() -> No
     assert final["status"] == "optimal"
 
 
+def test_cpsat_prompt_callback_bounds_intermediate_bytes_but_keeps_the_final_result() -> None:
+    source = _composed_callback_script().replace(
+        "self._remaining_output_bytes = 512 * 1024",
+        "self._remaining_output_bytes = 1",
+    )
+
+    lines = _run_capturing_stdout(source)
+
+    assert len(lines) == 1
+    assert json.loads(lines[0])["status"] == "optimal"
+
+
 def test_cpsat_prompt_callback_example_still_streams_under_a_configured_search_limit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
