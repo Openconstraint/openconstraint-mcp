@@ -317,7 +317,7 @@ def test_solve_callback_honors_the_intermediate_byte_budget(
 def test_config_workers_raise_the_cpsat_portfolio(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # data_lops.json finds no incumbent on one worker; the caller needs this key
+    # data_lops1.json finds no incumbent on one worker; the caller needs this key
     # to reach a checkable solution at all.
     _write_config(tmp_path, monkeypatch, {"search_time_limit_seconds": 20, "num_workers": 8})
 
