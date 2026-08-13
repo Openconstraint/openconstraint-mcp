@@ -1,6 +1,6 @@
 # openconstraint-mcp
 
-[![CI](https://github.com/KeLiu99/openconstraint-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/KeLiu99/openconstraint-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/Openconstraint/openconstraint-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Openconstraint/openconstraint-mcp/actions/workflows/ci.yml)
 
 A local-first [Model Context Protocol](https://modelcontextprotocol.io) server for
 constraint programming and optimization. `openconstraint-mcp` gives an MCP client a
@@ -80,47 +80,124 @@ save -> rerun from saved files` — is complete for both backends:
 Requires Python 3.12+. This project is `uv`-managed end-to-end; install [`uv`](https://docs.astral.sh/uv/)
 first if you don't already have it.
 
+All three paths below give you the same `openconstraint-mcp` command and the same
+tools. They differ only in where the command lives and whether it is tied to a
+checkout.
+
+### Install it (recommended)
+
 ```bash
-git clone https://github.com/KeLiu99/openconstraint-mcp.git
+uv tool install openconstraint-mcp
+```
+
+`openconstraint-mcp` is now on your `PATH` and works from any directory. Upgrade
+later with `uv tool upgrade openconstraint-mcp`.
+
+### Run it without installing
+
+```bash
+uvx openconstraint-mcp --help
+```
+
+`uvx` fetches the package into a disposable cached environment and runs it,
+putting nothing on your `PATH` and re-resolving to the latest published version
+on each run.
+
+### Develop on it
+
+```bash
+git clone https://github.com/Openconstraint/openconstraint-mcp.git
 cd openconstraint-mcp
 uv sync --all-groups
 ```
 
-The `openconstraint-mcp` script will be available via `uv run openconstraint-mcp …`
-(or `just cli …`, which wraps the same thing).
+The command is then `uv run openconstraint-mcp …` (or `just cli …`, which wraps
+the same thing), and it works only from inside the checkout.
 
 ## Quick start (MCP users)
 
-After installing the package above:
+These commands assume `uv tool install` put `openconstraint-mcp` on your `PATH`;
+prefix them with `uvx` or `uv run` if you chose one of the other installation
+paths above.
 
-1. **Set up MiniZinc** — one of:
-   - `openconstraint-mcp install-runtime` to fetch and install the managed bundle (Linux x86_64, macOS arm64, Windows x86_64).
+1. **Set up MiniZinc** — optional, and one of:
+   - `openconstraint-mcp install-runtime` to fetch and install the managed bundle (Linux x86_64, macOS arm64, Windows x86_64). Roughly 200 MB, once per machine.
    - `openconstraint-mcp configure-runtime --runtime-dir <path>` to point the package at an existing MiniZinc install (a directory containing `bin/minizinc`).
+
+   This step is optional because every installation path already includes the
+   OR-Tools CP-SAT Python library, so the whole CP-SAT tool family works
+   immediately; only the MiniZinc tools need the runtime. Note that the MiniZinc
+   bundle ships its *own* native CP-SAT backend (`fzn-cp-sat`, used when a
+   MiniZinc model selects the `cp-sat` solver) — it is a separate copy from the
+   Python `ortools` package, and neither install implies the other.
+
+   The runtime is stored per user, outside any virtualenv (see
+   [Managed runtime](#managed-runtime)), so you install it once and every
+   installation path above finds it — including a `uvx` environment created
+   after the fact.
 2. **Verify:** `openconstraint-mcp check-runtime` and `openconstraint-mcp list-solvers`.
-3. **Wire into your MCP client.** This repository includes `.mcp.json` for clients
-   that read repo-local MCP config:
+3. **Wire into your MCP client.** MCP standardizes the wire protocol, not how a
+   client is told to launch a server, so each client has its own file name and
+   schema. The executable and arguments are identical in all of them.
+
+   **Claude Code** — `.mcp.json` in your project:
 
    ```json
    {
      "mcpServers": {
        "openconstraint": {
          "type": "stdio",
-         "command": "uv",
-         "args": ["run", "openconstraint-mcp", "stdio", "--toolset", "full"]
+         "command": "openconstraint-mcp",
+         "args": ["stdio", "--toolset", "full"]
        }
      }
    }
    ```
 
-   For clients that use a global config instead, use the same stdio command from this
-   checkout, or install the package on your `PATH` and run `openconstraint-mcp stdio`.
-   Restart your MCP client; `check_runtime` and `list_available_solvers` tools should appear.
+   **opencode** — `opencode.json` in your project, or `~/.config/opencode/opencode.json`:
 
-   Codex also reads the project-scoped `.codex/config.toml` in this checkout, so
-   `openconstraint-mcp` is visible to Codex only while working in this repository.
-   That config launches `uv run --no-sync openconstraint-mcp stdio` to avoid
-   implicit dependency installs or network access on Codex startup; run
-   `uv sync --all-groups` first if the server is not available.
+   ```json
+   {
+     "$schema": "https://opencode.ai/config.json",
+     "mcp": {
+       "openconstraint": {
+         "type": "local",
+         "command": ["openconstraint-mcp", "stdio", "--toolset", "full"],
+         "enabled": true
+       }
+     }
+   }
+   ```
+
+   **Codex** — `.codex/config.toml` in your project, or `~/.codex/config.toml`:
+
+   ```toml
+   [mcp_servers.openconstraint]
+   command = "openconstraint-mcp"
+   args = ["stdio", "--toolset", "full"]
+   tool_timeout_sec = 900
+   ```
+
+   All three assume `uv tool install` put `openconstraint-mcp` on your `PATH`. To
+   use the no-install path instead, make the command `uvx` and prepend
+   `openconstraint-mcp` to the arguments — for example
+   `"command": "uvx", "args": ["openconstraint-mcp", "stdio", "--toolset", "full"]`.
+
+   Raise your client's per-tool timeout, as the Codex block does. A checked
+   CP-SAT call runs two capped child processes, so its worst case is
+   `(timeout_ms + 8000) + (checker_timeout_ms + 8000)` milliseconds. If your
+   client gives up sooner than that, you get a client-side timeout instead of a
+   result while the server is still solving. For solves longer than any
+   synchronous timeout allows, use the background job tools instead.
+
+   Restart your MCP client; the `check_runtime` and `list_available_solvers`
+   tools should appear.
+
+   > This repository's own `.mcp.json`, `opencode.json`, and `.codex/config.toml`
+   > are **development** configs, not templates. They launch `uv run …` against
+   > the checkout's virtualenv and, for Codex, pin `cwd` to an absolute path, so
+   > they only work inside this clone. Use the blocks above, which need no
+   > checkout.
 
 Once connected, the server's MCP `instructions` tell the client to route constraint
 and optimization tasks here before running solver code directly — no client-side
@@ -2747,3 +2824,69 @@ After `install-runtime`, each bundled component's license file lives inside the
 installed runtime tree (typically under `<runtime_dir>/share/minizinc/...` and
 adjacent directories) and is left untouched by the installer. For a single
 authoritative document, the MiniZincIDE release page is the recommended source.
+
+## Releasing (maintainers)
+
+`.github/workflows/release.yml` uses PyPI Trusted Publishing, so no PyPI token is
+stored in GitHub. A manual workflow run publishes only to TestPyPI; publishing to
+PyPI requires a version tag and approval of the protected `pypi` environment.
+
+A Trusted Publisher is bound to an exact owner, repository, workflow filename, and
+environment — here `Openconstraint`, `openconstraint-mcp`, `release.yml`, and
+`pypi`/`testpypi`. Changing any of them requires re-registering the publisher.
+
+### One-time setup
+
+1. Create the GitHub environments `testpypi` and `pypi`. Require the maintainer as a
+   reviewer for `pypi`. A solo maintainer must leave **Prevent self-review**
+   disabled, and should uncheck **Allow administrators to bypass** so the approval
+   applies to admins too. Restrict `pypi` deployments to tags matching `v*`, and
+   `testpypi` deployments to the `master` branch — the TestPyPI job runs from a
+   manual dispatch, so a tag rule there would reject every rehearsal.
+2. Create and verify separate accounts on [TestPyPI](https://test.pypi.org/) and
+   [PyPI](https://pypi.org/), enable 2FA, and store recovery codes safely.
+3. On each account's **Publishing** page, add a pending GitHub Trusted Publisher with:
+   project `openconstraint-mcp`, owner `Openconstraint`, repository
+   `openconstraint-mcp`, workflow `release.yml`, and environment `testpypi` or `pypi`
+   respectively. Do not create an API token.
+
+### TestPyPI rehearsal
+
+1. Run `just check` and `just build` locally.
+2. After the release workflow is on the default branch, open GitHub **Actions →
+   Release → Run workflow** and run it from that branch. This path can publish only
+   to TestPyPI.
+3. Approve the `testpypi` deployment if that environment has a required reviewer.
+4. Smoke-test the uploaded package (replace the version after the first rehearsal):
+
+   ```bash
+   uv run --isolated --no-project \
+     --with "openconstraint-mcp==0.1.0" \
+     --index https://pypi.org/simple/ \
+     --default-index https://test.pypi.org/simple/ \
+     openconstraint-mcp --help
+   ```
+
+   `--index` outranks `--default-index`, so dependencies (pydantic, httpx, ...)
+   resolve from PyPI; only the unreleased `openconstraint-mcp` version — absent
+   from PyPI — falls through to TestPyPI. A bare `--index test.pypi.org` would
+   make TestPyPI's stale/alpha releases of common dependency names (e.g.
+   `pydantic` only goes up to `1.5a1` there) win resolution and break the smoke
+   test.
+
+TestPyPI never overwrites a release. Increment the version before repeating a
+rehearsal whose version is already present there. TestPyPI and PyPI are separate, so
+using `0.1.0` on TestPyPI does not prevent publishing `0.1.0` to PyPI.
+
+### PyPI release
+
+After the rehearsal and default-branch CI are green, verify that the version in
+`pyproject.toml` is the intended release, then create and push only that tag:
+
+```bash
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
+```
+
+Approve the waiting `pypi` deployment in GitHub Actions. Without both the tag push
+and that approval, the workflow cannot publish to PyPI.
