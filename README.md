@@ -2829,9 +2829,9 @@ authoritative document, the MiniZincIDE release page is the recommended source.
 stored in GitHub. A manual workflow run publishes only to TestPyPI; publishing to
 PyPI requires a version tag and approval of the protected `pypi` environment.
 
-Before configuring either index, decide the repository's permanent GitHub owner. A
-Trusted Publisher is bound to that exact owner, repository, workflow filename, and
-environment.
+A Trusted Publisher is bound to an exact owner, repository, workflow filename, and
+environment — here `Openconstraint`, `openconstraint-mcp`, `release.yml`, and
+`pypi`/`testpypi`. Changing any of them requires re-registering the publisher.
 
 ### One-time setup
 
