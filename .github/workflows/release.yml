@@ -21,6 +21,18 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: false
+      # A PyPI version can never be reused, so a tag that disagrees with
+      # pyproject.toml would burn the wrong version number permanently.
+      - name: Verify tag matches package version
+        if: github.event_name == 'push'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="v$(uv version --short)"
+          if [ "$version" != "$TAG" ]; then
+            echo "::error::tag $TAG does not match pyproject.toml version $version"
+            exit 1
+          fi
       - run: uv build --no-sources
       - uses: actions/upload-artifact@v7
         with:
