@@ -116,9 +116,9 @@ the same thing), and it works only from inside the checkout.
 
 ## Quick start (MCP users)
 
-After installing the package above. These commands assume `uv tool install` put
-`openconstraint-mcp` on your `PATH`; prefix them with `uvx` or `uv run` if you
-chose one of the other installation paths.
+These commands assume `uv tool install` put `openconstraint-mcp` on your `PATH`;
+prefix them with `uvx` or `uv run` if you chose one of the other installation
+paths above.
 
 1. **Set up MiniZinc** — optional, and one of:
    - `openconstraint-mcp install-runtime` to fetch and install the managed bundle (Linux x86_64, macOS arm64, Windows x86_64). Roughly 200 MB, once per machine.
@@ -185,8 +185,10 @@ chose one of the other installation paths.
 
    Raise your client's per-tool timeout, as the Codex block does. A checked
    CP-SAT call runs two capped child processes, so its worst case is
-   `(timeout_ms + 8000) + (checker_timeout_ms + 8000)` milliseconds; a default
-   60-second tool timeout abandons solves the server is still running.
+   `(timeout_ms + 8000) + (checker_timeout_ms + 8000)` milliseconds. If your
+   client gives up sooner than that, you get a client-side timeout instead of a
+   result while the server is still solving. For solves longer than any
+   synchronous timeout allows, use the background job tools instead.
 
    Restart your MCP client; the `check_runtime` and `list_available_solvers`
    tools should appear.
@@ -2860,9 +2862,17 @@ environment — here `Openconstraint`, `openconstraint-mcp`, `release.yml`, and
    ```bash
    uv run --isolated --no-project \
      --with "openconstraint-mcp==0.1.0" \
-     --index https://test.pypi.org/simple/ \
+     --index https://pypi.org/simple/ \
+     --default-index https://test.pypi.org/simple/ \
      openconstraint-mcp --help
    ```
+
+   `--index` outranks `--default-index`, so dependencies (pydantic, httpx, ...)
+   resolve from PyPI; only the unreleased `openconstraint-mcp` version — absent
+   from PyPI — falls through to TestPyPI. A bare `--index test.pypi.org` would
+   make TestPyPI's stale/alpha releases of common dependency names (e.g.
+   `pydantic` only goes up to `1.5a1` there) win resolution and break the smoke
+   test.
 
 TestPyPI never overwrites a release. Increment the version before repeating a
 rehearsal whose version is already present there. TestPyPI and PyPI are separate, so
