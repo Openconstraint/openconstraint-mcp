@@ -18,7 +18,7 @@ from openconstraint_mcp.jobs.portfolio_registry import PortfolioJobRegistry
 from openconstraint_mcp.jobs.registry import JobRegistry
 from openconstraint_mcp.minizinc.core import list_solvers
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("require_real_runtime")]
 
 _TERMINAL_ATTEMPT_STATES = {"succeeded", "timeout", "failed", "cancelled"}
 
