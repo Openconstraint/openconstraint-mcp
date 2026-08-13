@@ -38,9 +38,9 @@ dependencies = [
 openconstraint-mcp = "openconstraint_mcp:main"
 
 [project.urls]
-Homepage = "https://github.com/KeLiu99/openconstraint-mcp"
-Repository = "https://github.com/KeLiu99/openconstraint-mcp"
-Issues = "https://github.com/KeLiu99/openconstraint-mcp/issues"
+Homepage = "https://github.com/Openconstraint/openconstraint-mcp"
+Repository = "https://github.com/Openconstraint/openconstraint-mcp"
+Issues = "https://github.com/Openconstraint/openconstraint-mcp/issues"
 
 [build-system]
 requires = ["uv_build>=0.11.14,<0.12.0"]
