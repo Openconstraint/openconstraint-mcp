@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Local-first MCP server for MiniZinc constraint solving"
 readme = "README.md"
 authors = [
-    { name = "KeLiu99", email = "166951411+KeLiu99@users.noreply.github.com" }
+    { name = "Openconstraint", email = "166951411+KeLiu99@users.noreply.github.com" }
 ]
 requires-python = ">=3.12"
 license = "Apache-2.0"
