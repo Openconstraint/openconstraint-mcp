@@ -2836,13 +2836,15 @@ environment — here `Openconstraint`, `openconstraint-mcp`, `release.yml`, and
 ### One-time setup
 
 1. Create the GitHub environments `testpypi` and `pypi`. Require the maintainer as a
-   reviewer for `pypi` (and `testpypi` too if every rehearsal should require
-   approval). A solo maintainer must leave **Prevent self-review** disabled. Restrict
-   `pypi` deployments to tags matching `v*`.
+   reviewer for `pypi`. A solo maintainer must leave **Prevent self-review**
+   disabled, and should uncheck **Allow administrators to bypass** so the approval
+   applies to admins too. Restrict `pypi` deployments to tags matching `v*`, and
+   `testpypi` deployments to the `master` branch — the TestPyPI job runs from a
+   manual dispatch, so a tag rule there would reject every rehearsal.
 2. Create and verify separate accounts on [TestPyPI](https://test.pypi.org/) and
    [PyPI](https://pypi.org/), enable 2FA, and store recovery codes safely.
 3. On each account's **Publishing** page, add a pending GitHub Trusted Publisher with:
-   project `openconstraint-mcp`, the final GitHub owner, repository
+   project `openconstraint-mcp`, owner `Openconstraint`, repository
    `openconstraint-mcp`, workflow `release.yml`, and environment `testpypi` or `pypi`
    respectively. Do not create an API token.
 
