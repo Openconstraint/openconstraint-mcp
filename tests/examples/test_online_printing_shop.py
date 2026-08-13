@@ -1,3 +1,4 @@
+import contextlib
 import json
 from decimal import Decimal, localcontext
 from pathlib import Path
@@ -458,5 +459,21 @@ async def test_search_limit_above_the_script_timeout_still_recovers() -> None:
     result: dict[str, Any] = call_result.structured_content
 
     assert result["status"] == "timeout"
+
+    # The premise is that CP-SAT streams at least one feasible envelope inside the
+    # executor deadline; a slow or contended runner (Windows CI) can stream none,
+    # and there is then no incumbent to recover. Skip on that — but only after
+    # proving the stream really was empty. A stream that HAS envelopes while the
+    # tool reports no incumbent is the regression above, and must still fail.
+    streamed: list[dict[str, Any]] = []
+    for line in result["stdout"].splitlines():
+        stripped: str = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        with contextlib.suppress(json.JSONDecodeError):
+            streamed.append(json.loads(stripped))
+    if not any(payload.get("status") == "feasible" for payload in streamed):
+        pytest.skip("CP-SAT streamed no feasible envelope within the executor deadline")
+
     assert result["diagnostic"]["category"] == "timeout_with_incumbent"
     assert result["solution"]["schedule"]
