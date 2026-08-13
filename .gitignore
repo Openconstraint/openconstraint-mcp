@@ -22,7 +22,10 @@ dmypy.json
 .codex/
 .idea/
 .agents/
-docs/*
+# Local-only working notes. Everything else under docs/ is published reference
+# material and IS tracked.
+docs/plans/
+docs/memos/
 
 # Local DB/store files
 *.db
