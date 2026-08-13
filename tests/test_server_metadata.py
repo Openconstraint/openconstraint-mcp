@@ -617,18 +617,19 @@ async def test_run_cpsat_python_file_checked_is_full_only() -> None:
 
 # The three sites that enumerate CpsatPythonCheckedResult's extra fields BY HAND:
 # `run_cpsat_python_file`'s terse cross-reference to its checked sibling, the
-# checked tool's own per-field gloss, and the README reference docs. They
+# checked tool's own per-field gloss, and the CP-SAT reference doc. They
 # deliberately differ in register, so they are not collapsed into one shared
 # string — instead the SCHEMA is the source of truth and this gate fails when a
 # new field fails to reach any of them.
-_CHECKED_SHAPE_SITES = ("run_cpsat_python_file", "run_cpsat_python_file_checked", "README.md")
-_README_PATH = Path(__file__).parent.parent / "README.md"
+_CPSAT_DOC = "docs/cpsat-python.md"
+_CHECKED_SHAPE_SITES = ("run_cpsat_python_file", "run_cpsat_python_file_checked", _CPSAT_DOC)
+_CPSAT_DOC_PATH = Path(__file__).parent.parent / "docs" / "cpsat-python.md"
 
 
 async def _checked_shape_site_text(site: str) -> str:
     """The prose of one site that documents the checked result's extra fields."""
-    if site == "README.md":
-        return _README_PATH.read_text(encoding="utf-8")
+    if site == _CPSAT_DOC:
+        return _CPSAT_DOC_PATH.read_text(encoding="utf-8")
     return (await _tools_by_name("full"))[site].description or ""
 
 
@@ -714,7 +715,7 @@ async def test_the_checker_test_counts_reach_the_advertised_output_schema(field:
 # that every field of the report reaches both audiences — and it survives any
 # rewording of the prose that carries them.
 @pytest.mark.asyncio
-@pytest.mark.parametrize("site", ("run_cpsat_python_file_checked", "README.md"))
+@pytest.mark.parametrize("site", ("run_cpsat_python_file_checked", _CPSAT_DOC))
 async def test_every_checker_test_field_is_documented(site: str) -> None:
     text = await _checked_shape_site_text(site)
     missing = sorted(

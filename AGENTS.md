@@ -123,7 +123,8 @@ The current scope is discrete optimization through two paths: MiniZinc (expressi
 
 ## Documentation
 
-- **Update `README.md`** when user-facing behaviour changes — new CLI command, new MCP tool, new flag, install steps.
+- **Route reference material to `docs/`, keep `README.md` for orientation.** The README is also the PyPI long description, so it stays short enough to read top to bottom: intro, design principles, install, quick start, CLI, examples, managed runtime, limitations, licensing. The per-tool and per-prompt reference lives in `docs/mcp-tools.md`, `docs/cpsat-python.md`, `docs/mcp-prompts.md`, and `docs/tabular-data.md`. A new MCP tool or prompt is documented in the matching `docs/` file, **not** appended to the README; the README's stub section already links there and needs no edit. A new CLI command, flag, or install step *is* a README change.
+- **Links from `README.md` into `docs/` must be absolute GitHub URLs** (`https://github.com/Openconstraint/openconstraint-mcp/blob/master/docs/<file>.md`). PyPI does not rewrite relative links in the long description, so a relative path renders as a 404 on the project page. Links between files inside `docs/`, and anchors within a single file, stay relative.
 - **Document managed-runtime behaviour:** where the MiniZinc bundle lives, how to override it (`OPENCONSTRAINT_MCP_RUNTIME_DIR`), and what version it pins.
 - **Surface third-party licenses** for anything bundled (MiniZinc, OR-Tools, Chuffed) in a `LICENSES/` directory or an equivalent README section.
 
