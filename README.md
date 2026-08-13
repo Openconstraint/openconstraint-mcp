@@ -1,6 +1,7 @@
 # openconstraint-mcp
 
 [![CI](https://github.com/Openconstraint/openconstraint-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Openconstraint/openconstraint-mcp/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/openconstraint-mcp)](https://pypi.org/project/openconstraint-mcp/)
 
 A local-first [Model Context Protocol](https://modelcontextprotocol.io) server for
 constraint programming and optimization. `openconstraint-mcp` gives an MCP client a
