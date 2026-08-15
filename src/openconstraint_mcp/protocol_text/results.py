@@ -263,7 +263,7 @@ def format_tabular_data_content(result: TabularData) -> str:
     The low-level MCP SDK's default handling of a plain dict/model return
     would otherwise put the full page in content TWICE — once as indent=2
     JSON text, once as structuredContent — pushing a page already sized up to
-    ``tabular_io.MAX_TABULAR_RESPONSE_BYTES`` well past that ceiling on the
+    ``tabular.limits.MAX_TABULAR_RESPONSE_BYTES`` well past that ceiling on the
     wire. Row values ride only in structuredContent, same as every other
     large-payload result in this module (e.g. a solve's solutions).
     """

@@ -4039,7 +4039,9 @@ async def test_write_tabular_result_tool_is_listed_with_its_inputs() -> None:
 
     tool = next(t for t in tools if t.name == "write_tabular_result")
     properties = tool.input_schema.get("properties", {})
-    assert {"headers", "rows", "target_path", "overwrite"} <= set(properties.keys())
+    assert {"headers", "rows", "target_path", "overwrite", "style", "gantt", "charts"} <= set(
+        properties.keys()
+    )
 
 
 @pytest.mark.asyncio
@@ -4127,6 +4129,53 @@ async def test_write_tabular_result_writes_an_xlsx(tmp_path: Path) -> None:
     # Round-trips through the reader with its scalar types intact.
     page = await mcp.call_tool("load_tabular_data", {"path": str(target)})
     assert _structured(page)["rows"] == [["a", 0]]
+
+
+@pytest.mark.asyncio
+async def test_write_tabular_result_renders_a_gantt_sheet(tmp_path: Path) -> None:
+    target = tmp_path / "schedule.xlsx"
+
+    mcp = create_mcp_server()
+    result = await mcp.call_tool(
+        "write_tabular_result",
+        {
+            "headers": ["task", "start", "duration"],
+            "rows": [["cut", 0, 3], ["polish", 3, 2]],
+            "target_path": str(target),
+            "gantt": {
+                "task_column": "task",
+                "start_column": "start",
+                "duration_column": "duration",
+            },
+        },
+    )
+
+    structured = _structured(result)
+    assert structured["sheets_written"] == ["Sheet1", "Gantt"]
+    assert structured["diagrams_written"] == ["gantt"]
+
+
+@pytest.mark.asyncio
+async def test_write_tabular_result_rejects_a_gantt_on_a_csv_target(tmp_path: Path) -> None:
+    target = tmp_path / "out.csv"
+
+    mcp = create_mcp_server()
+    with pytest.raises(Exception, match="Write .xlsx instead"):  # noqa: B017 - wrapped by MCPServer
+        await mcp.call_tool(
+            "write_tabular_result",
+            {
+                "headers": ["task", "start", "duration"],
+                "rows": [["cut", 0, 3]],
+                "target_path": str(target),
+                "gantt": {
+                    "task_column": "task",
+                    "start_column": "start",
+                    "duration_column": "duration",
+                },
+            },
+        )
+
+    assert not target.exists()
 
 
 @pytest.mark.asyncio

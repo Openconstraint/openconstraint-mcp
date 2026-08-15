@@ -258,10 +258,13 @@ FULL_PROMPT_NAMES = CORE_PROMPT_NAMES | {
 CORE_METADATA_BUDGET_BYTES = 40_000
 
 # The same rule for the full profile, which core-only budgets never covered.
-# Measured at 284 783 bytes across the 31 full tools; the cap carries deliberate
+# Measured at 300 168 bytes across the 31 full tools. The rise from 300 000
+# accommodates the styled-xlsx-export feature: four new schema models
+# (ColumnStyle, TableStyle, GanttSpec, ChartSpec) plus `write_tabular_result`'s
+# three new parameters (style, gantt, charts). The cap carries deliberate
 # headroom for one or two more tools' worth of schema, not unbounded growth. A
 # failure here is a REVIEW trigger, not a cap to silently raise.
-FULL_METADATA_BUDGET_BYTES = 300_000
+FULL_METADATA_BUDGET_BYTES = 320_000
 
 SOLVE_TOOL_NAMES = (
     "solve_minizinc_model",

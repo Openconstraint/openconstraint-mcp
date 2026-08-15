@@ -1,11 +1,11 @@
 """Absolute-path resolution, as a dependency-light leaf.
 
 Stdlib only. The low-level shape shared by ``save_target.validate_save_target``
-(a managed, manifest-gated directory) and ``tabular_io.validate_tabular_write_path``
-(a single plain file) is just "absolute, right kind if it exists, parent
-exists" — the manifest/overwrite policy on top of that is deliberately NOT
-shared (see ``tabular_io``'s module docstring), so this leaf stops at the part
-both callers actually agree on.
+(a managed, manifest-gated directory) and
+``tabular.paths.validate_tabular_write_path`` (a single plain file) is just
+"absolute, right kind if it exists, parent exists" — the manifest/overwrite
+policy on top of that is deliberately NOT shared (see the ``tabular`` package's
+docstring), so this leaf stops at the part both callers actually agree on.
 """
 
 from __future__ import annotations

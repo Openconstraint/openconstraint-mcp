@@ -1385,8 +1385,9 @@ WRITE_TABULAR_RESULT_DESCRIPTION = (
     "call is an error; pass `overwrite=true` to atomically replace exactly that "
     "one file. A rejected write leaves the filesystem untouched. "
     "FORMULA SAFETY: the server never emits executable spreadsheet code. XLSX "
-    'stores every string as an explicit string cell, so `"=1+1"` is written and '
-    "read back as the literal TEXT `=1+1`. A CSV field cannot say 'this is literal "
+    "stores every string it writes, on every sheet, as an explicit string cell, "
+    'so `"=1+1"` is written and read back as the literal TEXT `=1+1`. '
+    "A CSV field cannot say 'this is literal "
     "text', so a CSV write REJECTS any string whose first non-whitespace character "
     "is `=`, `+`, `-`, or `@`. Note this also rejects a NUMBER SENT AS A STRING: "
     'send `-5` as the numeric cell `-5`, not the string `"-5"`, or write `.xlsx` '
@@ -1394,8 +1395,8 @@ WRITE_TABULAR_RESULT_DESCRIPTION = (
     "becomes an empty field, and other scalars take their normal text form, so a "
     "type-preserving CSV round trip is NOT promised (use `.xlsx` when types "
     "matter). An XLSX cell string is capped at 32,767 characters; a longer one is "
-    "rejected rather than silently truncated. XLSX writes a single sheet named "
-    "`Sheet1`. "
+    "rejected rather than silently truncated. The XLSX data sheet is always "
+    "`Sheet1` and stays active; only `gantt`/`charts` add sheets beside it. "
     "XLSX ROUND-TRIP SAFETY: further writes are rejected rather than silently "
     'corrupted or changed on the next read — an empty-string row cell (`""`, '
     "send `null` instead); a number needing more than 16 significant digits, or "
@@ -1404,7 +1405,26 @@ WRITE_TABULAR_RESULT_DESCRIPTION = (
     "`U+FFFE`/`U+FFFF`; a zero-column table (`headers=[]`); and a string "
     "containing a carriage return (`\\r`, alone or as `\\r\\n`) — XML normalizes "
     "it to `\\n` on read, so use `\\n`, or write `.csv`, which preserves it. "
-    "Returns a TabularWriteResult: `status` (always 'written' — every refusal "
-    "is an MCP error instead), `message`, `target_path`, `sha256` (of the "
-    "committed bytes), `format`, `rows_written`. " + _TABULAR_LOCAL_ONLY
+    "PRESENTATION (XLSX only, all OPTIONAL — omit them for exactly the plain "
+    "table above; a `.csv` target plus any of them is REJECTED, not ignored): "
+    "`style` formats the data sheet (bold frozen header row, auto filter, banded "
+    "rows, fitted widths); `gantt` adds a cell-grid timeline sheet from "
+    "`task_column`, `start_column`, and EXACTLY ONE of `end_column`/"
+    "`duration_column`, coloured by `lane_column`; `charts` plots the data "
+    "sheet's own columns. Columns are named by HEADER STRING, so a duplicated "
+    "header is rejected as ambiguous; Gantt times must be "
+    "discrete integers >= 0, never coerced from a float or string, with the grid "
+    "capped at 512 columns; charted `y_columns` (and a `scatter` `x_column`) must "
+    "be numeric; no `sheet_name` may collide case-insensitively with `Sheet1`, "
+    "the Gantt's, or another chart's, but two charts matching EXACTLY share one "
+    "sheet. Styling never changes a stored value — "
+    "and a DATE `number_format`, which would make its column read back as "
+    "ISO-8601 TEXT, is rejected rather than applied. "
+    "Returns a TabularWriteResult, whose fields the output schema names: "
+    "`status` is always 'written' (every refusal is an MCP error instead), "
+    "`sha256` is of the committed bytes, `sheets_written` lists the sheets "
+    "written, data sheet first (empty for a CSV, which has none), and "
+    "`diagrams_written` (one token per diagram, in render order: `gantt`, "
+    "`chart:bar`, `chart:line`, `chart:scatter`; styling adds none). "
+    + _TABULAR_LOCAL_ONLY
 )
