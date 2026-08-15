@@ -378,6 +378,28 @@ def test_a_gantt_sheet_name_colliding_with_a_chart_sheet_is_rejected(tmp_path: P
         )
 
 
+def test_a_chart_over_a_zero_row_table_is_rejected_before_staging(tmp_path: Path) -> None:
+    # A chart's series would reference rows the data sheet does not have.
+    target = tmp_path / "out.xlsx"
+    charts = [ChartSpec(kind="bar", x_column="task", y_columns=["duration"])]
+    with pytest.raises(ValueError, match="zero rows"):
+        write_tabular_data(_BASELINE_HEADERS, [], target, charts=charts)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_zero_row_gantt_write_is_unaffected(tmp_path: Path) -> None:
+    # Only a chart needs rows to reference; a zero-row table is fine otherwise.
+    target = tmp_path / "out.xlsx"
+    result = write_tabular_data(_BASELINE_HEADERS, [], target, gantt=_gantt())
+    assert result.sheets_written == ["Sheet1", "Gantt"]
+
+
+def test_a_zero_row_styled_write_is_unaffected(tmp_path: Path) -> None:
+    target = tmp_path / "out.xlsx"
+    result = write_tabular_data(_BASELINE_HEADERS, [], target, style=TableStyle())
+    assert result.status == "written"
+
+
 def test_a_gantt_write_reports_both_sheets(tmp_path: Path) -> None:
     target = tmp_path / "out.xlsx"
     result = write_tabular_data(_BASELINE_HEADERS, _BASELINE_ROWS, target, gantt=_gantt())

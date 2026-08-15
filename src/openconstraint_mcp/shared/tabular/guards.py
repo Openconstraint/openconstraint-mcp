@@ -97,15 +97,25 @@ def _reject_csv_formulas(headers: list[str], rows: list[list[TabularCell]]) -> N
     _walk_headers_and_rows(headers, rows, check)
 
 
+def _check_not_oversized_xlsx_string(value: str, where: str) -> None:
+    """Reject one string past Excel's per-cell limit.
+
+    Shared with the ``gantt`` leaf: a title written into a cell hits the same
+    limit a data cell does, and openpyxl truncates it just as silently.
+    """
+    if len(value) > XLSX_MAX_STRING_LENGTH:
+        raise ValueError(
+            f"{where} is {len(value)} characters long, over the {XLSX_MAX_STRING_LENGTH}-"
+            f"character limit for one XLSX cell; shorten it rather than let it be truncated"
+        )
+
+
 def _reject_oversized_xlsx_strings(headers: list[str], rows: list[list[TabularCell]]) -> None:
     """Reject strings past Excel's per-cell limit, which openpyxl would silently truncate."""
 
     def check(value: TabularCell, where: str) -> None:
-        if isinstance(value, str) and len(value) > XLSX_MAX_STRING_LENGTH:
-            raise ValueError(
-                f"{where} is {len(value)} characters long, over the {XLSX_MAX_STRING_LENGTH}-"
-                f"character limit for one XLSX cell; shorten it rather than let it be truncated"
-            )
+        if isinstance(value, str):
+            _check_not_oversized_xlsx_string(value, where)
 
     _walk_headers_and_rows(headers, rows, check)
 

@@ -9,7 +9,10 @@ from openpyxl import Workbook
 
 from openconstraint_mcp.schemas.tabular import GanttSpec, TabularCell
 from openconstraint_mcp.shared.tabular.gantt import render_gantt, resolve_gantt
-from openconstraint_mcp.shared.tabular.limits import GANTT_MAX_HORIZON_COLUMNS
+from openconstraint_mcp.shared.tabular.limits import (
+    GANTT_MAX_HORIZON_COLUMNS,
+    XLSX_MAX_STRING_LENGTH,
+)
 
 _HEADERS = ["task", "start", "duration", "lane"]
 _ROWS: list[list[TabularCell]] = [
@@ -120,6 +123,24 @@ def test_resolve_rejects_a_sheet_name_xlsx_cannot_store(bad: str) -> None:
 def test_resolve_rejects_a_title_xlsx_cannot_store(bad: str) -> None:
     with pytest.raises(ValueError, match="gantt title"):
         resolve_gantt(_HEADERS, _ROWS, _spec(title=f"Line{bad}1 schedule"))
+
+
+def test_resolve_rejects_a_title_past_the_xlsx_cell_limit() -> None:
+    # The title lands in a real cell, so openpyxl would truncate it silently.
+    with pytest.raises(ValueError, match="gantt title"):
+        resolve_gantt(_HEADERS, _ROWS, _spec(title="x" * (XLSX_MAX_STRING_LENGTH + 1)))
+
+
+def test_resolve_accepts_a_title_exactly_at_the_xlsx_cell_limit() -> None:
+    title = "x" * XLSX_MAX_STRING_LENGTH
+    resolved = resolve_gantt(_HEADERS, _ROWS, _spec(title=title))
+    assert resolved.title == title
+
+
+def test_resolve_rejects_an_empty_title() -> None:
+    # A "" title writes a blank A1 and still shifts the grid down a row.
+    with pytest.raises(ValueError, match="gantt title"):
+        resolve_gantt(_HEADERS, _ROWS, _spec(title=""))
 
 
 # --- render_gantt ---------------------------------------------------------------

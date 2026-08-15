@@ -27,7 +27,11 @@ from typing import Any
 
 from ...schemas.tabular import GanttSpec, TabularCell
 from .columns import column_index
-from .guards import _check_no_carriage_return, _check_no_illegal_xml_characters
+from .guards import (
+    _check_no_carriage_return,
+    _check_no_illegal_xml_characters,
+    _check_not_oversized_xlsx_string,
+)
 from .limits import GANTT_MAX_HORIZON_COLUMNS
 
 # The dataviz reference palette's categorical slots, light mode, in order.
@@ -93,13 +97,23 @@ def resolve_gantt(
     against ``headers``. It and ``spec.sheet_name`` are still user-controlled
     strings bound for the same XML writer as a cell, so both go through the
     same character guards the data sheet's own values do — the schema's
-    sheet-name rules cover Excel's structural restrictions, not XML's.
+    sheet-name rules cover Excel's structural restrictions, not XML's. The
+    title additionally lands in a real cell (``A1``), so it also gets the
+    per-cell length and empty-string guards a data cell gets; a sheet name is
+    not a cell and the schema already bounds it at 31 characters.
     """
     _check_no_illegal_xml_characters(spec.sheet_name, f"gantt sheet_name {spec.sheet_name!r}")
     _check_no_carriage_return(spec.sheet_name, f"gantt sheet_name {spec.sheet_name!r}")
     if spec.title is not None:
+        if spec.title == "":
+            raise ValueError(
+                "the gantt title is an empty string, which renders as a blank first row "
+                "while still shifting the grid down; omit title entirely instead of "
+                "sending an empty string"
+            )
         _check_no_illegal_xml_characters(spec.title, "the gantt title")
         _check_no_carriage_return(spec.title, "the gantt title")
+        _check_not_oversized_xlsx_string(spec.title, "the gantt title")
 
     task_index = column_index(headers, spec.task_column, "task_column")
     start_index = column_index(headers, spec.start_column, "start_column")

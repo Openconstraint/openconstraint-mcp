@@ -62,6 +62,13 @@ def resolve_charts(
     sheet's own values do — the schema's sheet-name rules cover Excel's
     structural restrictions, not XML's.
     """
+    if specs and not rows:
+        raise ValueError(
+            "a chart plots the data sheet's own rows, and this table has none; a chart "
+            "over zero rows would reference an empty range. Write the table without "
+            "charts, or send at least one data row"
+        )
+
     by_folded: dict[str, str] = {}
     for spec in specs:
         _check_no_illegal_xml_characters(spec.sheet_name, f"chart sheet_name {spec.sheet_name!r}")

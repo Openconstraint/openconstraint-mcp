@@ -111,6 +111,16 @@ silently change the value (or make the file unreadable) on the next read:
   next read. Use `\n` instead, or write `.csv`, which preserves `\r`/`\r\n`
   exactly.
 
+These restrictions are not limited to data cells. The illegal-character and
+carriage-return rejections also cover every string the presentation options
+below write — a `gantt`/`charts` `sheet_name` or `title`, and a
+`columns[*].number_format` code — because all of them reach the same XML
+writer. A `gantt.title` lands in a real cell, so it additionally takes the
+32,767-character cap and the empty-string rejection (omit `title` rather than
+send `""`); a chart `title` is chart rich text, not a cell, and takes neither.
+A chart also needs at least one data row to plot: `charts` over a zero-row
+table is rejected rather than written with an empty series.
+
 A malformed or corrupt XLSX file (not a valid zip, or missing the parts an
 XLSX workbook requires) is reported as an `invalid_request` diagnostic on
 read, not a raw parser crash.

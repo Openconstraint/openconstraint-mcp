@@ -9,7 +9,7 @@ from openpyxl import Workbook
 
 from openconstraint_mcp.schemas.tabular import ChartSpec, TabularCell
 from openconstraint_mcp.shared.tabular.charts import render_charts, resolve_charts
-from openconstraint_mcp.shared.tabular.limits import WRITE_SHEET_NAME
+from openconstraint_mcp.shared.tabular.limits import WRITE_SHEET_NAME, XLSX_MAX_STRING_LENGTH
 
 _HEADERS = ["task", "qty", "cost"]
 _ROWS: list[list[TabularCell]] = [["cut", 3, 1.5], ["polish", 10, 2.5]]
@@ -97,6 +97,16 @@ def test_resolve_rejects_a_title_xlsx_cannot_store(bad: str) -> None:
         resolve_charts(_HEADERS, _ROWS, [_spec(title=f"Quantity{bad}by task")])
 
 
+def test_resolve_rejects_a_chart_over_a_zero_row_table() -> None:
+    # The series would reference a reversed, empty range on the data sheet.
+    with pytest.raises(ValueError, match="zero rows"):
+        resolve_charts(_HEADERS, [], [_spec()])
+
+
+def test_resolve_accepts_a_zero_row_table_when_no_chart_is_requested() -> None:
+    assert resolve_charts(_HEADERS, [], []) == []
+
+
 # --- render_charts --------------------------------------------------------------
 
 
@@ -126,6 +136,15 @@ def test_a_chart_title_becomes_the_chart_objects_own_title() -> None:
     workbook, _ = _render([_spec(title="Quantity by task")])
     chart = workbook["Charts"]._charts[0]
     assert chart.title.tx.rich.p[0].r[0].t == "Quantity by task"
+
+
+def test_a_chart_title_is_not_bound_by_the_xlsx_cell_limit() -> None:
+    # A chart title is rich text on the chart object, not a cell, so the
+    # per-cell length limit that bounds a gantt title does not apply here.
+    title = "x" * (XLSX_MAX_STRING_LENGTH + 1)
+    workbook, _ = _render([_spec(title=title)])
+    chart = workbook["Charts"]._charts[0]
+    assert chart.title.tx.rich.p[0].r[0].t == title
 
 
 def test_an_untitled_chart_has_no_title() -> None:
