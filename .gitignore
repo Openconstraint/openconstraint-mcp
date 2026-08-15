@@ -26,6 +26,7 @@ dmypy.json
 # material and IS tracked.
 docs/plans/
 docs/memos/
+tmp/
 
 # Local DB/store files
 *.db
