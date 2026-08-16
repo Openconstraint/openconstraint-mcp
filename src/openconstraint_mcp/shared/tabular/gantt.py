@@ -51,6 +51,13 @@ _TIME_COLUMN_WIDTH: int = 3
 
 _TASK_COLUMN_HEADER: str = "Task"
 
+# A null label or lane renders as an explicit placeholder rather than "": an
+# empty string writes a degenerate cell openpyxl reads back as null (the same
+# reason ``guards._reject_xlsx_empty_strings`` refuses one), and a blank-named
+# legend swatch would put lane identity back on colour alone.
+_MISSING_TASK_LABEL: str = "(untitled task)"
+_MISSING_LANE_NAME: str = "(no lane)"
+
 
 @dataclass(frozen=True)
 class ResolvedTask:
@@ -83,9 +90,9 @@ def _require_time(value: TabularCell, *, row_index: int, role: str) -> int:
     return value
 
 
-def _rendered_text(value: TabularCell) -> str:
+def _rendered_text(value: TabularCell, *, placeholder: str) -> str:
     """Render one cell as the label text a Gantt sheet shows."""
-    return "" if value is None else str(value)
+    return placeholder if value is None else str(value)
 
 
 def resolve_gantt(
@@ -148,16 +155,20 @@ def resolve_gantt(
         else:
             assert end_index is not None  # GanttSpec requires exactly one of the two.
             end = _require_time(row[end_index], row_index=row_index, role="end")
-            if end < start:
+            if end <= start:
                 raise ValueError(
-                    f"the end at row {row_index} is {end}, before its start {start}"
+                    f"the end at row {row_index} is {end}, which is not after its start "
+                    f"{start}; a Gantt task must last at least one time unit"
                 )
-        lane = None if lane_index is None else _rendered_text(row[lane_index])
+        lane = (
+            None
+            if lane_index is None
+            else _rendered_text(row[lane_index], placeholder=_MISSING_LANE_NAME)
+        )
         if lane is not None and lane not in lanes:
             lanes.append(lane)
-        tasks.append(
-            ResolvedTask(label=_rendered_text(row[task_index]), start=start, end=end, lane=lane)
-        )
+        label = _rendered_text(row[task_index], placeholder=_MISSING_TASK_LABEL)
+        tasks.append(ResolvedTask(label=label, start=start, end=end, lane=lane))
 
     horizon = max((task.end for task in tasks), default=0)
     if horizon > GANTT_MAX_HORIZON_COLUMNS:

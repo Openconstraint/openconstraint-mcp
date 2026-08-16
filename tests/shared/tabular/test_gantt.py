@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from openconstraint_mcp.schemas.tabular import GanttSpec, TabularCell
 from openconstraint_mcp.shared.tabular.gantt import render_gantt, resolve_gantt
@@ -40,6 +41,17 @@ def _rendered(
     resolved = resolve_gantt(headers or _HEADERS, rows or _ROWS, spec or _spec())
     name = render_gantt(workbook, resolved)
     return workbook[name]
+
+
+def _reloaded(worksheet: Any, tmp_path: Path) -> Any:
+    """Save the rendered workbook and read it back, as a real caller would.
+
+    An in-memory cell holding ``""`` looks fine; only the round trip shows
+    openpyxl never wrote an inline string for it.
+    """
+    target = tmp_path / "gantt.xlsx"
+    worksheet.parent.save(target)
+    return load_workbook(target)[worksheet.title]
 
 
 def _filled_columns(worksheet: Any, row: int, width: int) -> list[int]:
@@ -88,6 +100,15 @@ def test_resolve_rejects_a_non_positive_duration(duration: int) -> None:
 def test_resolve_rejects_an_end_before_its_start() -> None:
     headers = ["task", "start", "end"]
     rows: list[list[TabularCell]] = [["cut", 5, 2]]
+    with pytest.raises(ValueError, match="row 0"):
+        resolve_gantt(headers, rows, _spec(duration_column=None, end_column="end"))
+
+
+def test_resolve_rejects_an_end_equal_to_its_start() -> None:
+    # A zero-length task renders as a label row with no filled cells at all —
+    # the same span the duration path already refuses as too short.
+    headers = ["task", "start", "end"]
+    rows: list[list[TabularCell]] = [["cut", 2, 2]]
     with pytest.raises(ValueError, match="row 0"):
         resolve_gantt(headers, rows, _spec(duration_column=None, end_column="end"))
 
@@ -231,6 +252,19 @@ def test_a_formula_looking_lane_name_is_written_as_a_string_cell() -> None:
     rows: list[list[TabularCell]] = [["cut", 0, 1, "=1+1"]]
     worksheet = _rendered(rows=rows, spec=_spec(lane_column="lane"))
     assert worksheet.cell(row=4, column=1).data_type == "s"
+
+
+def test_a_null_task_label_reads_back_as_a_placeholder(tmp_path: Path) -> None:
+    rows: list[list[TabularCell]] = [[None, 0, 1, "alpha"]]
+    worksheet = _reloaded(_rendered(rows=rows), tmp_path)
+    assert worksheet.cell(row=2, column=1).value == "(untitled task)"
+
+
+def test_a_null_lane_reads_back_as_a_named_legend_entry(tmp_path: Path) -> None:
+    # A blank name beside a coloured swatch would put lane identity on colour alone.
+    rows: list[list[TabularCell]] = [["cut", 0, 1, None]]
+    worksheet = _reloaded(_rendered(rows=rows, spec=_spec(lane_column="lane")), tmp_path)
+    assert worksheet.cell(row=4, column=1).value == "(no lane)"
 
 
 def test_a_title_lands_in_the_first_cell() -> None:

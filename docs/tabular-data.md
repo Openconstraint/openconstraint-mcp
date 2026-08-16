@@ -186,8 +186,9 @@ numbered from 0. A task fills the columns `[start, end)`.
 - Times are **discrete non-negative integers** — the native shape of CP-SAT and
   MiniZinc scheduling output. A float, a numeric string, or `null` is rejected
   naming the offending row, never coerced.
-- Exactly one of `end_column` (an absolute end) or `duration_column` (a length
-  ≥ 1) must be given; an end before its start is rejected.
+- Exactly one of `end_column` (an absolute end) or `duration_column` (a length)
+  must be given. Either way a task must span **at least one time unit**: a
+  duration below 1, and an end not strictly after its start, are both rejected.
 - The grid is capped at **512 time columns**; a wider schedule is rejected with
   the computed horizon in the message. The cap is fixed, not configurable.
 - `lane_column` colours tasks by lane from a validated categorical palette and
@@ -195,6 +196,9 @@ numbered from 0. A task fills the columns `[start, end)`.
   alone. Lanes past the eighth reuse the palette from the start.
 - `title` is free text (not a column reference): it lands in `A1` and shifts the
   grid down one row.
+- A `null` task label renders as `(untitled task)` and a `null` lane as
+  `(no lane)` — a blank cell would read back as null and leave a legend swatch
+  unnamed, putting lane identity back on colour alone.
 
 No cell on the sheet is ever merged — the read path exposes only a merge's
 top-left value, so a merge would silently lose data.
