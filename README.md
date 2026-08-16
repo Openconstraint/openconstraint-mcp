@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/keliu99-openconstraint-mcp-badge.png)](https://mseep.ai/app/keliu99-openconstraint-mcp)
+
 # openconstraint-mcp
 
 [![CI](https://github.com/Openconstraint/openconstraint-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Openconstraint/openconstraint-mcp/actions/workflows/ci.yml)
