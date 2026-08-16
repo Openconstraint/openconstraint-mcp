@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from mcp_types import GetPromptResult
 
 from openconstraint_mcp.protocol_text.descriptions import (
     AUTO_TUNE_CONSTRAINT_PROBLEM_PROMPT_DESCRIPTION,
@@ -135,6 +136,7 @@ def test_mcp_server_instructions_present_solution_in_problem_terms() -> None:
 async def _get_prompt_text(prompt_name: str, arguments: dict[str, str]) -> str:
     mcp = create_mcp_server()
     result = await mcp.get_prompt(prompt_name, arguments)
+    assert isinstance(result, GetPromptResult)
     return "\n".join(
         message.content.text  # type: ignore[union-attr]
         for message in result.messages
@@ -145,6 +147,7 @@ async def _get_core_prompt_text(prompt_name: str, arguments: dict[str, str]) -> 
     """Render a prompt through the CORE profile — the user-facing stdio default."""
     mcp = create_mcp_server("core")
     result = await mcp.get_prompt(prompt_name, arguments)
+    assert isinstance(result, GetPromptResult)
     return "\n".join(
         message.content.text  # type: ignore[union-attr]
         for message in result.messages

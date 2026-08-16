@@ -6,7 +6,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
@@ -111,7 +111,7 @@ def _structured(result: Any) -> dict[str, Any]:
     """
     assert isinstance(result, CallToolResult)
     assert result.structured_content is not None
-    return result.structured_content
+    return cast(dict[str, Any], result.structured_content)
 
 
 def _content_text(result: Any) -> str:
@@ -3707,7 +3707,7 @@ async def test_submit_cpsat_python_file_job_rejects_both_checker_forms(tmp_path:
 def _fake_cpsat_run_result(
     *,
     status: str = "optimal",
-    solution: dict | None = None,
+    solution: dict[str, Any] | None = None,
     objective: float | None = 3.0,
     stdout: str = '{"status":"optimal","objective":3,"solution":{"x":3}}',
     duration_ms: int = 10,

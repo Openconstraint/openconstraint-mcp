@@ -228,7 +228,7 @@ async def test_modern_protocol_client_gets_progress_but_no_unsolicited_logs(
     async def _on_log(params: types.LoggingMessageNotificationParams) -> None:
         logs.append(params)
 
-    async def _on_progress(_progress: float, _total: float | None, message: str | None) -> None:
+    async def _on_progress(progress: float, total: float | None, message: str | None) -> None:
         milestones.append(message)
 
     async with Client(

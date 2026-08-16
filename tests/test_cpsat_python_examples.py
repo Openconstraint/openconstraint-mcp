@@ -5,6 +5,7 @@ import json
 import runpy
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -48,7 +49,7 @@ def _run_checker(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     payload: dict[str, object],
-) -> dict[str, object]:
+) -> dict[str, Any]:
     payload_path = tmp_path / "payload.json"
     payload_path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -70,7 +71,7 @@ def _run_clinic_roster_checker(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     payload: dict[str, object],
-) -> dict[str, object]:
+) -> dict[str, Any]:
     return _run_checker("clinic_roster_checker.py", tmp_path, capsys, payload)
 
 

@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from mcp_types import CallToolResult
 
 from openconstraint_mcp.server import create_mcp_server
 
@@ -85,6 +86,7 @@ async def test_mk01_model_and_checker_reach_an_accepted_verdict_through_the_mcp_
             "script_timeout_ms": 60_000,
         },
     )
+    assert isinstance(call_result, CallToolResult)
     assert call_result.structured_content is not None
     result: dict[str, Any] = call_result.structured_content
     checker: dict[str, Any] = result["checker"]
@@ -135,6 +137,7 @@ async def test_results_dir_write_matches_final_stdout(tmp_path: Path) -> None:
             "script_timeout_ms": 60_000,
         },
     )
+    assert isinstance(call_result, CallToolResult)
     assert call_result.structured_content is not None
     result: dict[str, Any] = call_result.structured_content
     assert result["status"] == "optimal"
@@ -178,6 +181,8 @@ async def test_seed_env_var_changes_solver_search_stats() -> None:
             "seed": 12345,
         },
     )
+    assert isinstance(default_result, CallToolResult)
+    assert isinstance(seeded_result, CallToolResult)
     assert default_result.structured_content is not None
     assert seeded_result.structured_content is not None
     default_payload = json.loads(
