@@ -15,14 +15,14 @@ from openconstraint_mcp.shared.tabular.limits import (
     XLSX_MAX_STRING_LENGTH,
 )
 
-_HEADERS = ["task", "start", "duration", "lane"]
+_HEADERS = ["task", "start", "duration", "color"]
 _ROWS: list[list[TabularCell]] = [
     ["cut", 0, 3, "alpha"],
     ["polish", 3, 2, "beta"],
 ]
 
 # The same two tasks plus a resource column, so a grouped render can share a row.
-_GROUPED_HEADERS = ["task", "start", "duration", "lane", "machine"]
+_GROUPED_HEADERS = ["task", "start", "duration", "color", "machine"]
 _GROUPED_ROWS: list[list[TabularCell]] = [
     ["cut", 0, 3, "alpha", "M1"],
     ["polish", 3, 2, "beta", "M1"],
@@ -202,47 +202,47 @@ def test_render_numbers_the_time_columns_from_zero() -> None:
     assert [worksheet.cell(row=1, column=column).value for column in (2, 3, 4)] == [0, 1, 2]
 
 
-def test_two_tasks_in_one_lane_share_a_fill() -> None:
+def test_two_tasks_of_one_colour_value_share_a_fill() -> None:
     rows: list[list[TabularCell]] = [["cut", 0, 1, "alpha"], ["polish", 1, 1, "alpha"]]
-    worksheet = _rendered(rows=rows, spec=_spec(lane_column="lane"))
+    worksheet = _rendered(rows=rows, spec=_spec(color_column="color"))
     first = worksheet.cell(row=2, column=2).fill.fgColor.rgb
     second = worksheet.cell(row=3, column=3).fill.fgColor.rgb
     assert first == second
 
 
-def test_two_lanes_get_different_fills() -> None:
-    worksheet = _rendered(spec=_spec(lane_column="lane"))
+def test_two_colour_values_get_different_fills() -> None:
+    worksheet = _rendered(spec=_spec(color_column="color"))
     first = worksheet.cell(row=2, column=2).fill.fgColor.rgb
     second = worksheet.cell(row=3, column=5).fill.fgColor.rgb
     assert first != second
 
 
-def test_a_null_lane_does_not_merge_with_a_lane_named_like_its_placeholder() -> None:
+def test_a_null_colour_does_not_merge_with_a_value_named_like_its_placeholder() -> None:
     rows: list[list[TabularCell]] = [
         ["missing", 0, 1, None],
-        ["literal", 1, 1, "(no lane)"],
+        ["literal", 1, 1, "(uncategorized)"],
     ]
-    worksheet: Any = _rendered(rows=rows, spec=_spec(lane_column="lane"))
+    worksheet: Any = _rendered(rows=rows, spec=_spec(color_column="color"))
     missing: str = worksheet.cell(row=2, column=2).fill.fgColor.rgb
     literal: str = worksheet.cell(row=3, column=3).fill.fgColor.rgb
     assert missing != literal
 
 
-def test_a_ninth_lane_wraps_back_to_the_first_palette_slot() -> None:
-    # Pins the documented cycling: the palette has eight slots, and a lane set
-    # comes from caller data, so lane 9 reuses lane 1's fill. The legend is what
+def test_a_ninth_colour_value_wraps_back_to_the_first_palette_slot() -> None:
+    # Pins the documented cycling: the palette has eight slots, and a color set
+    # comes from caller data, so color 9 reuses color 1's fill. The legend is what
     # keeps identity off colour alone.
     rows: list[list[TabularCell]] = [
-        [f"task{index}", index, 1, f"lane{index}"] for index in range(9)
+        [f"task{index}", index, 1, f"color{index}"] for index in range(9)
     ]
-    worksheet = _rendered(rows=rows, spec=_spec(lane_column="lane"))
+    worksheet = _rendered(rows=rows, spec=_spec(color_column="color"))
     first = worksheet.cell(row=2, column=2).fill.fgColor.rgb
     ninth = worksheet.cell(row=10, column=10).fill.fgColor.rgb
     assert ninth == first
 
 
-def test_a_lane_legend_names_every_lane() -> None:
-    worksheet = _rendered(spec=_spec(lane_column="lane"))
+def test_the_legend_names_every_colour_value() -> None:
+    worksheet = _rendered(spec=_spec(color_column="color"))
     names = [
         cell.value
         for row in worksheet.iter_rows(min_row=4, min_col=1, max_col=1)
@@ -255,7 +255,7 @@ def test_a_lane_legend_names_every_lane() -> None:
 def test_render_merges_no_cells() -> None:
     # The read path exposes only a merge's top-left value, so a merge would
     # silently lose data.
-    worksheet = _rendered(spec=_spec(lane_column="lane"))
+    worksheet = _rendered(spec=_spec(color_column="color"))
     assert list(worksheet.merged_cells.ranges) == []
 
 
@@ -265,10 +265,10 @@ def test_a_formula_looking_task_label_is_written_as_a_string_cell() -> None:
     assert worksheet.cell(row=2, column=1).data_type == "s"
 
 
-def test_a_formula_looking_lane_name_is_written_as_a_string_cell() -> None:
+def test_a_formula_looking_colour_name_is_written_as_a_string_cell() -> None:
     # One task: header row 1, the task row 2, the legend two rows below it.
     rows: list[list[TabularCell]] = [["cut", 0, 1, "=1+1"]]
-    worksheet = _rendered(rows=rows, spec=_spec(lane_column="lane"))
+    worksheet = _rendered(rows=rows, spec=_spec(color_column="color"))
     assert worksheet.cell(row=4, column=1).data_type == "s"
 
 
@@ -278,11 +278,11 @@ def test_a_null_task_label_reads_back_as_a_placeholder(tmp_path: Path) -> None:
     assert worksheet.cell(row=2, column=1).value == "(untitled task)"
 
 
-def test_a_null_lane_reads_back_as_a_named_legend_entry(tmp_path: Path) -> None:
-    # A blank name beside a coloured swatch would put lane identity on colour alone.
+def test_a_null_colour_reads_back_as_a_named_legend_entry(tmp_path: Path) -> None:
+    # A blank name beside a coloured swatch would put color identity on colour alone.
     rows: list[list[TabularCell]] = [["cut", 0, 1, None]]
-    worksheet = _reloaded(_rendered(rows=rows, spec=_spec(lane_column="lane")), tmp_path)
-    assert worksheet.cell(row=4, column=1).value == "(no lane)"
+    worksheet = _reloaded(_rendered(rows=rows, spec=_spec(color_column="color")), tmp_path)
+    assert worksheet.cell(row=4, column=1).value == "(uncategorized)"
 
 
 def test_a_title_lands_in_the_first_cell() -> None:
@@ -425,11 +425,11 @@ def test_a_null_row_value_reads_back_as_a_placeholder(tmp_path: Path) -> None:
     assert worksheet.cell(row=2, column=1).value == "(no group)"
 
 
-def test_grouping_puts_the_lane_legend_below_the_collapsed_grid() -> None:
+def test_grouping_puts_the_legend_below_the_collapsed_grid() -> None:
     # Two tasks collapse to one M1 row, so the legend rises a row with them.
     worksheet = _rendered(
         headers=_GROUPED_HEADERS,
         rows=_GROUPED_ROWS,
-        spec=_spec(row_column="machine", lane_column="lane"),
+        spec=_spec(row_column="machine", color_column="color"),
     )
     assert [worksheet.cell(row=row, column=1).value for row in (4, 5)] == ["alpha", "beta"]

@@ -74,7 +74,7 @@ An XLSX cell string is capped at Excel's 32,767 characters; a longer one is
 rejected rather than silently truncated. The XLSX **data sheet** is always named
 `Sheet1` and stays the workbook's active sheet; only the presentation options
 below add further sheets beside it, and every string they write — task labels,
-lane names, a Gantt title — is stored as an explicit string cell too.
+colour-value names, a Gantt title — is stored as an explicit string cell too.
 
 ## XLSX round-trip hazards
 
@@ -125,10 +125,20 @@ A malformed or corrupt XLSX file (not a valid zip, or missing the parts an
 XLSX workbook requires) is reported as an `invalid_request` diagnostic on
 read, not a raw parser crash.
 
-## The overwrite contract
+## Paths are absolute
 
-`target_path` must be an explicit **absolute** local path whose parent directory
-exists — the server never opens a file dialog.
+Both tools require an explicit **absolute** local path — `path` for a read,
+`target_path` for a write, whose parent directory must also exist. The server
+never opens a file dialog.
+
+This is not pedantry. An MCP server's working directory belongs to the *client*
+that launched it, and is typically neither the user's shell directory nor
+anything the calling model can discover. A relative path would therefore resolve
+somewhere unpredictable — reading a file nobody meant or writing one nobody can
+find — so it is refused up front instead. A leading `~` is expanded first and is
+accepted, since it names an absolute location.
+
+## The overwrite contract
 
 The write is **atomic** and by default **cannot clobber**: the file is staged in
 the target's own directory and published with a hard link, so with
@@ -179,7 +189,7 @@ turning a numeric column into text. Numeric and text codes (`0.00`, `#,##0`,
 ### `gantt` — a cell-grid timeline sheet
 
 `GanttSpec(task_column, start_column, end_column=None, duration_column=None,
-row_column=None, lane_column=None, sheet_name="Gantt", title=None)` adds one
+row_column=None, color_column=None, sheet_name="Gantt", title=None)` adds one
 sheet whose column A names each grid row and whose remaining columns are one
 discrete time unit each, numbered from 0. A task fills the columns
 `[start, end)`.
@@ -195,7 +205,7 @@ discrete time unit each, numbered from 0. A task fills the columns
 - `title` is free text (not a column reference): it lands in `A1` and shifts the
   grid down one row.
 
-### The two axes: `row_column` and `lane_column`
+### The two axes: `row_column` and `color_column`
 
 These are independent channels, and a scheduling result usually wants both:
 
@@ -203,11 +213,11 @@ These are independent channels, and a scheduling result usually wants both:
   named by that value. This is the *resource* view: pass the machine, vehicle,
   operator, or crew column and contention and idle gaps become visible at a
   glance. Omit it and each task keeps its own row, named by `task_column`.
-- **`lane_column` — the colour axis.** Colours bars from a validated categorical
-  palette and adds a lane → colour legend below the grid, so identity never
-  rests on colour alone. Lanes past the eighth reuse the palette from the start.
+- **`color_column` — the colour axis.** Colours bars from a validated categorical
+  palette and adds a value → colour legend below the grid, so identity never
+  rests on colour alone. Values past the eighth reuse the palette from the start.
 
-For a job shop, `row_column="Machine"` with `lane_column="Job"` gives one row
+For a job shop, `row_column="Machine"` with `color_column="Job"` gives one row
 per machine with each job traceable across machines; swapping them gives the
 job-centric view, one row per job coloured by machine, where a job's waiting
 time between operations is what stands out. Same data, same tool, two diagnoses.
@@ -219,8 +229,9 @@ one bar overwriting the other; each sub-row repeats the resource name, so a row
 is never identified by position alone. A resource whose tasks never overlap (the
 disjunctive case) always collapses to exactly one row.
 
-- A `null` task label renders as `(untitled task)`, a `null` lane as
-  `(no lane)`, and a `null` `row_column` value as `(no group)` — a blank cell
+- A `null` task label renders as `(untitled task)`, a `null` `color_column`
+  value as `(uncategorized)`, and a `null` `row_column` value as `(no group)`
+  — a blank cell
   would read back as null and leave a legend swatch or a grid row unnamed.
 
 ### Reading the time axis

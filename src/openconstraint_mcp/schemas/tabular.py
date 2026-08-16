@@ -140,7 +140,7 @@ class GanttSpec(BaseModel):
     end_column: str | None = None
     duration_column: str | None = None
     row_column: str | None = None
-    lane_column: str | None = None
+    color_column: str | None = None
     sheet_name: DiagramSheetName = "Gantt"
     title: str | None = None
 

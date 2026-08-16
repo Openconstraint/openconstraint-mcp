@@ -420,7 +420,7 @@ def test_validate_rejects_missing_model(tmp_path: Path) -> None:
 
 
 def test_validate_rejects_directory_model(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="not a file"):
+    with pytest.raises(ValueError, match="not a regular file"):
         validate_model_data_paths(tmp_path, None)
 
 
@@ -837,7 +837,7 @@ def test_validate_checker_rejects_missing(tmp_path: Path) -> None:
 def test_validate_checker_rejects_directory(tmp_path: Path) -> None:
     checker_dir = tmp_path / "dir.mzc.mzn"
     checker_dir.mkdir()
-    with pytest.raises(ValueError, match="not a file"):
+    with pytest.raises(ValueError, match="not a regular file"):
         validate_checker_path(checker_dir)
 
 

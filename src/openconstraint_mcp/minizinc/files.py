@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ..shared.path_checks import resolve_existing_file
+
 # MiniZinc rejects a `--solution-checker` whose filename does not end in `.mzc`
 # or `.mzc.mzn` at argument parsing. Matched on the full `name`, NOT `Path.suffix`
 # (which returns `.mzn` for `model.mzc.mzn`), so the validator rejects the wrong
@@ -37,21 +39,12 @@ def validate_model_data_paths(model_path: Path, data_path: Path | None) -> tuple
     emptiness is allowed (a valid "no parameters" input, matching the inline
     ``data`` contract).
     """
-    model_path = model_path.resolve()
-    if not model_path.exists():
-        raise ValueError(f"model_path does not exist: {model_path}")
-    if not model_path.is_file():
-        raise ValueError(f"model_path is not a file: {model_path}")
+    model_path = resolve_existing_file(model_path, arg_name="model_path")
     if not read_text_utf8(model_path).strip():
         raise ValueError(f"model file is empty: {model_path}")
     if data_path is None:
         return model_path, None
-    data_path = data_path.resolve()
-    if not data_path.exists():
-        raise ValueError(f"data_path does not exist: {data_path}")
-    if not data_path.is_file():
-        raise ValueError(f"data_path is not a file: {data_path}")
-    return model_path, data_path
+    return model_path, resolve_existing_file(data_path, arg_name="data_path")
 
 
 def validate_checker_path(checker_path: Path) -> Path:
@@ -66,12 +59,11 @@ def validate_checker_path(checker_path: Path) -> Path:
     checker, and a non-UTF-8 checker. The resolved absolute path is returned so
     the caller uses the same path the validation ran against.
     """
-    checker_path = checker_path.resolve()
+    checker_path = checker_path.expanduser().resolve()
+    # Suffix first: MiniZinc rejects a wrong-suffix checker at argument parsing,
+    # so that is the more actionable message even when the file is also missing.
     if not checker_path.name.endswith(_CHECKER_SUFFIXES):
         raise ValueError(f"checker_path must end in .mzc or .mzc.mzn: {checker_path}")
-    if not checker_path.exists():
-        raise ValueError(f"checker_path does not exist: {checker_path}")
-    if not checker_path.is_file():
-        raise ValueError(f"checker_path is not a file: {checker_path}")
+    checker_path = resolve_existing_file(checker_path, arg_name="checker_path")
     read_text_utf8(checker_path)  # reject non-UTF-8 with a clear ValueError
     return checker_path

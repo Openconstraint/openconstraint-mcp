@@ -9,15 +9,20 @@ MiniZinc scheduling output. A float, a numeric string, or a null is refused
 rather than coerced, matching this package's refuse-don't-coerce posture in
 ``guards``.
 
-Lane colours are the ``dataviz`` skill's reference categorical palette, in its
+The grid has two independent axes and they name different columns: ``row_column``
+decides which tasks share a row (the resource view), while ``color_column``
+decides only what a bar is coloured by. A job shop wants both — rows per machine,
+colour per job — so neither can stand in for the other.
+
+Bar colours are the ``dataviz`` skill's reference categorical palette, in its
 documented slot order. That order is the colour-blindness safety mechanism, so
 it is never reordered. The CVD ΔE check run during design compared arbitrary
-pairs across the first three slots only; beyond three lanes the separation rests
-on the palette's own published guarantees, not on anything measured here. Lanes
-cycle through the eight slots because a lane set comes from the caller's data
-and cannot be folded into an "Other" bucket the way a chart series can; the
-legend prints every lane's name beside its swatch, so identity never rests on
-colour alone.
+pairs across the first three slots only; beyond three colours the separation
+rests on the palette's own published guarantees, not on anything measured here.
+Colours cycle through the eight slots because the value set comes from the
+caller's data and cannot be folded into an "Other" bucket the way a chart series
+can; the legend prints every value's name beside its swatch, so identity never
+rests on colour alone.
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ from .guards import (
 from .limits import GANTT_MAX_HORIZON_COLUMNS
 
 # The dataviz reference palette's categorical slots, light mode, in order.
-_LANE_FILL_RGB: tuple[str, ...] = (
+_COLOR_FILL_RGB: tuple[str, ...] = (
     "FF2A78D6",
     "FFEB6834",
     "FF1BAF7A",
@@ -51,18 +56,20 @@ _TIME_COLUMN_WIDTH: int = 3
 
 _TASK_COLUMN_HEADER: str = "Task"
 
-# A null label or lane renders as an explicit placeholder rather than "": an
-# empty string writes a degenerate cell openpyxl reads back as null (the same
-# reason ``guards._reject_xlsx_empty_strings`` refuses one), and a blank-named
-# legend swatch would put lane identity back on colour alone.
+# A null cell renders as an explicit placeholder rather than "": an empty string
+# writes a degenerate cell openpyxl reads back as null (the same reason
+# ``guards._reject_xlsx_empty_strings`` refuses one), and a blank-named legend
+# swatch would put identity back on colour alone. Each names the missing DATA,
+# not the channel it feeds — "(no colour)" beside a coloured swatch would read
+# as a contradiction.
 _MISSING_TASK_LABEL: str = "(untitled task)"
-_MISSING_LANE_NAME: str = "(no lane)"
+_MISSING_COLOR_NAME: str = "(uncategorized)"
 _MISSING_ROW_LABEL: str = "(no group)"
 
 
 @dataclass(frozen=True)
 class ResolvedTask:
-    """One task's bar: its half-open span, its lane colour, and the row it sits on.
+    """One task's bar: its half-open span, its fill colour, and the row it sits on.
 
     ``bar_label`` is the text drawn inside the bar, or ``None`` when column A
     already names this task — an ungrouped grid gives every task its own row, so
@@ -72,7 +79,7 @@ class ResolvedTask:
     bar_label: str | None
     start: int
     end: int
-    lane: str | None
+    color: str | None
     grid_row: int
 
 
@@ -91,7 +98,7 @@ class ResolvedGantt:
     tasks: tuple[ResolvedTask, ...]
     row_header: str
     row_labels: tuple[str, ...]
-    lanes: tuple[str | None, ...]
+    colors: tuple[str | None, ...]
     horizon: int
 
 
@@ -102,7 +109,7 @@ class _Staged:
     label: str
     start: int
     end: int
-    lane: str | None
+    color: str | None
     group: str | None
 
 
@@ -158,7 +165,7 @@ def _assign_grid_rows(staged: list[_Staged]) -> tuple[list[ResolvedTask], list[s
                     bar_label=task.label,
                     start=task.start,
                     end=task.end,
-                    lane=task.lane,
+                    color=task.color,
                     grid_row=base + index,
                 )
             )
@@ -204,15 +211,17 @@ def resolve_gantt(
         if spec.duration_column is None
         else column_index(headers, spec.duration_column, "duration_column")
     )
-    lane_index = (
-        None if spec.lane_column is None else column_index(headers, spec.lane_column, "lane_column")
+    color_index = (
+        None
+        if spec.color_column is None
+        else column_index(headers, spec.color_column, "color_column")
     )
     row_group_index = (
         None if spec.row_column is None else column_index(headers, spec.row_column, "row_column")
     )
 
     staged: list[_Staged] = []
-    lanes: list[str | None] = []
+    colors: list[str | None] = []
     for row_index, row in enumerate(rows):
         start = _require_time(row[start_index], row_index=row_index, role="start")
         if start < 0:
@@ -235,26 +244,26 @@ def resolve_gantt(
                     f"the end at row {row_index} is {end}, which is not after its start "
                     f"{start}; a Gantt task must last at least one time unit"
                 )
-        lane: str | None = (
+        color: str | None = (
             None
-            if lane_index is None or row[lane_index] is None
-            else str(row[lane_index])
+            if color_index is None or row[color_index] is None
+            else str(row[color_index])
         )
-        if lane_index is not None and lane not in lanes:
-            lanes.append(lane)
+        if color_index is not None and color not in colors:
+            colors.append(color)
         group: str | None = (
             None
             if row_group_index is None or row[row_group_index] is None
             else str(row[row_group_index])
         )
         label = _rendered_text(row[task_index], placeholder=_MISSING_TASK_LABEL)
-        staged.append(_Staged(label=label, start=start, end=end, lane=lane, group=group))
+        staged.append(_Staged(label=label, start=start, end=end, color=color, group=group))
 
     if row_group_index is None:
         # One row per task, named by the task: the shape before grouping existed.
         tasks = [
             ResolvedTask(
-                bar_label=None, start=task.start, end=task.end, lane=task.lane, grid_row=index
+                bar_label=None, start=task.start, end=task.end, color=task.color, grid_row=index
             )
             for index, task in enumerate(staged)
         ]
@@ -277,7 +286,7 @@ def resolve_gantt(
         tasks=tuple(tasks),
         row_header=row_header,
         row_labels=tuple(row_labels),
-        lanes=tuple(lanes),
+        colors=tuple(colors),
         horizon=horizon,
     )
 
@@ -306,12 +315,13 @@ def render_gantt(workbook: Any, resolved: ResolvedGantt) -> str:
     def solid(rgb: str) -> Any:
         return PatternFill(start_color=rgb, end_color=rgb, fill_type="solid")
 
-    # Keyed by lane, or by None for the single default fill of a laneless Gantt.
+    # Keyed by colour value, or by None for the single default fill of a Gantt
+    # that named no color_column at all.
     fills: dict[str | None, Any] = {
-        lane: solid(_LANE_FILL_RGB[index % len(_LANE_FILL_RGB)])
-        for index, lane in enumerate(resolved.lanes)
+        color: solid(_COLOR_FILL_RGB[index % len(_COLOR_FILL_RGB)])
+        for index, color in enumerate(resolved.colors)
     }
-    fills.setdefault(None, solid(_LANE_FILL_RGB[0]))
+    fills.setdefault(None, solid(_COLOR_FILL_RGB[0]))
 
     worksheet = workbook.create_sheet(resolved.sheet_name)
     header_row = 1
@@ -335,18 +345,18 @@ def render_gantt(workbook: Any, resolved: ResolvedGantt) -> str:
     for task in resolved.tasks:
         row = header_row + 1 + task.grid_row
         for offset in range(task.start, task.end):
-            worksheet.cell(row=row, column=offset + 2).fill = fills[task.lane]
+            worksheet.cell(row=row, column=offset + 2).fill = fills[task.color]
         if task.bar_label is not None:
             _write_text(worksheet, row=row, column=task.start + 2, text=task.bar_label)
 
-    # The legend is what keeps lane identity off colour alone.
+    # The legend is what keeps color identity off colour alone.
     legend_row = header_row + len(resolved.row_labels) + 2
-    for lane_index, lane in enumerate(resolved.lanes):
+    for color_index, color in enumerate(resolved.colors):
         _write_text(
             worksheet,
-            row=legend_row + lane_index,
+            row=legend_row + color_index,
             column=1,
-            text=_rendered_text(lane, placeholder=_MISSING_LANE_NAME),
+            text=_rendered_text(color, placeholder=_MISSING_COLOR_NAME),
         )
-        worksheet.cell(row=legend_row + lane_index, column=2).fill = fills[lane]
+        worksheet.cell(row=legend_row + color_index, column=2).fill = fills[color]
     return str(worksheet.title)

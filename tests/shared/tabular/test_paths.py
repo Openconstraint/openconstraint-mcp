@@ -47,9 +47,24 @@ def test_read_path_accepts_an_uppercase_suffix(tmp_path: Path) -> None:
     assert validate_tabular_read_path(target) == target
 
 
+def test_read_path_rejects_a_relative_path() -> None:
+    # A relative path resolves against the SERVER's working directory, which the
+    # caller cannot know, so it is refused up front rather than failing later
+    # with a "does not exist" naming a directory they never wrote.
+    with pytest.raises(ValueError, match="absolute"):
+        validate_tabular_read_path(Path("data.csv"))
+
+
 def test_write_path_rejects_a_relative_path() -> None:
     with pytest.raises(ValueError, match="absolute"):
         validate_tabular_write_path(Path("out.csv"))
+
+
+def test_write_path_accepts_a_tilde_path() -> None:
+    # "~/out.xlsx" names an absolute location but is_absolute() is False for it.
+    assert validate_tabular_write_path(Path("~/out.xlsx")) == (
+        Path("~").expanduser() / "out.xlsx"
+    ).resolve()
 
 
 def test_write_path_rejects_a_missing_parent_directory(tmp_path: Path) -> None:

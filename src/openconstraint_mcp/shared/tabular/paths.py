@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ...schemas.tabular import TabularFormat
-from ..path_checks import resolve_absolute_target
+from ..path_checks import require_absolute_path, resolve_absolute_target, resolve_existing_file
 
 _SUFFIX_FORMATS: dict[str, TabularFormat] = {".xlsx": "xlsx", ".csv": "csv"}
 
@@ -22,14 +22,17 @@ def _format_for(path: Path) -> TabularFormat:
 
 
 def validate_tabular_read_path(path: Path) -> Path:
-    """Resolve ``path`` and require an existing ``.xlsx``/``.csv`` regular file."""
-    resolved = path.expanduser().resolve()
-    _format_for(resolved)
-    if not resolved.exists():
-        raise ValueError(f"tabular file does not exist: {resolved}")
-    if not resolved.is_file():
-        raise ValueError(f"tabular path is not a regular file: {resolved}")
-    return resolved
+    """Resolve ``path`` and require an existing absolute ``.xlsx``/``.csv`` regular file.
+
+    Absolute is required here for the same reason the write path requires it:
+    the server's working directory belongs to the MCP client, so a relative
+    path names a location the caller cannot predict. The suffix is checked
+    before existence so a ``.ods`` typo reports the unsupported type rather
+    than a missing file.
+    """
+    expanded = require_absolute_path(path, arg_name="path")
+    _format_for(expanded)
+    return resolve_existing_file(expanded, arg_name="tabular file")
 
 
 def validate_tabular_write_path(path: Path) -> Path:
