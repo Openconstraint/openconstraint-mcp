@@ -12,6 +12,8 @@ from openconstraint_mcp.schemas.tabular import GanttSpec, TabularCell
 from openconstraint_mcp.shared.tabular.gantt import render_gantt, resolve_gantt
 from openconstraint_mcp.shared.tabular.limits import (
     GANTT_MAX_HORIZON_COLUMNS,
+    MAX_COLUMN_WIDTH,
+    MIN_COLUMN_WIDTH,
     XLSX_MAX_STRING_LENGTH,
 )
 
@@ -472,3 +474,37 @@ def test_grouping_puts_the_legend_below_the_collapsed_grid() -> None:
         spec=_spec(row_column="machine", color_column="color"),
     )
     assert [worksheet.cell(row=row, column=1).value for row in (4, 5)] == ["alpha", "beta"]
+
+
+def test_the_label_column_is_fitted_to_its_longest_row_label() -> None:
+    rows: list[list[TabularCell]] = [["a" * 25, 0, 1, "alpha"]]
+    worksheet = _rendered(rows=rows)
+    assert worksheet.column_dimensions["A"].width == 25
+
+
+def test_the_label_column_never_narrows_below_the_shared_floor() -> None:
+    # "cut"/"polish" are all shorter than the floor, which the data sheet's own
+    # fitted columns hold to as well.
+    assert _rendered().column_dimensions["A"].width == MIN_COLUMN_WIDTH
+
+
+def test_the_label_column_stops_at_the_shared_ceiling() -> None:
+    rows: list[list[TabularCell]] = [["a" * 500, 0, 1, "alpha"]]
+    worksheet = _rendered(rows=rows)
+    assert worksheet.column_dimensions["A"].width == MAX_COLUMN_WIDTH
+
+
+def test_a_legend_name_widens_the_label_column() -> None:
+    # The legend shares column A with the row labels, so a colour value longer
+    # than every task name still has to fit — a clipped one would put identity
+    # back on colour alone.
+    rows: list[list[TabularCell]] = [["cut", 0, 1, "c" * 30]]
+    worksheet = _rendered(rows=rows, spec=_spec(color_column="color"))
+    assert worksheet.column_dimensions["A"].width == 30
+
+
+def test_the_title_does_not_widen_the_label_column() -> None:
+    # A1 is the only cell in row 1, so a long title overflows into the empty
+    # columns beside it rather than stretching the grid's label column.
+    worksheet = _rendered(spec=_spec(title="t" * 50))
+    assert worksheet.column_dimensions["A"].width == MIN_COLUMN_WIDTH

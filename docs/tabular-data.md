@@ -192,7 +192,10 @@ turning a numeric column into text. Numeric and text codes (`0.00`, `#,##0`,
 row_column=None, color_column=None, sheet_name="Gantt", title=None)` adds one
 sheet whose column A names each grid row and whose remaining columns are one
 discrete time unit each, numbered from 0. A task fills the columns
-`[start, end)`.
+`[start, end)`. Column A is fitted to the longest label it carries — a row name
+or a legend entry — inside the same 8–60 character band `style` uses, so a
+label is never clipped; a `title` is excluded from that fit, since row 1 has no
+other cell and a long one simply overflows into the empty columns beside it.
 
 - Times are **discrete non-negative integers** — the native shape of CP-SAT and
   MiniZinc scheduling output. A float, a numeric string, or `null` is rejected

@@ -39,7 +39,7 @@ from .guards import (
     _check_no_illegal_xml_characters,
     _check_not_oversized_xlsx_string,
 )
-from .limits import GANTT_MAX_HORIZON_COLUMNS
+from .limits import GANTT_MAX_HORIZON_COLUMNS, MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH
 
 # The dataviz reference palette's categorical slots, light mode, in order.
 _COLOR_FILL_RGB: tuple[str, ...] = (
@@ -407,4 +407,20 @@ def render_gantt(workbook: Any, resolved: ResolvedGantt) -> str:
             text=_rendered_text(color, placeholder=_MISSING_COLOR_NAME),
         )
         worksheet.cell(row=legend_row + color_index, column=2).fill = fills[color]
+
+    # Column A carries the row labels and the legend names, so it is fitted to
+    # them the way the data sheet's own columns are fitted to their cells — and
+    # inside the same width band, so the two sheets read alike. A clipped label
+    # would put identity back on colour alone, which is what the legend exists
+    # to prevent. The title is deliberately excluded: row 1 holds no other cell,
+    # so a long one overflows into the empty columns beside it instead of
+    # needing column A to grow to fit it.
+    label_lengths: list[int] = [
+        len(resolved.row_header),
+        *(len(label) for label in resolved.row_labels),
+        *(len(_rendered_text(color, placeholder=_MISSING_COLOR_NAME)) for color in resolved.colors),
+    ]
+    worksheet.column_dimensions["A"].width = min(
+        max(max(label_lengths), MIN_COLUMN_WIDTH), MAX_COLUMN_WIDTH
+    )
     return str(worksheet.title)

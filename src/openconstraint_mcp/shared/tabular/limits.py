@@ -25,10 +25,20 @@ XLSX_MAX_STRING_LENGTH: int = 32_767
 # columns.
 GANTT_MAX_HORIZON_COLUMNS: int = 512
 
+# The band a text-fitted column width stays inside, in Excel character units.
+# The floor keeps a one-character column clickable; the ceiling stops one long
+# value from pushing every other column off screen. Shared by the data sheet's
+# per-column fitting and the Gantt sheet's label column, which fit different
+# text but must land on the same readable range.
+MIN_COLUMN_WIDTH: int = 8
+MAX_COLUMN_WIDTH: int = 60
+
 __all__ = [
     "DEFAULT_MAX_ROWS",
     "GANTT_MAX_HORIZON_COLUMNS",
+    "MAX_COLUMN_WIDTH",
     "MAX_TABULAR_RESPONSE_BYTES",
+    "MIN_COLUMN_WIDTH",
     "WRITE_SHEET_NAME",
     "XLSX_MAX_STRING_LENGTH",
 ]

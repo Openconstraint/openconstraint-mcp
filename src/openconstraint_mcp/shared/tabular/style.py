@@ -25,11 +25,7 @@ from typing import Any
 from ...schemas.tabular import TableStyle, TabularCell
 from .columns import column_index
 from .guards import _check_no_carriage_return, _check_no_illegal_xml_characters
-
-# Excel character units. The floor keeps a one-character column clickable; the
-# ceiling stops one long cell from pushing every other column off screen.
-_MIN_COLUMN_WIDTH: int = 8
-_MAX_COLUMN_WIDTH: int = 60
+from .limits import MAX_COLUMN_WIDTH, MIN_COLUMN_WIDTH
 
 _HEADER_FILL_RGB: str = "FFE1E0D9"
 _BAND_FILL_RGB: str = "FFF9F9F7"
@@ -89,7 +85,7 @@ def resolve_style(
             longest = max(
                 [len(header), *(_rendered_length(row[index]) for row in rows)],
             )
-            widths.append(min(max(longest, _MIN_COLUMN_WIDTH), _MAX_COLUMN_WIDTH))
+            widths.append(min(max(longest, MIN_COLUMN_WIDTH), MAX_COLUMN_WIDTH))
         number_formats.append(override.number_format if override is not None else None)
     return ResolvedStyle(widths=tuple(widths), number_formats=tuple(number_formats))
 
