@@ -80,14 +80,14 @@ class ResolvedGantt:
     horizon: int
 
 
-def _require_time(value: TabularCell, *, row_index: int, role: str) -> int:
+def _require_time(value: object, *, row_index: int, role: str) -> int:
     """Return ``value`` as a discrete time, or raise ``ValueError``."""
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(
             f"the {role} at row {row_index} is {value!r}; a Gantt needs a discrete "
             f"integer time, and values are never coerced"
         )
-    return int(value)
+    return value
 
 
 def _rendered_text(value: TabularCell, *, placeholder: str) -> str:
