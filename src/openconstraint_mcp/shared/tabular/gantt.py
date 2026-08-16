@@ -57,27 +57,53 @@ _TASK_COLUMN_HEADER: str = "Task"
 # legend swatch would put lane identity back on colour alone.
 _MISSING_TASK_LABEL: str = "(untitled task)"
 _MISSING_LANE_NAME: str = "(no lane)"
+_MISSING_ROW_LABEL: str = "(no group)"
 
 
 @dataclass(frozen=True)
 class ResolvedTask:
-    """One task's rendered row: its label, its half-open span, and its lane."""
+    """One task's bar: its half-open span, its lane colour, and the row it sits on.
+
+    ``bar_label`` is the text drawn inside the bar, or ``None`` when column A
+    already names this task — an ungrouped grid gives every task its own row, so
+    a bar label there would only repeat what is one cell to its left.
+    """
+
+    bar_label: str | None
+    start: int
+    end: int
+    lane: str | None
+    grid_row: int
+
+
+@dataclass(frozen=True)
+class ResolvedGantt:
+    """Everything ``render_gantt`` needs, with nothing left to validate.
+
+    ``row_labels`` is column A top to bottom, one entry per grid row, and
+    ``row_header`` is the cell above it. Ungrouped they are the task labels
+    under ``"Task"``; grouped they are the resource values under that column's
+    own header, repeated once per sub-row a resource needed.
+    """
+
+    sheet_name: str
+    title: str | None
+    tasks: tuple[ResolvedTask, ...]
+    row_header: str
+    row_labels: tuple[str, ...]
+    lanes: tuple[str | None, ...]
+    horizon: int
+
+
+@dataclass(frozen=True)
+class _Staged:
+    """One task read off a row, before its grid row is known."""
 
     label: str
     start: int
     end: int
     lane: str | None
-
-
-@dataclass(frozen=True)
-class ResolvedGantt:
-    """Everything ``render_gantt`` needs, with nothing left to validate."""
-
-    sheet_name: str
-    title: str | None
-    tasks: tuple[ResolvedTask, ...]
-    lanes: tuple[str | None, ...]
-    horizon: int
+    group: str | None
 
 
 def _require_time(value: object, *, row_index: int, role: str) -> int:
@@ -93,6 +119,52 @@ def _require_time(value: object, *, row_index: int, role: str) -> int:
 def _rendered_text(value: TabularCell, *, placeholder: str) -> str:
     """Render one cell as the label text a Gantt sheet shows."""
     return placeholder if value is None else str(value)
+
+
+def _assign_grid_rows(staged: list[_Staged]) -> tuple[list[ResolvedTask], list[str]]:
+    """Pack tasks onto shared grid rows, one block of rows per group.
+
+    Within a group each task takes the first sub-row already free at its start,
+    opening a new one only when none is — the greedy interval-partitioning rule,
+    which uses exactly as many sub-rows as the group's deepest overlap. A
+    disjunctive resource (no two tasks at once, the job-shop case) therefore
+    collapses to a single row, while a cumulative one spills only as far as it
+    must. Overlap is never resolved by drawing one bar over another: this
+    package refuses to lose data silently, and a dropped bar is lost data.
+
+    A spilled sub-row repeats its group's name rather than being left blank, so
+    a resource is never identified by position alone.
+    """
+    groups: dict[str | None, list[_Staged]] = {}
+    for task in staged:
+        groups.setdefault(task.group, []).append(task)
+
+    tasks: list[ResolvedTask] = []
+    row_labels: list[str] = []
+    for group, members in groups.items():
+        base: int = len(row_labels)
+        sub_row_ends: list[int] = []
+        for task in sorted(members, key=lambda member: member.start):
+            index: int = next(
+                (slot for slot, end in enumerate(sub_row_ends) if end <= task.start),
+                len(sub_row_ends),
+            )
+            if index == len(sub_row_ends):
+                sub_row_ends.append(task.end)
+            else:
+                sub_row_ends[index] = task.end
+            tasks.append(
+                ResolvedTask(
+                    bar_label=task.label,
+                    start=task.start,
+                    end=task.end,
+                    lane=task.lane,
+                    grid_row=base + index,
+                )
+            )
+        label: str = _rendered_text(group, placeholder=_MISSING_ROW_LABEL)
+        row_labels.extend([label] * len(sub_row_ends))
+    return tasks, row_labels
 
 
 def resolve_gantt(
@@ -135,8 +207,11 @@ def resolve_gantt(
     lane_index = (
         None if spec.lane_column is None else column_index(headers, spec.lane_column, "lane_column")
     )
+    row_group_index = (
+        None if spec.row_column is None else column_index(headers, spec.row_column, "row_column")
+    )
 
-    tasks: list[ResolvedTask] = []
+    staged: list[_Staged] = []
     lanes: list[str | None] = []
     for row_index, row in enumerate(rows):
         start = _require_time(row[start_index], row_index=row_index, role="start")
@@ -167,8 +242,27 @@ def resolve_gantt(
         )
         if lane_index is not None and lane not in lanes:
             lanes.append(lane)
+        group: str | None = (
+            None
+            if row_group_index is None or row[row_group_index] is None
+            else str(row[row_group_index])
+        )
         label = _rendered_text(row[task_index], placeholder=_MISSING_TASK_LABEL)
-        tasks.append(ResolvedTask(label=label, start=start, end=end, lane=lane))
+        staged.append(_Staged(label=label, start=start, end=end, lane=lane, group=group))
+
+    if row_group_index is None:
+        # One row per task, named by the task: the shape before grouping existed.
+        tasks = [
+            ResolvedTask(
+                bar_label=None, start=task.start, end=task.end, lane=task.lane, grid_row=index
+            )
+            for index, task in enumerate(staged)
+        ]
+        row_labels = [task.label for task in staged]
+        row_header = _TASK_COLUMN_HEADER
+    else:
+        tasks, row_labels = _assign_grid_rows(staged)
+        row_header = spec.row_column or _TASK_COLUMN_HEADER
 
     horizon = max((task.end for task in tasks), default=0)
     if horizon > GANTT_MAX_HORIZON_COLUMNS:
@@ -181,6 +275,8 @@ def resolve_gantt(
         sheet_name=spec.sheet_name,
         title=spec.title,
         tasks=tuple(tasks),
+        row_header=row_header,
+        row_labels=tuple(row_labels),
         lanes=tuple(lanes),
         horizon=horizon,
     )
@@ -223,20 +319,28 @@ def render_gantt(workbook: Any, resolved: ResolvedGantt) -> str:
         _write_text(worksheet, row=1, column=1, text=resolved.title)
         header_row = 2
 
-    _write_text(worksheet, row=header_row, column=1, text=_TASK_COLUMN_HEADER)
-    for offset in range(resolved.horizon):
+    _write_text(worksheet, row=header_row, column=1, text=resolved.row_header)
+    # One label per time unit plus the closing boundary, so every label reads as
+    # the left edge of what follows it and the last one states the horizon: a
+    # bar ending at 11 visibly stops at the tick marked 11. Only [0, horizon)
+    # are unit columns; the tick can never be filled.
+    for offset in range(resolved.horizon + 1):
         column = offset + 2
         worksheet.cell(row=header_row, column=column).value = offset
         worksheet.column_dimensions[get_column_letter(column)].width = _TIME_COLUMN_WIDTH
 
-    for task_index, task in enumerate(resolved.tasks):
-        row = header_row + 1 + task_index
-        _write_text(worksheet, row=row, column=1, text=task.label)
+    for row_index, row_label in enumerate(resolved.row_labels):
+        _write_text(worksheet, row=header_row + 1 + row_index, column=1, text=row_label)
+
+    for task in resolved.tasks:
+        row = header_row + 1 + task.grid_row
         for offset in range(task.start, task.end):
             worksheet.cell(row=row, column=offset + 2).fill = fills[task.lane]
+        if task.bar_label is not None:
+            _write_text(worksheet, row=row, column=task.start + 2, text=task.bar_label)
 
     # The legend is what keeps lane identity off colour alone.
-    legend_row = header_row + len(resolved.tasks) + 2
+    legend_row = header_row + len(resolved.row_labels) + 2
     for lane_index, lane in enumerate(resolved.lanes):
         _write_text(
             worksheet,

@@ -21,6 +21,13 @@ _ROWS: list[list[TabularCell]] = [
     ["polish", 3, 2, "beta"],
 ]
 
+# The same two tasks plus a resource column, so a grouped render can share a row.
+_GROUPED_HEADERS = ["task", "start", "duration", "lane", "machine"]
+_GROUPED_ROWS: list[list[TabularCell]] = [
+    ["cut", 0, 3, "alpha", "M1"],
+    ["polish", 3, 2, "beta", "M1"],
+]
+
 
 def _spec(**overrides: Any) -> GanttSpec:
     fields: dict[str, Any] = {
@@ -291,3 +298,138 @@ def test_a_formula_looking_title_is_written_as_a_string_cell() -> None:
 def test_a_title_shifts_the_grid_down_one_row() -> None:
     worksheet = _rendered(spec=_spec(title="Line 1 schedule"))
     assert [worksheet.cell(row=row, column=1).value for row in (3, 4)] == ["cut", "polish"]
+
+
+# --- the closing axis tick ------------------------------------------------------
+
+
+def test_the_time_axis_ends_with_a_closing_tick() -> None:
+    # _ROWS spans [0, 5): five unit columns labelled 0..4 in sheet columns 2..6,
+    # then the boundary the last bar ends at, so a makespan reads off the axis.
+    worksheet = _rendered()
+    assert worksheet.cell(row=1, column=7).value == 5
+
+
+def test_the_closing_tick_column_is_never_filled() -> None:
+    # It marks a boundary, not a sixth time unit; a bar can only occupy [0, horizon).
+    worksheet = _rendered()
+    assert _filled_columns(worksheet, row=2, width=7) == [2, 3, 4]
+
+
+# --- row_column grouping --------------------------------------------------------
+
+
+def test_resolve_rejects_a_row_column_that_is_not_a_header() -> None:
+    with pytest.raises(ValueError, match="'absent'"):
+        resolve_gantt(_GROUPED_HEADERS, _GROUPED_ROWS, _spec(row_column="absent"))
+
+
+def test_resolve_rejects_a_row_column_naming_a_duplicated_header() -> None:
+    headers = ["task", "start", "duration", "machine", "machine"]
+    rows: list[list[TabularCell]] = [["cut", 0, 3, "M1", "M1"]]
+    with pytest.raises(ValueError, match="ambiguous"):
+        resolve_gantt(headers, rows, _spec(row_column="machine"))
+
+
+def test_tasks_sharing_a_row_value_share_one_grid_row() -> None:
+    worksheet = _rendered(
+        headers=_GROUPED_HEADERS, rows=_GROUPED_ROWS, spec=_spec(row_column="machine")
+    )
+    # "cut" [0,3) and "polish" [3,5) both land on the single M1 row.
+    assert _filled_columns(worksheet, row=2, width=7) == [2, 3, 4, 5, 6]
+
+
+def test_a_grouped_row_is_named_by_its_row_column_value() -> None:
+    worksheet = _rendered(
+        headers=_GROUPED_HEADERS, rows=_GROUPED_ROWS, spec=_spec(row_column="machine")
+    )
+    assert worksheet.cell(row=2, column=1).value == "M1"
+
+
+def test_a_grouped_grid_heads_its_first_column_with_the_row_columns_header() -> None:
+    worksheet = _rendered(
+        headers=_GROUPED_HEADERS, rows=_GROUPED_ROWS, spec=_spec(row_column="machine")
+    )
+    assert worksheet.cell(row=1, column=1).value == "machine"
+
+
+def test_an_ungrouped_grid_still_heads_its_first_column_with_task() -> None:
+    assert _rendered().cell(row=1, column=1).value == "Task"
+
+
+def test_a_grouped_bar_carries_its_task_label() -> None:
+    # Column A now names the resource, so task identity moves into the bar.
+    worksheet = _rendered(
+        headers=_GROUPED_HEADERS, rows=_GROUPED_ROWS, spec=_spec(row_column="machine")
+    )
+    assert [worksheet.cell(row=2, column=column).value for column in (2, 5)] == ["cut", "polish"]
+
+
+def test_an_ungrouped_bar_carries_no_label() -> None:
+    # Column A already names the task, so a bar label would only duplicate it.
+    worksheet = _rendered()
+    assert worksheet.cell(row=2, column=2).value is None
+
+
+def test_a_formula_looking_bar_label_is_written_as_a_string_cell() -> None:
+    rows: list[list[TabularCell]] = [["=1+1", 0, 1, "alpha", "M1"]]
+    worksheet = _rendered(headers=_GROUPED_HEADERS, rows=rows, spec=_spec(row_column="machine"))
+    assert worksheet.cell(row=2, column=2).data_type == "s"
+
+
+def test_overlapping_tasks_in_one_group_spill_onto_sub_rows() -> None:
+    # One resource, but the two spans collide, so M1 cannot be a single row.
+    rows: list[list[TabularCell]] = [
+        ["cut", 0, 3, "alpha", "M1"],
+        ["polish", 1, 3, "beta", "M1"],
+    ]
+    resolved = resolve_gantt(_GROUPED_HEADERS, rows, _spec(row_column="machine"))
+    assert resolved.row_labels == ("M1", "M1")
+
+
+def test_a_spilled_sub_row_repeats_its_row_name() -> None:
+    # Identity must never rest on position: every sub-row names its resource.
+    rows: list[list[TabularCell]] = [
+        ["cut", 0, 3, "alpha", "M1"],
+        ["polish", 1, 3, "beta", "M1"],
+    ]
+    worksheet = _rendered(headers=_GROUPED_HEADERS, rows=rows, spec=_spec(row_column="machine"))
+    assert [worksheet.cell(row=row, column=1).value for row in (2, 3)] == ["M1", "M1"]
+
+
+def test_a_freed_sub_row_is_reused_by_a_later_task() -> None:
+    # a[0,2) and b[2,4) fit one sub-row; only c[0,4) needs a second.
+    rows: list[list[TabularCell]] = [
+        ["a", 0, 2, "alpha", "M1"],
+        ["b", 2, 2, "alpha", "M1"],
+        ["c", 0, 4, "beta", "M1"],
+    ]
+    worksheet = _rendered(headers=_GROUPED_HEADERS, rows=rows, spec=_spec(row_column="machine"))
+    assert [worksheet.cell(row=2, column=column).value for column in (2, 4)] == ["a", "b"]
+
+
+def test_a_three_deep_overlap_opens_three_sub_rows() -> None:
+    rows: list[list[TabularCell]] = [
+        [name, 0, 3, "alpha", "M1"] for name in ("a", "b", "c")
+    ]
+    worksheet = _rendered(headers=_GROUPED_HEADERS, rows=rows, spec=_spec(row_column="machine"))
+    assert [worksheet.cell(row=row, column=2).value for row in (2, 3, 4)] == ["a", "b", "c"]
+
+
+def test_a_null_row_value_reads_back_as_a_placeholder(tmp_path: Path) -> None:
+    rows: list[list[TabularCell]] = [["cut", 0, 1, "alpha", None]]
+    worksheet = _reloaded(
+        _rendered(headers=_GROUPED_HEADERS, rows=rows, spec=_spec(row_column="machine")),
+        tmp_path,
+    )
+    assert worksheet.cell(row=2, column=1).value == "(no group)"
+
+
+def test_grouping_puts_the_lane_legend_below_the_collapsed_grid() -> None:
+    # Two tasks collapse to one M1 row, so the legend rises a row with them.
+    worksheet = _rendered(
+        headers=_GROUPED_HEADERS,
+        rows=_GROUPED_ROWS,
+        spec=_spec(row_column="machine", lane_column="lane"),
+    )
+    assert [worksheet.cell(row=row, column=1).value for row in (4, 5)] == ["alpha", "beta"]

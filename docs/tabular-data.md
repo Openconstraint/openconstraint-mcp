@@ -179,9 +179,10 @@ turning a numeric column into text. Numeric and text codes (`0.00`, `#,##0`,
 ### `gantt` — a cell-grid timeline sheet
 
 `GanttSpec(task_column, start_column, end_column=None, duration_column=None,
-lane_column=None, sheet_name="Gantt", title=None)` adds one sheet whose column A
-holds task labels and whose remaining columns are one discrete time unit each,
-numbered from 0. A task fills the columns `[start, end)`.
+row_column=None, lane_column=None, sheet_name="Gantt", title=None)` adds one
+sheet whose column A names each grid row and whose remaining columns are one
+discrete time unit each, numbered from 0. A task fills the columns
+`[start, end)`.
 
 - Times are **discrete non-negative integers** — the native shape of CP-SAT and
   MiniZinc scheduling output. A float, a numeric string, or `null` is rejected
@@ -189,16 +190,47 @@ numbered from 0. A task fills the columns `[start, end)`.
 - Exactly one of `end_column` (an absolute end) or `duration_column` (a length)
   must be given. Either way a task must span **at least one time unit**: a
   duration below 1, and an end not strictly after its start, are both rejected.
-- The grid is capped at **512 time columns**; a wider schedule is rejected with
+- The grid is capped at **512 time units**; a wider schedule is rejected with
   the computed horizon in the message. The cap is fixed, not configurable.
-- `lane_column` colours tasks by lane from a validated categorical palette and
-  adds a lane → colour legend below the grid, so identity never rests on colour
-  alone. Lanes past the eighth reuse the palette from the start.
 - `title` is free text (not a column reference): it lands in `A1` and shifts the
   grid down one row.
-- A `null` task label renders as `(untitled task)` and a `null` lane as
-  `(no lane)` — a blank cell would read back as null and leave a legend swatch
-  unnamed, putting lane identity back on colour alone.
+
+### The two axes: `row_column` and `lane_column`
+
+These are independent channels, and a scheduling result usually wants both:
+
+- **`row_column` — the row axis.** Every task sharing a value lands on one row,
+  named by that value. This is the *resource* view: pass the machine, vehicle,
+  operator, or crew column and contention and idle gaps become visible at a
+  glance. Omit it and each task keeps its own row, named by `task_column`.
+- **`lane_column` — the colour axis.** Colours bars from a validated categorical
+  palette and adds a lane → colour legend below the grid, so identity never
+  rests on colour alone. Lanes past the eighth reuse the palette from the start.
+
+For a job shop, `row_column="Machine"` with `lane_column="Job"` gives one row
+per machine with each job traceable across machines; swapping them gives the
+job-centric view, one row per job coloured by machine, where a job's waiting
+time between operations is what stands out. Same data, same tool, two diagnoses.
+
+When `row_column` groups tasks, column A names the resource, so each bar carries
+its **task label inside it**. Two tasks on one row whose spans **overlap** — a
+cumulative resource running work in parallel — spill onto extra rows rather than
+one bar overwriting the other; each sub-row repeats the resource name, so a row
+is never identified by position alone. A resource whose tasks never overlap (the
+disjunctive case) always collapses to exactly one row.
+
+- A `null` task label renders as `(untitled task)`, a `null` lane as
+  `(no lane)`, and a `null` `row_column` value as `(no group)` — a blank cell
+  would read back as null and leave a legend swatch or a grid row unnamed.
+
+### Reading the time axis
+
+Each label marks the **left edge** of its column, and the axis carries one final
+tick at the horizon after the last unit column. A task ending at 11 therefore
+fills the units labelled up to 10 and stops exactly at the tick marked 11, so a
+makespan reads straight off the chart instead of being inferred as
+last-label-plus-one. That closing tick is a boundary, not a time unit: no bar
+can ever occupy it.
 
 No cell on the sheet is ever merged — the read path exposes only a merge's
 top-left value, so a merge would silently lose data.
