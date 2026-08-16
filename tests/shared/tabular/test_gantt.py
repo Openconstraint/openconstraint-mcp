@@ -210,6 +210,17 @@ def test_two_lanes_get_different_fills() -> None:
     assert first != second
 
 
+def test_a_null_lane_does_not_merge_with_a_lane_named_like_its_placeholder() -> None:
+    rows: list[list[TabularCell]] = [
+        ["missing", 0, 1, None],
+        ["literal", 1, 1, "(no lane)"],
+    ]
+    worksheet: Any = _rendered(rows=rows, spec=_spec(lane_column="lane"))
+    missing: str = worksheet.cell(row=2, column=2).fill.fgColor.rgb
+    literal: str = worksheet.cell(row=3, column=3).fill.fgColor.rgb
+    assert missing != literal
+
+
 def test_a_ninth_lane_wraps_back_to_the_first_palette_slot() -> None:
     # Pins the documented cycling: the palette has eight slots, and a lane set
     # comes from caller data, so lane 9 reuses lane 1's fill. The legend is what

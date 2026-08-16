@@ -76,7 +76,7 @@ class ResolvedGantt:
     sheet_name: str
     title: str | None
     tasks: tuple[ResolvedTask, ...]
-    lanes: tuple[str, ...]
+    lanes: tuple[str | None, ...]
     horizon: int
 
 
@@ -137,7 +137,7 @@ def resolve_gantt(
     )
 
     tasks: list[ResolvedTask] = []
-    lanes: list[str] = []
+    lanes: list[str | None] = []
     for row_index, row in enumerate(rows):
         start = _require_time(row[start_index], row_index=row_index, role="start")
         if start < 0:
@@ -160,12 +160,12 @@ def resolve_gantt(
                     f"the end at row {row_index} is {end}, which is not after its start "
                     f"{start}; a Gantt task must last at least one time unit"
                 )
-        lane = (
+        lane: str | None = (
             None
-            if lane_index is None
-            else _rendered_text(row[lane_index], placeholder=_MISSING_LANE_NAME)
+            if lane_index is None or row[lane_index] is None
+            else str(row[lane_index])
         )
-        if lane is not None and lane not in lanes:
+        if lane_index is not None and lane not in lanes:
             lanes.append(lane)
         label = _rendered_text(row[task_index], placeholder=_MISSING_TASK_LABEL)
         tasks.append(ResolvedTask(label=label, start=start, end=end, lane=lane))
@@ -238,6 +238,11 @@ def render_gantt(workbook: Any, resolved: ResolvedGantt) -> str:
     # The legend is what keeps lane identity off colour alone.
     legend_row = header_row + len(resolved.tasks) + 2
     for lane_index, lane in enumerate(resolved.lanes):
-        _write_text(worksheet, row=legend_row + lane_index, column=1, text=lane)
+        _write_text(
+            worksheet,
+            row=legend_row + lane_index,
+            column=1,
+            text=_rendered_text(lane, placeholder=_MISSING_LANE_NAME),
+        )
         worksheet.cell(row=legend_row + lane_index, column=2).fill = fills[lane]
     return str(worksheet.title)
