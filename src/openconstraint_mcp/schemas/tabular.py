@@ -28,7 +28,7 @@ from pydantic import (
 #   touched the disk. Rejecting them here keeps the failure pre-I/O.
 #
 # Lists and objects match no member and are rejected the same way.
-type TabularCell = (
+TabularCell = (
     StrictStr | StrictBool | StrictInt | Annotated[StrictFloat, Field(allow_inf_nan=False)] | None
 )
 

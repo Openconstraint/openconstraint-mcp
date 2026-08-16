@@ -258,7 +258,7 @@ FULL_PROMPT_NAMES = CORE_PROMPT_NAMES | {
 CORE_METADATA_BUDGET_BYTES = 40_000
 
 # The same rule for the full profile, which core-only budgets never covered.
-# Measured at 300 913 bytes across the 31 full tools, up 4 936 from 295 977
+# Measured at 300 813 bytes across the 31 full tools, up 4 836 from 295 977
 # before the styled-xlsx-export feature: four new schema models (ColumnStyle,
 # TableStyle, GanttSpec, ChartSpec) plus `write_tabular_result`'s three new
 # parameters (style, gantt, charts) — about two thirds of that cost is
