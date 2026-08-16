@@ -87,7 +87,7 @@ def _require_time(value: TabularCell, *, row_index: int, role: str) -> int:
             f"the {role} at row {row_index} is {value!r}; a Gantt needs a discrete "
             f"integer time, and values are never coerced"
         )
-    return value
+    return int(value)
 
 
 def _rendered_text(value: TabularCell, *, placeholder: str) -> str:
