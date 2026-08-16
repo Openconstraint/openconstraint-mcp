@@ -450,9 +450,7 @@ def test_a_freed_sub_row_is_reused_by_a_later_task() -> None:
 
 
 def test_a_three_deep_overlap_opens_three_sub_rows() -> None:
-    rows: list[list[TabularCell]] = [
-        [name, 0, 3, "alpha", "M1"] for name in ("a", "b", "c")
-    ]
+    rows: list[list[TabularCell]] = [[name, 0, 3, "alpha", "M1"] for name in ("a", "b", "c")]
     worksheet = _rendered(headers=_GROUPED_HEADERS, rows=rows, spec=_spec(row_column="machine"))
     assert [worksheet.cell(row=row, column=2).value for row in (2, 3, 4)] == ["a", "b", "c"]
 

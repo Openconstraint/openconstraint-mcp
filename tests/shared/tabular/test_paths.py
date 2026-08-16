@@ -62,9 +62,10 @@ def test_write_path_rejects_a_relative_path() -> None:
 
 def test_write_path_accepts_a_tilde_path() -> None:
     # "~/out.xlsx" names an absolute location but is_absolute() is False for it.
-    assert validate_tabular_write_path(Path("~/out.xlsx")) == (
-        Path("~").expanduser() / "out.xlsx"
-    ).resolve()
+    assert (
+        validate_tabular_write_path(Path("~/out.xlsx"))
+        == (Path("~").expanduser() / "out.xlsx").resolve()
+    )
 
 
 def test_write_path_rejects_a_missing_parent_directory(tmp_path: Path) -> None:

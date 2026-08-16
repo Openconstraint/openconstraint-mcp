@@ -96,6 +96,8 @@ def test_resolve_absolute_target_accepts_a_tilde_path() -> None:
 def test_resolve_absolute_target_still_rejects_a_relative_path() -> None:
     with pytest.raises(ValueError, match="target_path must be an absolute path"):
         resolve_absolute_target(
-            Path("out.xlsx"), arg_name="target_path", kind="regular file",
+            Path("out.xlsx"),
+            arg_name="target_path",
+            kind="regular file",
             is_valid_kind=Path.is_file,
         )

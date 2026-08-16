@@ -19,9 +19,7 @@ def column_index(headers: list[str], name: str, role: str) -> int:
     matches: list[int] = [index for index, header in enumerate(headers) if header == name]
     if not matches:
         available: str = ", ".join(headers)
-        raise ValueError(
-            f"{role} {name!r} is not a header of this table; headers are: {available}"
-        )
+        raise ValueError(f"{role} {name!r} is not a header of this table; headers are: {available}")
     if len(matches) > 1:
         raise ValueError(
             f"{role} {name!r} is ambiguous: it names {len(matches)} columns "

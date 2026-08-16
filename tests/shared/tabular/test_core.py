@@ -435,9 +435,7 @@ def test_the_data_sheet_stays_active_when_diagrams_are_added(tmp_path: Path) -> 
     # not steal it.
     target = tmp_path / "out.xlsx"
     charts = [ChartSpec(kind="bar", x_column="task", y_columns=["duration"])]
-    write_tabular_data(
-        _BASELINE_HEADERS, _BASELINE_ROWS, target, gantt=_gantt(), charts=charts
-    )
+    write_tabular_data(_BASELINE_HEADERS, _BASELINE_ROWS, target, gantt=_gantt(), charts=charts)
     assert load_workbook(target).active.title == "Sheet1"
 
 

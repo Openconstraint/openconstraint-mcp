@@ -1435,6 +1435,5 @@ WRITE_TABULAR_RESULT_DESCRIPTION = (
     "`sha256` is of the committed bytes, `sheets_written` lists the sheets "
     "written, data sheet first (empty for a CSV, which has none), and "
     "`diagrams_written` (one token per diagram, in render order: `gantt`, "
-    "`chart:bar`, `chart:line`, `chart:scatter`; styling adds none). "
-    + _TABULAR_LOCAL_ONLY
+    "`chart:bar`, `chart:line`, `chart:scatter`; styling adds none). " + _TABULAR_LOCAL_ONLY
 )

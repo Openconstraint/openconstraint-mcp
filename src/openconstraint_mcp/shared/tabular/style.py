@@ -107,9 +107,7 @@ def apply_style(worksheet: Any, resolved: ResolvedStyle, rows: list[list[Tabular
     header_fill = PatternFill(
         start_color=_HEADER_FILL_RGB, end_color=_HEADER_FILL_RGB, fill_type="solid"
     )
-    band_fill = PatternFill(
-        start_color=_BAND_FILL_RGB, end_color=_BAND_FILL_RGB, fill_type="solid"
-    )
+    band_fill = PatternFill(start_color=_BAND_FILL_RGB, end_color=_BAND_FILL_RGB, fill_type="solid")
     header_font = Font(bold=True, color=_HEADER_FONT_RGB)
 
     for index, width in enumerate(resolved.widths, start=1):

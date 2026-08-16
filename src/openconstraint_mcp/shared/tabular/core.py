@@ -116,9 +116,7 @@ def _reject_csv_presentation(
 ) -> None:
     """Refuse styling or diagrams on a CSV target rather than ignoring them."""
     requested = [
-        name
-        for name, value in (("style", style), ("gantt", gantt), ("charts", charts))
-        if value
+        name for name, value in (("style", style), ("gantt", gantt), ("charts", charts)) if value
     ]
     if requested:
         raise ValueError(

@@ -34,9 +34,7 @@ class ResolvedChart:
     row_count: int
 
 
-def _require_numeric_column(
-    rows: list[list[TabularCell]], index: int, *, column_name: str
-) -> None:
+def _require_numeric_column(rows: list[list[TabularCell]], index: int, *, column_name: str) -> None:
     """Reject a column holding anything a chart cannot plot as a number."""
     for row_index, row in enumerate(rows):
         cell = row[index]
@@ -117,9 +115,7 @@ def _build_chart(data_sheet: Any, resolved: ResolvedChart) -> Any:
     last_row = resolved.row_count + 1  # row 1 is the header row.
     if resolved.kind == "scatter":
         chart: Any = ScatterChart()
-        x_values = Reference(
-            data_sheet, min_col=resolved.x_index + 1, min_row=2, max_row=last_row
-        )
+        x_values = Reference(data_sheet, min_col=resolved.x_index + 1, min_row=2, max_row=last_row)
         for y_index in resolved.y_indexes:
             values = Reference(data_sheet, min_col=y_index + 1, min_row=1, max_row=last_row)
             chart.series.append(Series(values, x_values, title_from_data=True))

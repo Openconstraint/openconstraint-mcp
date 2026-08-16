@@ -263,9 +263,7 @@ def resolve_gantt(
     for row_index, row in enumerate(rows):
         start = _require_time(row[start_index], row_index=row_index, role="start")
         if start < 0:
-            raise ValueError(
-                f"the start at row {row_index} is {start}; a Gantt time must be >= 0"
-            )
+            raise ValueError(f"the start at row {row_index} is {start}; a Gantt time must be >= 0")
         if duration_index is not None:
             duration = _require_time(row[duration_index], row_index=row_index, role="duration")
             if duration < 1:
