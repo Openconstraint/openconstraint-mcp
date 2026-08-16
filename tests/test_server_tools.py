@@ -6,7 +6,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
@@ -111,7 +111,7 @@ def _structured(result: Any) -> dict[str, Any]:
     """
     assert isinstance(result, CallToolResult)
     assert result.structured_content is not None
-    return result.structured_content
+    return cast(dict[str, Any], result.structured_content)
 
 
 def _content_text(result: Any) -> str:
@@ -1643,7 +1643,9 @@ async def test_report_status_does_not_swallow_unrelated_value_error() -> None:
 
 def _tool_fn(mcp: Any, name: str) -> Any:
     """Return a registered tool's underlying (decorated) function for direct calls."""
-    return mcp._tool_manager.get_tool(name).fn
+    tool = mcp._tool_manager.get_tool(name)
+    assert tool is not None, f"no tool named {name!r} is registered"
+    return tool.fn
 
 
 def _assert_dual_channel_schedule(ctx: _FakeStatusContext, final_message: str) -> None:
@@ -3705,7 +3707,7 @@ async def test_submit_cpsat_python_file_job_rejects_both_checker_forms(tmp_path:
 def _fake_cpsat_run_result(
     *,
     status: str = "optimal",
-    solution: dict | None = None,
+    solution: dict[str, Any] | None = None,
     objective: float | None = 3.0,
     stdout: str = '{"status":"optimal","objective":3,"solution":{"x":3}}',
     duration_ms: int = 10,
@@ -4039,7 +4041,9 @@ async def test_write_tabular_result_tool_is_listed_with_its_inputs() -> None:
 
     tool = next(t for t in tools if t.name == "write_tabular_result")
     properties = tool.input_schema.get("properties", {})
-    assert {"headers", "rows", "target_path", "overwrite"} <= set(properties.keys())
+    assert {"headers", "rows", "target_path", "overwrite", "style", "gantt", "charts"} <= set(
+        properties.keys()
+    )
 
 
 @pytest.mark.asyncio
@@ -4127,6 +4131,53 @@ async def test_write_tabular_result_writes_an_xlsx(tmp_path: Path) -> None:
     # Round-trips through the reader with its scalar types intact.
     page = await mcp.call_tool("load_tabular_data", {"path": str(target)})
     assert _structured(page)["rows"] == [["a", 0]]
+
+
+@pytest.mark.asyncio
+async def test_write_tabular_result_renders_a_gantt_sheet(tmp_path: Path) -> None:
+    target = tmp_path / "schedule.xlsx"
+
+    mcp = create_mcp_server()
+    result = await mcp.call_tool(
+        "write_tabular_result",
+        {
+            "headers": ["task", "start", "duration"],
+            "rows": [["cut", 0, 3], ["polish", 3, 2]],
+            "target_path": str(target),
+            "gantt": {
+                "task_column": "task",
+                "start_column": "start",
+                "duration_column": "duration",
+            },
+        },
+    )
+
+    structured = _structured(result)
+    assert structured["sheets_written"] == ["Sheet1", "Gantt"]
+    assert structured["diagrams_written"] == ["gantt"]
+
+
+@pytest.mark.asyncio
+async def test_write_tabular_result_rejects_a_gantt_on_a_csv_target(tmp_path: Path) -> None:
+    target = tmp_path / "out.csv"
+
+    mcp = create_mcp_server()
+    with pytest.raises(Exception, match="Write .xlsx instead"):  # noqa: B017 - wrapped by MCPServer
+        await mcp.call_tool(
+            "write_tabular_result",
+            {
+                "headers": ["task", "start", "duration"],
+                "rows": [["cut", 0, 3]],
+                "target_path": str(target),
+                "gantt": {
+                    "task_column": "task",
+                    "start_column": "start",
+                    "duration_column": "duration",
+                },
+            },
+        )
+
+    assert not target.exists()
 
 
 @pytest.mark.asyncio

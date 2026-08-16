@@ -40,7 +40,9 @@ def _tool_fn(name: str) -> Any:
     error type — to the decorated function itself, the only seam where a test can
     observe the exact ``RuntimeError`` type and its preserved ``__cause__``.
     """
-    return create_mcp_server()._tool_manager.get_tool(name).fn
+    tool = create_mcp_server()._tool_manager.get_tool(name)
+    assert tool is not None, f"no tool named {name!r} is registered"
+    return tool.fn
 
 
 @pytest.mark.parametrize(
@@ -401,7 +403,7 @@ def test_classify_generic_value_error_is_invalid_request() -> None:
 
 
 def test_classify_tabular_overwrite_refusal_is_invalid_request() -> None:
-    # tabular_io.py's plain file-exists refusal reuses the words "refusing to
+    # tabular/core.py's plain file-exists refusal reuses the words "refusing to
     # overwrite" in prose but is a plain ValueError, never
     # InvalidSaveTargetError — classification is by type, so message content
     # (however similar to save_target.py's prose) cannot collide.

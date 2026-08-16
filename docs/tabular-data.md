@@ -8,9 +8,9 @@ to go back as one. Two backend-agnostic tools move scalars between local
   → `TabularData` (`headers`, `rows`, `sheet_name`, `available_sheets`,
   `row_offset`, `next_row_offset`, `total_rows`, `truncated`,
   `truncation_reason`).
-- **`write_tabular_result(headers, rows, target_path, overwrite=False)`**
+- **`write_tabular_result(headers, rows, target_path, overwrite=False, style=None, gantt=None, charts=None)`**
   → `TabularWriteResult` (`status`, `message`, `target_path`, `sha256`,
-  `format`, `rows_written`).
+  `format`, `rows_written`, `sheets_written`, `diagrams_written`).
 
 The server performs **mechanical I/O only** — it never infers what a column
 *means*. Interpreting columns and building `.dzn` data or CP-SAT structures is
@@ -71,8 +71,10 @@ not the string `"-5"` — or write `.xlsx`, which stores the text literally. The
 is no opt-in formula path.
 
 An XLSX cell string is capped at Excel's 32,767 characters; a longer one is
-rejected rather than silently truncated. XLSX writes a single sheet named
-`Sheet1`.
+rejected rather than silently truncated. The XLSX **data sheet** is always named
+`Sheet1` and stays the workbook's active sheet; only the presentation options
+below add further sheets beside it, and every string they write — task labels,
+colour-value names, a Gantt title — is stored as an explicit string cell too.
 
 ## XLSX round-trip hazards
 
@@ -109,14 +111,34 @@ silently change the value (or make the file unreadable) on the next read:
   next read. Use `\n` instead, or write `.csv`, which preserves `\r`/`\r\n`
   exactly.
 
+These restrictions are not limited to data cells. The illegal-character and
+carriage-return rejections also cover every string the presentation options
+below write — a `gantt`/`charts` `sheet_name` or `title`, and a
+`columns[*].number_format` code — because all of them reach the same XML
+writer. A `gantt.title` lands in a real cell, so it additionally takes the
+32,767-character cap and the empty-string rejection (omit `title` rather than
+send `""`); a chart `title` is chart rich text, not a cell, and takes neither.
+A chart also needs at least one data row to plot: `charts` over a zero-row
+table is rejected rather than written with an empty series.
+
 A malformed or corrupt XLSX file (not a valid zip, or missing the parts an
 XLSX workbook requires) is reported as an `invalid_request` diagnostic on
 read, not a raw parser crash.
 
-## The overwrite contract
+## Paths are absolute
 
-`target_path` must be an explicit **absolute** local path whose parent directory
-exists — the server never opens a file dialog.
+Both tools require an explicit **absolute** local path — `path` for a read,
+`target_path` for a write, whose parent directory must also exist. The server
+never opens a file dialog.
+
+This is not pedantry. An MCP server's working directory belongs to the *client*
+that launched it, and is typically neither the user's shell directory nor
+anything the calling model can discover. A relative path would therefore resolve
+somewhere unpredictable — reading a file nobody meant or writing one nobody can
+find — so it is refused up front instead. A leading `~` is expanded first and is
+accepted, since it names an absolute location.
+
+## The overwrite contract
 
 The write is **atomic** and by default **cannot clobber**: the file is staged in
 the target's own directory and published with a hard link, so with
@@ -133,10 +155,143 @@ safely rather than falling back to a clobber-prone commit.)
 publishes them — identical to the committed file's bytes, since the commit is
 a rename/link of that same staged file.
 
+## Presentation: styling, Gantt, and charts
+
+`style`, `gantt`, and `charts` are **optional and XLSX-only**. Omit all three and
+the output is exactly the plain table described above — byte-for-byte the same
+content as before these options existed. A `.csv` target combined with any of
+them is **rejected**, never silently ignored: a CSV has no sheets, no cell
+formatting, and no charts.
+
+Every rejection below happens *before* the staging file is created, so a refused
+styled write leaves the filesystem untouched, exactly like every other rejection.
+Columns are named by their **header string** in all three options; a duplicated
+header is ambiguous and rejected rather than resolved to the first match.
+
+### `style` — the polished preset
+
+`TableStyle(preset="polished", columns={})` formats the data sheet: bold, filled
+header row, `freeze_panes` on row 2, an auto filter over the used range, banded
+alternate rows, and a per-column width fitted to the widest rendered cell
+(clamped to 8–60 characters). The preset is fixed — this is a presentation
+switch, not a style DSL.
+
+`columns` maps a header name to `ColumnStyle(number_format=None, width=None)`:
+`number_format` is an openpyxl format code applied to that column's **data**
+cells (not its header), and `width` (1–255) overrides the fitted width. Styling
+never touches a cell's value or type, so the round-trip guarantees above still
+hold for a styled workbook — with one format code **rejected** to keep them
+holding: a *date* `number_format` (`yyyy-mm-dd`, `hh:mm:ss`, …) makes the reader
+hand back a `datetime`, which `load_tabular_data` renders as an ISO-8601 string,
+turning a numeric column into text. Numeric and text codes (`0.00`, `#,##0`,
+`0%`, `@`, `General`) are display-only and accepted.
+
+### `gantt` — a cell-grid timeline sheet
+
+`GanttSpec(task_column, start_column, end_column=None, duration_column=None,
+row_column=None, color_column=None, sheet_name="Gantt", title=None)` adds one
+sheet whose column A names each grid row and whose remaining columns are one
+discrete time unit each, numbered from 0. A task fills the columns
+`[start, end)`. Column A is fitted to the longest label it carries — a row name
+or a legend entry — inside the same 8–60 character band `style` uses, so a
+label is never clipped; a `title` is excluded from that fit, since row 1 has no
+other cell and a long one simply overflows into the empty columns beside it.
+
+- Times are **discrete non-negative integers** — the native shape of CP-SAT and
+  MiniZinc scheduling output. A float, a numeric string, or `null` is rejected
+  naming the offending row, never coerced.
+- Exactly one of `end_column` (an absolute end) or `duration_column` (a length)
+  must be given. Either way a task must span **at least one time unit**: a
+  duration below 1, and an end not strictly after its start, are both rejected.
+- The grid is capped at **512 time units**; a wider schedule is rejected with
+  the computed horizon in the message. The cap is fixed, not configurable.
+- `title` is free text (not a column reference): it lands in `A1` and shifts the
+  grid down one row.
+
+### The two axes: `row_column` and `color_column`
+
+These are independent channels, and a scheduling result usually wants both:
+
+- **`row_column` — the row axis.** Every task sharing a value lands on one row,
+  named by that value. This is the *resource* view: pass the machine, vehicle,
+  operator, or crew column and contention and idle gaps become visible at a
+  glance. Omit it and each task keeps its own row, named by `task_column`.
+- **`color_column` — the colour axis.** Colours bars from a validated categorical
+  palette and adds a value → colour legend below the grid, so identity never
+  rests on colour alone. Values past the eighth reuse the palette from the start.
+
+For a job shop, `row_column="Machine"` with `color_column="Job"` gives one row
+per machine with each job traceable across machines; swapping them gives the
+job-centric view, one row per job coloured by machine, where a job's waiting
+time between operations is what stands out. Same data, same tool, two diagnoses.
+
+When `row_column` groups tasks, column A names the resource, so each bar carries
+its **task label inside it**. Two tasks on one row whose spans **overlap** — a
+cumulative resource running work in parallel — spill onto extra rows rather than
+one bar overwriting the other; each sub-row repeats the resource name, so a row
+is never identified by position alone. A resource whose tasks never overlap (the
+disjunctive case) always collapses to exactly one row.
+
+- A `null` task label renders as `(untitled task)`, a `null` `color_column`
+  value as `(uncategorized)`, and a `null` `row_column` value as `(no group)`
+  — a blank cell
+  would read back as null and leave a legend swatch or a grid row unnamed.
+- Both axes identify a value by the label they render for it, so two **distinct
+  values that would render as the same label** are rejected naming the offending
+  row, never merged: `1` and `"1"` in one `row_column`, or a `row_column` cell
+  holding the literal string `(no group)` beside a `null` one. A repeated row
+  label already means "one resource, spilled sub-rows", so a merge would not
+  just look odd — it would read as a different schedule. Values of different
+  types that render differently (`true` and `1`) stay distinct as usual.
+
+### Reading the time axis
+
+Each label marks the **left edge** of its column, and the axis carries one final
+tick at the horizon after the last unit column. A task ending at 11 therefore
+fills the units labelled up to 10 and stops exactly at the tick marked 11, so a
+makespan reads straight off the chart instead of being inferred as
+last-label-plus-one. That closing tick is a boundary, not a time unit: no bar
+can ever occupy it.
+
+No cell on the sheet is ever merged — the read path exposes only a merge's
+top-left value, so a merge would silently lose data.
+
+### `charts` — bar, line, and scatter
+
+Each `ChartSpec(kind, x_column, y_columns, title=None, sheet_name="Charts")`
+adds one native chart plotted from the **data sheet's own columns** — no hidden
+helper range, no synthetic series. The header row supplies the series titles and
+`title` becomes the chart object's own title.
+
+Every `y_columns` column must hold numbers; for `kind="scatter"` the `x_column`
+must too, because openpyxl's scatter chart uses a numeric x-axis (bar and line
+treat `x_column` as plain category labels). Specs sharing an identical
+`sheet_name` stack on that one sheet, spaced vertically; two names differing only
+by case are rejected, since openpyxl matches sheet titles case-insensitively.
+
+A chart sheet holds drawings and no rows, so `load_tabular_data` pointed at it
+returns **zero rows** — read `Sheet1` for the data.
+
+### Sheet names and the result
+
+A diagram `sheet_name` must be non-empty, at most 31 characters, free of
+`[]:*?/\`, and must not collide — case-insensitively — with `Sheet1`. Charts
+naming the *identical* `sheet_name` deliberately share that one sheet; what is
+rejected as ambiguous is a pair of names differing only by case, and a
+`gantt.sheet_name` matching a `charts` sheet name case-insensitively.
+
+The result reports what was written: `sheets_written` lists every sheet, data
+sheet first (empty for a CSV, which has none), and `diagrams_written` holds one
+token per rendered diagram in render order — `gantt`, `chart:bar`, `chart:line`,
+`chart:scatter` — with duplicates preserved, so its length is the number of
+diagrams. Styling is not a diagram and contributes no token.
+
 ## Known limits
 
 Reads take a formula cell's **cached** result (`data_only`) — the server never
 evaluates a formula, so an uncalculated one reads as `null`. A merged cell
 exposes its value only in the top-left position; the rest read blank. No `.ods`,
-no `pandas`, no multi-sheet writes. Both tools are local-only: no network, no
-telemetry, no subprocess, and no managed-runtime dependency.
+no `pandas`, and no multi-sheet **data** writes — a write always puts every row
+on `Sheet1`; the extra sheets `gantt`/`charts` add are diagrams, not data. Both
+tools are local-only: no network, no telemetry, no subprocess, and no
+managed-runtime dependency.

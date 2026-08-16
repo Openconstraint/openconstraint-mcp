@@ -128,10 +128,18 @@ from .schemas.minizinc import (
 from .schemas.portfolio import PortfolioJobStatus, PortfolioSolveResult
 from .schemas.problem_text import ProblemText
 from .schemas.runtime import RuntimeStatus
-from .schemas.tabular import TabularCell, TabularData, TabularWriteResult
+from .schemas.tabular import (
+    ChartSpec,
+    GanttSpec,
+    TableStyle,
+    TabularCell,
+    TabularData,
+    TabularWriteResult,
+)
 from .shared.childproc import ChildProcessTracker
 from .shared.job_errors import JobRejectedError
-from .shared.tabular_io import DEFAULT_MAX_ROWS, read_tabular_data, write_tabular_data
+from .shared.tabular.core import read_tabular_data, write_tabular_data
+from .shared.tabular.limits import DEFAULT_MAX_ROWS
 
 _PACKAGE_NAME = "openconstraint-mcp"
 
@@ -1260,6 +1268,9 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         rows: list[list[TabularCell]],
         target_path: str,
         overwrite: bool = False,
+        style: TableStyle | None = None,
+        gantt: GanttSpec | None = None,
+        charts: list[ChartSpec] | None = None,
     ) -> TabularWriteResult:
         return await _run_blocking(
             functools.partial(
@@ -1268,6 +1279,9 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
                 rows,
                 Path(target_path),
                 overwrite=overwrite,
+                style=style,
+                gantt=gantt,
+                charts=charts,
             )
         )
 

@@ -5,7 +5,14 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from openconstraint_mcp.schemas.tabular import TabularData, TabularWriteResult
+from openconstraint_mcp.schemas.tabular import (
+    ChartSpec,
+    ColumnStyle,
+    GanttSpec,
+    TableStyle,
+    TabularData,
+    TabularWriteResult,
+)
 
 
 def _page(**overrides: Any) -> TabularData:
@@ -118,3 +125,122 @@ def test_write_result_rejects_an_unknown_format() -> None:
             format="ods",  # type: ignore[arg-type]
             rows_written=1,
         )
+
+
+def _write_result() -> TabularWriteResult:
+    """A result built the way a pre-diagram caller builds it: no new fields."""
+    return TabularWriteResult(
+        message="wrote 1 row",
+        target_path="/tmp/out.xlsx",
+        sha256="ab" * 32,
+        format="xlsx",
+        rows_written=1,
+    )
+
+
+def test_write_result_defaults_to_the_data_sheet_alone() -> None:
+    assert _write_result().sheets_written == ["Sheet1"]
+
+
+def test_write_result_defaults_to_no_diagrams() -> None:
+    assert _write_result().diagrams_written == []
+
+
+# --- ColumnStyle / TableStyle ---------------------------------------------------
+
+
+def test_column_style_defaults_to_no_format_and_no_width() -> None:
+    style = ColumnStyle()
+    assert (style.number_format, style.width) == (None, None)
+
+
+@pytest.mark.parametrize("width", [0, 256])
+def test_column_style_rejects_a_width_outside_the_excel_range(width: int) -> None:
+    with pytest.raises(ValidationError):
+        ColumnStyle(width=width)
+
+
+def test_table_style_defaults_to_an_empty_column_map() -> None:
+    assert TableStyle().columns == {}
+
+
+def test_table_style_rejects_an_unknown_preset() -> None:
+    with pytest.raises(ValidationError):
+        TableStyle(preset="fancy")  # type: ignore[arg-type]
+
+
+# --- GanttSpec ------------------------------------------------------------------
+
+
+def _gantt(**overrides: Any) -> GanttSpec:
+    fields: dict[str, Any] = {
+        "task_column": "task",
+        "start_column": "start",
+        "duration_column": "duration",
+    }
+    fields.update(overrides)
+    return GanttSpec(**fields)
+
+
+def test_gantt_spec_rejects_both_an_end_and_a_duration_column() -> None:
+    with pytest.raises(ValidationError, match="exactly one"):
+        _gantt(end_column="end")
+
+
+def test_gantt_spec_rejects_neither_an_end_nor_a_duration_column() -> None:
+    with pytest.raises(ValidationError, match="exactly one"):
+        _gantt(duration_column=None)
+
+
+def test_gantt_spec_defaults_its_sheet_name() -> None:
+    assert _gantt().sheet_name == "Gantt"
+
+
+def test_gantt_spec_rejects_an_empty_sheet_name() -> None:
+    with pytest.raises(ValidationError, match="must not be empty"):
+        _gantt(sheet_name="")
+
+
+def test_gantt_spec_rejects_the_reserved_data_sheet_name() -> None:
+    with pytest.raises(ValidationError, match="reserved"):
+        _gantt(sheet_name="Sheet1")
+
+
+def test_gantt_spec_rejects_the_reserved_name_in_another_case() -> None:
+    # openpyxl matches sheet titles case-insensitively when it auto-dedupes,
+    # so "sheet1" collides with the data sheet just as much as "Sheet1".
+    with pytest.raises(ValidationError, match="reserved"):
+        _gantt(sheet_name="sheet1")
+
+
+def test_gantt_spec_rejects_a_sheet_name_past_excels_length_limit() -> None:
+    with pytest.raises(ValidationError, match="31"):
+        _gantt(sheet_name="T" * 32)
+
+
+@pytest.mark.parametrize("name", ["a[b", "a]b", "a:b", "a*b", "a?b", "a/b", "a\\b"])
+def test_gantt_spec_rejects_a_sheet_name_excel_forbids(name: str) -> None:
+    with pytest.raises(ValidationError, match="cannot contain"):
+        _gantt(sheet_name=name)
+
+
+# --- ChartSpec ------------------------------------------------------------------
+
+
+def test_chart_spec_rejects_an_empty_y_column_list() -> None:
+    with pytest.raises(ValidationError):
+        ChartSpec(kind="bar", x_column="task", y_columns=[])
+
+
+def test_chart_spec_rejects_an_unknown_kind() -> None:
+    with pytest.raises(ValidationError):
+        ChartSpec(kind="pie", x_column="task", y_columns=["qty"])  # type: ignore[arg-type]
+
+
+def test_chart_spec_defaults_its_sheet_name() -> None:
+    assert ChartSpec(kind="bar", x_column="task", y_columns=["qty"]).sheet_name == "Charts"
+
+
+def test_chart_spec_rejects_the_reserved_data_sheet_name() -> None:
+    with pytest.raises(ValidationError, match="reserved"):
+        ChartSpec(kind="bar", x_column="task", y_columns=["qty"], sheet_name="Sheet1")
