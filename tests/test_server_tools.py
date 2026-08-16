@@ -1643,7 +1643,9 @@ async def test_report_status_does_not_swallow_unrelated_value_error() -> None:
 
 def _tool_fn(mcp: Any, name: str) -> Any:
     """Return a registered tool's underlying (decorated) function for direct calls."""
-    return mcp._tool_manager.get_tool(name).fn
+    tool = mcp._tool_manager.get_tool(name)
+    assert tool is not None, f"no tool named {name!r} is registered"
+    return tool.fn
 
 
 def _assert_dual_channel_schedule(ctx: _FakeStatusContext, final_message: str) -> None:

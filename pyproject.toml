@@ -80,6 +80,7 @@ select = ["E", "F", "I", "B", "UP"]
 
 [tool.mypy]
 python_version = "3.12"
+mypy_path = "src"
 strict = true
 # Not implied by `strict`; closes the one gap `strict` leaves for a
 # module-level `x = None` with no annotation.

@@ -40,7 +40,9 @@ def _tool_fn(name: str) -> Any:
     error type — to the decorated function itself, the only seam where a test can
     observe the exact ``RuntimeError`` type and its preserved ``__cause__``.
     """
-    return create_mcp_server()._tool_manager.get_tool(name).fn
+    tool = create_mcp_server()._tool_manager.get_tool(name)
+    assert tool is not None, f"no tool named {name!r} is registered"
+    return tool.fn
 
 
 @pytest.mark.parametrize(
