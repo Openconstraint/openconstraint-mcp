@@ -165,6 +165,26 @@ def test_resolve_accepts_a_title_exactly_at_the_xlsx_cell_limit() -> None:
     assert resolved.title == title
 
 
+def test_resolve_rejects_two_colour_values_that_render_as_one_label() -> None:
+    # 1 and "1" are distinct cells the TabularCell union deliberately keeps
+    # apart; collapsed, two jobs would share one fill and one legend entry.
+    rows: list[list[TabularCell]] = [["cut", 0, 1, 1], ["polish", 1, 1, "1"]]
+    with pytest.raises(ValueError, match="color_column at row 1"):
+        resolve_gantt(_HEADERS, rows, _spec(color_column="color"))
+
+
+def test_resolve_rejects_a_colour_value_named_like_the_null_placeholder() -> None:
+    # A null renders as "(uncategorized)", so a cell holding that literal claims
+    # the same legend entry — two swatches under one name put identity back on
+    # colour alone, which is exactly what the legend exists to prevent.
+    rows: list[list[TabularCell]] = [
+        ["missing", 0, 1, None],
+        ["literal", 1, 1, "(uncategorized)"],
+    ]
+    with pytest.raises(ValueError, match="color_column at row 1"):
+        resolve_gantt(_HEADERS, rows, _spec(color_column="color"))
+
+
 def test_resolve_rejects_an_empty_title() -> None:
     # A "" title writes a blank A1 and still shifts the grid down a row.
     with pytest.raises(ValueError, match="gantt title"):
@@ -215,17 +235,6 @@ def test_two_colour_values_get_different_fills() -> None:
     first = worksheet.cell(row=2, column=2).fill.fgColor.rgb
     second = worksheet.cell(row=3, column=5).fill.fgColor.rgb
     assert first != second
-
-
-def test_a_null_colour_does_not_merge_with_a_value_named_like_its_placeholder() -> None:
-    rows: list[list[TabularCell]] = [
-        ["missing", 0, 1, None],
-        ["literal", 1, 1, "(uncategorized)"],
-    ]
-    worksheet: Any = _rendered(rows=rows, spec=_spec(color_column="color"))
-    missing: str = worksheet.cell(row=2, column=2).fill.fgColor.rgb
-    literal: str = worksheet.cell(row=3, column=3).fill.fgColor.rgb
-    assert missing != literal
 
 
 def test_a_ninth_colour_value_wraps_back_to_the_first_palette_slot() -> None:
@@ -329,6 +338,38 @@ def test_resolve_rejects_a_row_column_naming_a_duplicated_header() -> None:
     rows: list[list[TabularCell]] = [["cut", 0, 3, "M1", "M1"]]
     with pytest.raises(ValueError, match="ambiguous"):
         resolve_gantt(headers, rows, _spec(row_column="machine"))
+
+
+def test_resolve_rejects_two_row_values_that_render_as_one_label() -> None:
+    # A repeated row label already means "one resource, spilled sub-rows", so
+    # merging machine 1 with machine "1" renders as one machine running two
+    # overlapping operations — a different schedule, not a cosmetic slip.
+    rows: list[list[TabularCell]] = [
+        ["cut", 0, 3, "alpha", 1],
+        ["polish", 0, 3, "beta", "1"],
+    ]
+    with pytest.raises(ValueError, match="row_column at row 1"):
+        resolve_gantt(_GROUPED_HEADERS, rows, _spec(row_column="machine"))
+
+
+def test_resolve_rejects_a_row_value_named_like_the_null_placeholder() -> None:
+    rows: list[list[TabularCell]] = [
+        ["cut", 0, 1, "alpha", None],
+        ["polish", 1, 1, "beta", "(no group)"],
+    ]
+    with pytest.raises(ValueError, match="row_column at row 1"):
+        resolve_gantt(_GROUPED_HEADERS, rows, _spec(row_column="machine"))
+
+
+def test_a_boolean_and_an_int_row_value_stay_two_resources() -> None:
+    # bool subclasses int and 1 == True, so a check comparing values rather than
+    # rendered labels would merge these two; they render as "True" and "1".
+    rows: list[list[TabularCell]] = [
+        ["cut", 0, 1, "alpha", True],
+        ["polish", 1, 1, "beta", 1],
+    ]
+    resolved = resolve_gantt(_GROUPED_HEADERS, rows, _spec(row_column="machine"))
+    assert resolved.row_labels == ("True", "1")
 
 
 def test_tasks_sharing_a_row_value_share_one_grid_row() -> None:

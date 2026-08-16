@@ -233,6 +233,13 @@ disjunctive case) always collapses to exactly one row.
   value as `(uncategorized)`, and a `null` `row_column` value as `(no group)`
   — a blank cell
   would read back as null and leave a legend swatch or a grid row unnamed.
+- Both axes identify a value by the label they render for it, so two **distinct
+  values that would render as the same label** are rejected naming the offending
+  row, never merged: `1` and `"1"` in one `row_column`, or a `row_column` cell
+  holding the literal string `(no group)` beside a `null` one. A repeated row
+  label already means "one resource, spilled sub-rows", so a merge would not
+  just look odd — it would read as a different schedule. Values of different
+  types that render differently (`true` and `1`) stay distinct as usual.
 
 ### Reading the time axis
 

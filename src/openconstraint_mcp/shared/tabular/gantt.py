@@ -12,7 +12,9 @@ rather than coerced, matching this package's refuse-don't-coerce posture in
 The grid has two independent axes and they name different columns: ``row_column``
 decides which tasks share a row (the resource view), while ``color_column``
 decides only what a bar is coloured by. A job shop wants both — rows per machine,
-colour per job — so neither can stand in for the other.
+colour per job — so neither can stand in for the other. Both are keyed by the
+label text they render, so two distinct values that would render alike are
+refused rather than merged (see ``_check_distinct_label``).
 
 Bar colours are the ``dataviz`` skill's reference categorical palette, in its
 documented slot order. That order is the colour-blindness safety mechanism, so
@@ -128,6 +130,39 @@ def _rendered_text(value: TabularCell, *, placeholder: str) -> str:
     return placeholder if value is None else str(value)
 
 
+def _check_distinct_label(
+    value: TabularCell,
+    claimed: dict[str, TabularCell],
+    *,
+    placeholder: str,
+    row_index: int,
+    role: str,
+) -> None:
+    """Reject a value rendering as a label another value already claimed.
+
+    Both axes key the grid by label text, so ``1`` and ``"1"`` — distinct cells
+    the ``TabularCell`` union keeps apart precisely so a write never retypes
+    them — would otherwise share one resource row and one colour category. Nor
+    can the collision be rendered its way out of: a repeated row label already
+    *means* something here (a spilled sub-row repeats its group's name), so two
+    machines both named ``1`` read as one machine running overlapping work.
+    A null is checked against the same map, since it renders as ``placeholder``
+    and a cell holding that literal string claims the identical label.
+
+    Refused rather than coerced or silently merged, as everywhere else in this
+    package: ``claimed`` maps each label to the one value allowed to produce it.
+    """
+    label: str = _rendered_text(value, placeholder=placeholder)
+    previous: TabularCell = claimed.setdefault(label, value)
+    if previous != value:
+        raise ValueError(
+            f"the {role} at row {row_index} is {value!r}, but {previous!r} already renders "
+            f"as the same label {label!r}; a Gantt names its rows and legend entries by that "
+            f"text, so the two would be indistinguishable in the sheet — give them labels "
+            f"that differ"
+        )
+
+
 def _assign_grid_rows(staged: list[_Staged]) -> tuple[list[ResolvedTask], list[str]]:
     """Pack tasks onto shared grid rows, one block of rows per group.
 
@@ -222,6 +257,9 @@ def resolve_gantt(
 
     staged: list[_Staged] = []
     colors: list[str | None] = []
+    # Each axis's label text -> the one value allowed to render as it.
+    color_labels: dict[str, TabularCell] = {}
+    group_labels: dict[str, TabularCell] = {}
     for row_index, row in enumerate(rows):
         start = _require_time(row[start_index], row_index=row_index, role="start")
         if start < 0:
@@ -244,18 +282,30 @@ def resolve_gantt(
                     f"the end at row {row_index} is {end}, which is not after its start "
                     f"{start}; a Gantt task must last at least one time unit"
                 )
-        color: str | None = (
-            None
-            if color_index is None or row[color_index] is None
-            else str(row[color_index])
-        )
-        if color_index is not None and color not in colors:
-            colors.append(color)
-        group: str | None = (
-            None
-            if row_group_index is None or row[row_group_index] is None
-            else str(row[row_group_index])
-        )
+        color: str | None = None
+        if color_index is not None:
+            raw_color: TabularCell = row[color_index]
+            _check_distinct_label(
+                raw_color,
+                color_labels,
+                placeholder=_MISSING_COLOR_NAME,
+                row_index=row_index,
+                role="color_column",
+            )
+            color = None if raw_color is None else str(raw_color)
+            if color not in colors:
+                colors.append(color)
+        group: str | None = None
+        if row_group_index is not None:
+            raw_group: TabularCell = row[row_group_index]
+            _check_distinct_label(
+                raw_group,
+                group_labels,
+                placeholder=_MISSING_ROW_LABEL,
+                row_index=row_index,
+                role="row_column",
+            )
+            group = None if raw_group is None else str(raw_group)
         label = _rendered_text(row[task_index], placeholder=_MISSING_TASK_LABEL)
         staged.append(_Staged(label=label, start=start, end=end, color=color, group=group))
 
