@@ -69,6 +69,117 @@ hardcoding one — which is what keeps `args=["data_ft10.json"]`-style instance
 switching working. `examples/nonogram/` and `examples/social_golfers/` predate
 this spine and keep their original flat, single-function shape.
 
+## File-backed instances (spreadsheets and large data)
+
+When the problem instance arrives as an `.xlsx`/`.csv`, or is simply too large
+to paste, the instance stays on disk and **never passes through the client's
+context**. `load_tabular_data` is the wrong tool for moving it: it returns at
+most `max_rows` rows (default 1000, and further trimmed by the 1 MiB response
+ceiling), so an instance hardcoded from a truncated read silently solves a
+different problem. Use it to learn the shape — `headers`, `available_sheets`,
+`total_rows`, and a sample of rows — and decide what each column means, which
+is the one judgement the server never makes for you.
+
+The child process runs on the server's own interpreter, which ships `openpyxl`
+alongside `ortools`, so a generated script can open the workbook directly:
+
+```python
+def read_input() -> list[dict]:
+    workbook = openpyxl.load_workbook(sys.argv[1], read_only=True, data_only=True)
+    try:
+        rows = workbook["Orders"].iter_rows(values_only=True)
+        header = next(rows)
+        if any(name is None for name in header):
+            raise ValueError("blank header cell: name every column before solving")
+        # strict=True is load-bearing. In read-only mode the stored sheet
+        # dimension is often absent or wrong, so iter_rows can yield rows that
+        # do not match the header width; a bare zip() would drop the extras and
+        # solve a truncated instance without a word.
+        return [
+            dict(zip(header, row, strict=True))
+            for row in rows
+            if any(cell is not None for cell in row)  # trailing blank rows
+        ]
+    finally:
+        workbook.close()  # required in read-only mode
+```
+
+`read_only=True` streams the sheet, so instance size is bounded by the solve,
+not by the read. `openpyxl` reads workbooks only — for a `.csv` instance use
+the standard library's `csv.DictReader`, which streams the same way and needs
+the same explicit width check, since a short row yields `None` values and a
+long one lands under `restkey`. `args` cannot substitute for this — it is capped at 32 KiB
+(`MAX_CHILD_ARGV_BYTES`) precisely because it is a flag and path list, not a
+data channel.
+
+Run the pair with the checked file tool:
+
+```python
+run_cpsat_python_file_checked(
+    script_path="/abs/model.py",
+    args=["/abs/instance.xlsx"],          # -> the child's sys.argv[1]
+    checker_path="/abs/checker.py",
+    problem={
+        "request": "<the user's original words, verbatim>",
+        "data_path": "/abs/instance.xlsx",
+        "sheet": "Orders",
+    },
+)
+```
+
+The checker child is launched with the **payload path as its only argument**,
+so `args` never reaches it — the instance file's path has to travel inside
+`problem`, in the same flat JSON object that must also carry the user's
+original request. A path-based checker runs with its working directory set to
+its own parent, so a relative sibling reference resolves as well.
+
+A checker that **rereads the workbook** grades against the source of truth
+rather than against the script's own parse, which makes the verdict independent
+of a transcription slip. It does not make it independent of a shared
+*misreading* — if both parsers agree that column D is the due date when it is
+the release date, the checker still accepts. Confirm the column mapping with
+the user; no tool can verify it.
+
+### Scaling a verified script to a bigger instance
+
+Given a `model.py`/`checker.py` pair already validated against a small
+`data.json`, moving to a large `.xlsx` changes **`read_input()` and nothing
+else** — `parse_input()`, `solve()`, and `serialize_solution()` keep operating
+on the records they already agree on. That is what the ordered spine buys.
+
+`data.json` doubles as the specification: `read_input()` must return exactly
+what `parse_input()` already accepts. Keep the JSON branch alive so the small
+instance stays a regression check, and confirm both branches parse it
+identically **before** committing to a long solve — a column mis-mapping is
+much cheaper to find there than after a two-hour run.
+
+Two consequences of a bigger instance:
+
+- **Long runs.** The streaming solution callback the prompts mandate
+  unconditionally means a run killed at `script_timeout_ms` still returns the
+  last emitted incumbent — **provided the output cap was not hit first**. Keep
+  the callback inside a fixed byte budget (the prompt's example uses 512 KiB of
+  the combined 1 MiB stdout+stderr cap). Overrunning that cap tree-kills the
+  child and flags the run `truncated`, and a partial result is recovered only
+  on the *timeout* path: a truncated run that did not time out comes back
+  `status="error"` with no solution at all. An unbudgeted per-improvement
+  callback on a big instance is exactly how a run loses every incumbent it
+  found. For a run longer than the client will wait,
+  `submit_cpsat_python_file_job` accepts both `args` and `checker_path` — but
+  no `seed` or `config`, and its registry does not survive a server restart.
+- **Not savable.** `save_verified_cpsat_python` takes inline `source` only and
+  re-runs it in a fresh temporary directory, so it can replay neither `args`
+  nor a sibling data file. Keep the small inline instance as the reproducible
+  saved artifact and treat the file-backed run as a production run.
+
+Deliver the answer as a spreadsheet with
+[`write_tabular_result`](tabular-data.md) when the user wants one. That is a
+**presentation** step, not a way to keep a large result out of context — the
+tool takes every row as a call argument, so the rows pass through the client
+either way. It also does not relax the script's own obligation: the output
+contract requires the complete answer in the stdout envelope, and a `solution`
+carrying only a path to a file the script wrote fails the gate.
+
 ## Delivering several script variants
 
 When the user asks for several working scripts (rather than "give me the best

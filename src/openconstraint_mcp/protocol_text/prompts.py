@@ -483,6 +483,40 @@ User problem:
    multi-attempt or configured experiments when choosing WHICH INSTANCE OR
    SCENARIO to solve — config-driven instance selection is not the default
    modeling style for a one-off save.
+   - WHEN THE INSTANCE LIVES IN A FILE — a spreadsheet the user supplied, or
+     any instance too large to paste — do NOT retype it into the script.
+     Inspect it with `load_tabular_data` at a small `max_rows` to learn the
+     headers, the available sheets, and a sample of rows, decide what each
+     column means, then have `read_input()` open the path the child receives
+     as `sys.argv[1]`. `load_tabular_data` returns at most `max_rows` rows
+     (default 1000) into YOUR context: it is an inspection tool, not the data
+     channel, and an instance hardcoded from a truncated read silently solves
+     a different problem than the user asked about. The child runs on the
+     server's own interpreter, which ships `openpyxl`, so a script may open an
+     `.xlsx` directly — stream it with `read_only=True`. `args` is a flag and
+     path list capped at 32 KiB, never a data channel either.
+   - Run such a script with `run_cpsat_python_file_checked(script_path=…,
+     args=[<the data path>], checker_path=…, problem=…)`. Make every path
+     ABSOLUTE: the child runs from the SCRIPT's own directory, so a path
+     relative to the user's working directory resolves against the wrong place
+     and the child dies with a FileNotFoundError. The checker child receives
+     ONLY the payload path as its argument and never `args`, so the data
+     file's path travels inside `problem`, under its own key in the same flat
+     JSON object step 7c already requires. A checker that REREADS that file
+     grades against the source of truth instead of the script's own parse,
+     which makes it independent of a transcription slip — though not of a
+     shared misreading of what a column means, since you write both parsers.
+     Rereading the instance file is the one carve-out to step 7c's
+     standard-library rule; everything else there still applies.
+   - SCALING an already-verified script to a bigger instance changes
+     `read_input()` and nothing else: `parse_input()`, `solve()`, and
+     `serialize_solution()` keep working on the records they already agree on.
+     Keep the small instance's branch as a regression check, and confirm both
+     branches parse it identically BEFORE committing to a long solve. This
+     route cannot be saved: step 7's `save_verified_cpsat_python` re-runs
+     INLINE source in a fresh temporary directory and can replay neither
+     `args` nor a sibling data file, so keep the small inline instance as the
+     reproducible artifact and treat the file-backed run as a production run.
    - Solver-run controls are a separate concern from instance selection, and
      every generated script should always cooperate with them: define one
      `_solver_config() -> dict` helper that reads the JSON file named by
@@ -989,7 +1023,9 @@ User problem:
         these tools — to see whether the model, the emitted envelope, or the
         checker script is the artifact to repair.
       - Be a PREDICATE, not a solver: grade the solution you were handed
-        with plain arithmetic over the payload, standard library only. Never
+        with plain arithmetic over the payload, standard library only — with
+        ONE exception: reading an instance file the payload points at may use
+        `openpyxl` for a workbook, because parsing input is not solving. Never
         `import ortools` and never re-solve. The checker runs in the SAME
         interpreter as the model and under its own timeout, so a solving
         checker inherits the failure modes it exists to catch — it can time

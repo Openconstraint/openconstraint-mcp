@@ -17,6 +17,21 @@ The server performs **mechanical I/O only** — it never infers what a column
 the client LLM's job: **LLM proposes, server verifies**, the same division of
 labour as the solving tools.
 
+**`load_tabular_data` is not a bulk data channel.** It returns at most
+`max_rows` rows (default 1000) into the client's context. The tool itself is
+loud about that — `truncated`, `truncation_reason`, and `next_row_offset` are
+all set, and `total_rows` still counts every row in the file (see
+[Pagination and the response ceiling](#pagination-and-the-response-ceiling)).
+What ends up silent is the *model*: a client that reads one page and hardcodes
+those rows produces an instance that looks complete and solves a different
+problem than the user asked about. For an instance big enough to matter, use
+this tool to learn the *shape* — `headers`,
+`available_sheets`, `total_rows`, a sample of rows — and let the solver script
+open the file itself. See
+[File-backed instances](cpsat-python.md#file-backed-instances-spreadsheets-and-large-data)
+for the CP-SAT route; the MiniZinc path has no equivalent, since MiniZinc reads
+`.dzn` and cannot open a workbook.
+
 ## The cell contract
 
 A cell is a **JSON scalar only**: string, number, boolean, or `null`. Nested

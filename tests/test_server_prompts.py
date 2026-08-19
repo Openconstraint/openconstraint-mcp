@@ -1221,6 +1221,44 @@ async def test_cpsat_python_solution_workflow_prompt_still_teaches_direct_instan
 
 
 @pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_routes_a_file_instance_to_the_script() -> None:
+    # The step-3 default is to hardcode the instance, which silently truncates a
+    # spreadsheet at `load_tabular_data`'s row cap. The file branch has to name
+    # that tool as an INSPECTION step and hand the data itself to the child.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "when the instance lives in a file" in normalized
+    assert "it is an inspection tool, not the data channel" in normalized
+    assert "`read_input()` open the path the child receives as `sys.argv[1]`" in normalized
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_sends_the_data_path_through_problem() -> None:
+    # The checker child is launched with the payload path as its ONLY argument,
+    # so `args` never reaches it; a checker told to reread the instance file can
+    # only learn where that file is from `problem`.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "receives only the payload path as its argument and never `args`" in normalized
+    assert "the data file's path travels inside `problem`" in normalized
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_scales_by_changing_read_input_only() -> None:
+    # Swapping a small inline instance for a large file must not re-open the
+    # model: the spine exists so the data source is a one-function change. The
+    # save exclusion belongs here too — step 6 states it only for experiment
+    # attempts, so a plain file run would otherwise look savable.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "changes `read_input()` and nothing else" in normalized
+    assert "this route cannot be saved" in normalized
+
+
+@pytest.mark.asyncio
 async def test_cpsat_python_solution_workflow_prompt_nudges_cross_backend() -> None:
     text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
 
