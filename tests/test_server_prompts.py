@@ -1246,6 +1246,32 @@ async def test_cpsat_python_solution_workflow_prompt_sends_the_data_path_through
 
 
 @pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_requires_absolute_data_paths() -> None:
+    # `run_cpsat_python_file` runs the child with cwd set to the SCRIPT's parent,
+    # so a path relative to the user's working directory resolves against the
+    # wrong directory and the child dies before the model is ever built.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "make every path absolute" in normalized
+    assert "the child runs from the script's own directory" in normalized
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_checker_stdlib_rule_carves_out_reading_the_instance_file() -> None:
+    # The file-instance branch tells the checker to REREAD the workbook, which
+    # needs `openpyxl`; step 7c otherwise says standard library only. Without an
+    # explicit carve-out the two instructions cannot both be followed.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "reading an instance file the payload points at may use `openpyxl`" in normalized
+    assert "because parsing input is not solving" in normalized
+    # The carve-out must not weaken the rule it qualifies.
+    assert "never `import ortools` and never re-solve" in normalized
+
+
+@pytest.mark.asyncio
 async def test_cpsat_python_solution_workflow_prompt_scales_by_changing_read_input_only() -> None:
     # Swapping a small inline instance for a large file must not re-open the
     # model: the spine exists so the data source is a one-function change. The
