@@ -102,6 +102,16 @@ def test_a_data_row_wider_than_the_header_row_gets_positional_names_for_the_extr
     assert (page.headers, page.rows) == (["name", "col_2"], [["widget", "3"]])
 
 
+def test_a_data_row_narrower_than_the_header_row_is_padded_to_the_header_width(
+    tmp_path: Path,
+) -> None:
+    # rows[i][j] must always name headers[j], so a short record gains trailing
+    # nulls rather than shifting every later column of the consumer's read.
+    path = _write_csv(tmp_path / "d.csv", [["name", "qty", "due"], ["widget"]])
+    page = read_tabular_data(path)
+    assert page.rows == [["widget", None, None]]
+
+
 def test_empty_csv_returns_no_headers_and_no_rows(tmp_path: Path) -> None:
     path = _write_csv(tmp_path / "d.csv", [])
     page = read_tabular_data(path)
@@ -186,6 +196,9 @@ def _chartsheet_workbook(*, active_is_chart: bool) -> Workbook:
     data.title = "Data"
     data.append(["a"])
     data.append([1])
+    # The reader clears the cached sheet bounds before iterating, which only a
+    # read-only worksheet carries; a write-mode double has none to clear.
+    data.reset_dimensions = lambda: None  # type: ignore[method-assign]
     chart = workbook.create_chartsheet(title="Chart1")
     workbook.active = chart if active_is_chart else data
     return workbook
@@ -301,6 +314,57 @@ def test_libreoffice_written_workbook_reads_with_correct_types() -> None:
 def test_libreoffice_written_workbook_reports_its_sheet_name() -> None:
     page = read_tabular_data(_LIBREOFFICE_FIXTURE)
     assert (page.sheet_name, page.available_sheets) == ("inventory", ["inventory"])
+
+
+def _with_stored_dimension(tmp_path: Path, records: list[list[object]], ref: str) -> Path:
+    """Write ``records`` to a workbook whose stored ``<dimension>`` says ``ref``.
+
+    openpyxl always records the true extent, so the only way to reproduce the
+    understated ref that other writers emit is to rewrite the sheet XML.
+    """
+    good = _write_xlsx(tmp_path / "good.xlsx", records)
+    target = tmp_path / "understated.xlsx"
+    with zipfile.ZipFile(good, "r") as src, zipfile.ZipFile(target, "w") as dst:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                data, count = re.subn(
+                    rb'<dimension ref="[^"]*"\s*/>',
+                    f'<dimension ref="{ref}" />'.encode(),
+                    data,
+                )
+                assert count == 1, "sheet XML carried no <dimension> to rewrite"
+            dst.writestr(item, data)
+    return target
+
+
+def test_xlsx_read_ignores_a_stored_dimension_that_understates_the_row_count(
+    tmp_path: Path,
+) -> None:
+    # In read-only mode openpyxl trims iteration to the stored dimension, so a
+    # populated sheet whose ref says "A1:A1" would otherwise read as a
+    # header-only file — no error, and truncated stays false.
+    path = _with_stored_dimension(
+        tmp_path, [["name", "qty"], ["widget", 3], ["gadget", 10]], "A1:A1"
+    )
+    page = read_tabular_data(path)
+    assert (page.rows, page.total_rows, page.truncated) == (
+        [["widget", 3], ["gadget", 10]],
+        2,
+        False,
+    )
+
+
+def test_xlsx_read_ignores_a_stored_dimension_that_understates_the_column_count(
+    tmp_path: Path,
+) -> None:
+    # The same trim applies across columns, and it hits the header row too — so
+    # the dropped column is invisible to a width check against the header.
+    path = _with_stored_dimension(
+        tmp_path, [["name", "qty", "due"], ["widget", 3, "friday"]], "A1:B2"
+    )
+    page = read_tabular_data(path)
+    assert (page.headers, page.rows) == (["name", "qty", "due"], [["widget", 3, "friday"]])
 
 
 # --- reading: pagination -----------------------------------------------------------

@@ -1234,6 +1234,31 @@ async def test_cpsat_python_solution_workflow_prompt_routes_a_file_instance_to_t
 
 
 @pytest.mark.asyncio
+async def test_cpsat_python_workflow_prompt_branches_the_execute_step_by_input_mode() -> None:
+    # Step 3 routes a file-backed instance to `run_cpsat_python_file_checked`,
+    # but a client reads the numbered steps in order: an unconditional step 4
+    # would send it back to the inline tool, which takes no `args` and so
+    # leaves `sys.argv[1]` unset.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "call the tool matching the input mode step 3 chose" in normalized
+    assert "`run_cpsat_python` accepts no `args` and runs from a temporary directory" in normalized
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_workflow_prompt_scopes_load_tabular_data_to_tabular_files() -> None:
+    # `validate_tabular_read_path` rejects every suffix but `.xlsx` and `.csv`,
+    # so pointing "any instance too large to paste" at that tool hands the
+    # client a call that cannot succeed on a large JSON or DZN instance.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "that tool accepts `.xlsx` and `.csv` only and rejects any other suffix" in normalized
+    assert "with the client's own file tools instead" in normalized
+
+
+@pytest.mark.asyncio
 async def test_cpsat_python_solution_workflow_prompt_sends_the_data_path_through_problem() -> None:
     # The checker child is launched with the payload path as its ONLY argument,
     # so `args` never reaches it; a checker told to reread the instance file can

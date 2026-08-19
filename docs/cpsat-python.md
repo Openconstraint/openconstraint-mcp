@@ -87,28 +87,51 @@ alongside `ortools`, so a generated script can open the workbook directly:
 def read_input() -> list[dict]:
     workbook = openpyxl.load_workbook(sys.argv[1], read_only=True, data_only=True)
     try:
-        rows = workbook["Orders"].iter_rows(values_only=True)
+        sheet = workbook["Orders"]
+        # Load-bearing, and it has to come before any iteration. In read-only
+        # mode openpyxl trusts the sheet's stored <dimension> ref and trims
+        # EVERY row to it -- the header row included -- so a writer that
+        # understates or omits that ref makes a populated sheet read as
+        # narrow, or as empty, with no error raised and no width mismatch for
+        # a zip() check to catch. Clearing the cached bounds makes iter_rows
+        # yield each row at its real width.
+        sheet.reset_dimensions()
+        rows = sheet.iter_rows(values_only=True)
         header = next(rows)
         if any(name is None for name in header):
             raise ValueError("blank header cell: name every column before solving")
-        # strict=True is load-bearing. In read-only mode the stored sheet
-        # dimension is often absent or wrong, so iter_rows can yield rows that
-        # do not match the header width; a bare zip() would drop the extras and
-        # solve a truncated instance without a word.
-        return [
-            dict(zip(header, row, strict=True))
-            for row in rows
-            if any(cell is not None for cell in row)  # trailing blank rows
-        ]
+        if len(set(header)) != len(header):
+            # dict() keeps only the last cell of each duplicated name, which
+            # would drop a column silently. load_tabular_data preserves
+            # duplicates because it reports rows positionally; a dict cannot.
+            raise ValueError(f"duplicate column names: {header}")
+        records = []
+        for row in rows:
+            if not any(cell is not None for cell in row):
+                continue  # trailing blank row
+            if len(row) > len(header):
+                raise ValueError(f"row of {len(row)} cells under {len(header)} headers")
+            # Natural width means a row whose trailing cells are blank is
+            # SHORT, not None-padded -- pad it back rather than letting
+            # strict=True reject a perfectly ordinary sheet. strict=True then
+            # only asserts that this padding was right.
+            padded = tuple(row) + (None,) * (len(header) - len(row))
+            records.append(dict(zip(header, padded, strict=True)))
+        return records
     finally:
         workbook.close()  # required in read-only mode
 ```
 
-`read_only=True` streams the sheet, so instance size is bounded by the solve,
-not by the read. `openpyxl` reads workbooks only — for a `.csv` instance use
-the standard library's `csv.DictReader`, which streams the same way and needs
-the same explicit width check, since a short row yields `None` values and a
-long one lands under `restkey`. `args` cannot substitute for this — it is capped at 32 KiB
+`read_only=True` skips building openpyxl's per-cell object graph, which is the
+dominant cost of reading a large workbook — but the function above still
+returns every row, so peak memory tracks the instance, not just the solve. When
+the workbook is larger than the model needs, filter or aggregate inside
+`read_input()` rather than materializing rows the model will never look at.
+`openpyxl` reads workbooks only — for a `.csv` instance use the standard
+library's `csv.DictReader`, which streams the same way and needs the same
+explicit width and duplicate-header checks, since a short row yields `None`
+values, a long one lands under `restkey`, and a repeated fieldname is silently
+collapsed. `args` cannot substitute for this — it is capped at 32 KiB
 (`MAX_CHILD_ARGV_BYTES`) precisely because it is a flag and path list, not a
 data channel.
 
@@ -177,8 +200,13 @@ Deliver the answer as a spreadsheet with
 **presentation** step, not a way to keep a large result out of context — the
 tool takes every row as a call argument, so the rows pass through the client
 either way. It also does not relax the script's own obligation: the output
-contract requires the complete answer in the stdout envelope, and a `solution`
-carrying only a path to a file the script wrote fails the gate.
+contract requires the complete answer in the stdout envelope. Nothing in the
+server enforces that — envelope validation only checks that `solution` is a
+non-empty object, and `save_verified_cpsat_python`'s reported gate only adds a
+check on `status`, so a `solution` carrying nothing but `{"result_file": …}`
+passes both. Only an independent checker, which grades the parsed `solution`
+and never sees your filesystem, turns the completeness rule into something
+verified rather than merely stated.
 
 ## Delivering several script variants
 

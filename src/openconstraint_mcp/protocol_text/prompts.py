@@ -484,17 +484,22 @@ User problem:
    SCENARIO to solve — config-driven instance selection is not the default
    modeling style for a one-off save.
    - WHEN THE INSTANCE LIVES IN A FILE — a spreadsheet the user supplied, or
-     any instance too large to paste — do NOT retype it into the script.
-     Inspect it with `load_tabular_data` at a small `max_rows` to learn the
-     headers, the available sheets, and a sample of rows, decide what each
-     column means, then have `read_input()` open the path the child receives
-     as `sys.argv[1]`. `load_tabular_data` returns at most `max_rows` rows
-     (default 1000) into YOUR context: it is an inspection tool, not the data
-     channel, and an instance hardcoded from a truncated read silently solves
-     a different problem than the user asked about. The child runs on the
+     any instance too large to paste — do NOT retype it into the script; have
+     `read_input()` open the path the child receives as `sys.argv[1]`. When
+     that file is TABULAR, inspect it first with `load_tabular_data` at a
+     small `max_rows` to learn the headers, the available sheets, and a sample
+     of rows, and decide what each column means. That tool accepts `.xlsx` and
+     `.csv` ONLY and rejects any other suffix, so inspect a JSON, DZN, or
+     other non-tabular instance with the client's own file tools instead —
+     bounded excerpt, never the whole file. `load_tabular_data` returns at
+     most `max_rows` rows (default 1000) into YOUR context: it is an
+     inspection tool, not the data channel, and an instance hardcoded from a
+     truncated read silently solves a different problem than the user asked
+     about. The child runs on the
      server's own interpreter, which ships `openpyxl`, so a script may open an
-     `.xlsx` directly — stream it with `read_only=True`. `args` is a flag and
-     path list capped at 32 KiB, never a data channel either.
+     `.xlsx` directly — copy the `read_input()` example at the end of this step
+     rather than writing one from memory. `args` is a flag and path list capped
+     at 32 KiB, never a data channel either.
    - Run such a script with `run_cpsat_python_file_checked(script_path=…,
      args=[<the data path>], checker_path=…, problem=…)`. Make every path
      ABSOLUTE: the child runs from the SCRIPT's own directory, so a path
@@ -807,6 +812,54 @@ User problem:
      can never prove the solve returns first. Gate the callback and a run
      killed mid-search prints nothing at all, and every solution CP-SAT
      found is lost.
+   - WHEN THE INSTANCE IS AN `.xlsx` FILE (step 3's file-backed branch),
+     replace the example's WHOLE `read_input()` with the one below and add its
+     `openpyxl` import. Copy it as-is: `reset_dimensions()` and the width
+     handling are not optional polish, and a hand-written variant that drops
+     them reads a SMALLER instance in silence.
+     ```
+     import sys
+
+     from openpyxl import load_workbook
+
+
+     def read_input() -> list[dict]:
+         workbook = load_workbook(sys.argv[1], read_only=True, data_only=True)
+         try:
+             sheet = workbook["Orders"]
+             # Load-bearing, and it must precede any iteration. In read-only
+             # mode openpyxl trims EVERY row — the header included — to the
+             # sheet's stored <dimension> ref, so a writer that understates or
+             # omits that ref makes a populated sheet read as narrow, or as
+             # empty, with no error and no width mismatch to catch it.
+             sheet.reset_dimensions()
+             rows = sheet.iter_rows(values_only=True)
+             header = next(rows)
+             if any(name is None for name in header):
+                 raise ValueError("blank header cell: name every column")
+             if len(set(header)) != len(header):
+                 # dict() would keep only the last cell of a repeated name.
+                 raise ValueError(f"duplicate column names: {{header}}")
+             records = []
+             for row in rows:
+                 if not any(cell is not None for cell in row):
+                     continue  # trailing blank row
+                 if len(row) > len(header):
+                     raise ValueError(f"{{len(row)}} cells under {{len(header)}} headers")
+                 # Natural width means a row whose trailing cells are blank is
+                 # SHORT, not None-padded — pad it rather than letting
+                 # strict=True reject an ordinary sheet.
+                 padded = tuple(row) + (None,) * (len(header) - len(row))
+                 records.append(dict(zip(header, padded, strict=True)))
+             return records
+         finally:
+             workbook.close()  # required in read-only mode
+     ```
+     `parse_input()` then turns those records into the typed instance and
+     `solve()` is untouched — that split is what lets one verified script move
+     between a small JSON instance and a full workbook. For a `.csv` instance
+     use `csv.DictReader`, which needs the same width and duplicate-header
+     checks.
    - SAFETY: generate only CP-SAT modeling code — no network access, no
      file writes or deletes, no subprocess spawning — unless the user
      explicitly requested it. The server executes this code locally in a
@@ -817,13 +870,20 @@ User problem:
     + "\n"
     + CPSAT_OUTPUT_CONTRACT_GUIDANCE
     + """
-4. Call `run_cpsat_python(source=<complete script>,
-   script_timeout_ms=<milliseconds>)`. The server runs it locally in a child
-   process (not remote, not sandboxed) and returns a `CpsatPythonResult`
-   with `status`, `solution`, `objective`, `best_objective_bound`
-   (diagnostic only — see step 3), `stdout`, `stderr`, `return_code`,
-   `timed_out`, `truncated`, `duration_ms`, and a structured `diagnostic`
-   (`null` on a clean success).
+4. Call the tool matching the input mode step 3 chose. With the instance
+   INLINE in the script — the common case — call
+   `run_cpsat_python(source=<complete script>,
+   script_timeout_ms=<milliseconds>)`. With a FILE-BACKED instance, make the
+   `run_cpsat_python_file_checked(script_path=…, args=…, checker_path=…,
+   problem=…)` call step 3 already specified: `run_cpsat_python` accepts no
+   `args` and runs from a temporary directory, so it leaves `sys.argv[1]`
+   unset and the child dies in `read_input()`. Either way the server runs the
+   script locally in a child process (not remote, not sandboxed) and returns
+   `status`, `solution`, `objective`, `best_objective_bound` (diagnostic only
+   — see step 3), `stdout`, `stderr`, `return_code`, `timed_out`, `truncated`,
+   `duration_ms`, and a structured `diagnostic` (`null` on a clean success) —
+   a `CpsatPythonResult`, which the checked tool's `CpsatPythonCheckedResult`
+   extends with its checker verdict.
 
 5. Present the result clearly:
    - Read `diagnostic` first when present: `diagnostic.category` is a stable

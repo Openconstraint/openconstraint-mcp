@@ -86,9 +86,17 @@ def read_tabular_data(
     else:
         headers = [f"col_{index + 1}" for index in range(scan.width)]
 
+    # Every row is padded out to the header count so ``rows[i][j]`` always
+    # names ``headers[j]``. A row can be short for two reasons — a ragged CSV
+    # record, or an XLSX row whose trailing cells are blank and therefore
+    # stored nowhere — and neither should shift a consumer's columns.
+    page_rows: list[list[TabularCell]] = [
+        row + [None] * (len(headers) - len(row)) for row in scan.page
+    ]
+
     candidate = _build_page(
         headers=headers,
-        rows=scan.page,
+        rows=page_rows,
         sheet_name=sheet_name,
         available_sheets=available_sheets,
         row_offset=row_offset,
@@ -99,7 +107,7 @@ def read_tabular_data(
         return candidate
     return _trim_to_byte_ceiling(
         headers=headers,
-        rows=scan.page,
+        rows=page_rows,
         sheet_name=sheet_name,
         available_sheets=available_sheets,
         row_offset=row_offset,

@@ -45,6 +45,15 @@ becomes the positional name `col_1`, `col_2`, … — as do all columns when
 the file so they stay stable across pages. Duplicate header names are preserved
 as-is (de-duplicating them would be interpretation).
 
+**Every row is as wide as `headers`.** A record narrower than the header — a
+short CSV row, or an XLSX row whose trailing cells are blank and are therefore
+stored nowhere — is padded with `null`, so `rows[i][j]` always names
+`headers[j]`. A record *wider* than the header row instead widens `headers`,
+naming the extra columns positionally. XLSX reads deliberately ignore the
+worksheet's stored `<dimension>` ref: in streaming mode `openpyxl` would trim
+every row to it, so a writer that understates or omits the ref would make a
+populated sheet read as narrow or empty with `truncated` still `false`.
+
 **Types.** On an XLSX read, date/time cells are converted to ISO-8601 strings
 while numeric and boolean cells keep their scalar types. **CSV is textual**:
 every cell reads back as a string, so `"3"` must be converted client-side
