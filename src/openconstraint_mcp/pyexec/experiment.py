@@ -718,10 +718,11 @@ def run_cpsat_python_experiment(
     failed base acceptance.
 
     In optimization mode (``objective_sense`` set), the winner is the accepted
-    attempt with the best objective for ``objective_sense``, breaking ties by
-    stronger status then earliest attempt order. In feasibility mode
-    (``objective_sense`` omitted/``None``), the winner is the accepted attempt
-    with the strongest status, then earliest attempt order. Returns a
+    attempt with the best objective for ``objective_sense``, ties broken by
+    stronger status, then fastest ``duration_ms``, then earliest attempt
+    order. In feasibility mode (``objective_sense`` omitted/``None``), the
+    winner is the accepted attempt with the strongest status, then fastest
+    ``duration_ms``, then earliest attempt order. Returns a
     ``CpsatPythonExperimentResult`` with ``status="winner"`` and the winning
     ``CpsatPythonResult``/index/name, or ``status="no_winner"`` when nothing was
     accepted. A ``timeout`` winner is a reportable best incumbent, not a savable
