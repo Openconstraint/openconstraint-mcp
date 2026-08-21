@@ -12,12 +12,16 @@ import dataclasses
 import io
 import json
 import os
+import re
+import sys
 import textwrap
+import zipfile
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
 import pytest
+from openpyxl import Workbook
 
 from openconstraint_mcp.protocol_text.prompts import SOLVE_CPSAT_PYTHON_PROMPT
 
@@ -97,7 +101,9 @@ def _infeasible_record() -> tuple[dict[str, Any], Any]:
 
 def test_cpsat_prompt_code_fences_have_no_placeholders() -> None:
     fences = _rendered_code_fences()
-    assert len(fences) == 2, "expected the main example and the callback variant"
+    assert len(fences) == 3, (
+        "expected the main example, the callback variant, and the xlsx read_input"
+    )
     for fence in fences:
         assert "..." not in fence, "a copyable example must not contain placeholders"
 
@@ -203,7 +209,7 @@ def test_cpsat_prompt_callback_example_repeats_the_main_examples_guards() -> Non
     # of the status guards. Nothing else compares the two copies, so a drifted
     # one — say a callback variant that lost model.has_objective() — would ship
     # self-contradictory guidance with every test still green.
-    main, callback = _rendered_code_fences()
+    main, callback = _rendered_code_fences()[:2]
     start = "status_map = {"
     end = "def serialize_solution("
     assert start in main
@@ -218,7 +224,7 @@ def test_cpsat_prompt_callback_example_repeats_the_main_examples_guards() -> Non
 
 def _composed_callback_script() -> str:
     """Splice the callback fence's solve() into the main fence, as the prompt says to."""
-    main, callback = _rendered_code_fences()
+    main, callback = _rendered_code_fences()[:2]
     assert main.count(_SOLVE_SIGNATURE) == 1
     assert callback.startswith(_SOLVE_SIGNATURE)
     return (
@@ -279,3 +285,122 @@ def test_cpsat_prompt_callback_example_still_streams_under_a_configured_search_l
     lines = [line for line in out.getvalue().strip().splitlines() if line]
 
     assert len(lines) >= 2, "a configured search limit must not suppress the stream"
+
+
+# --- the xlsx read_input() example ------------------------------------------------
+
+_XLSX_FENCE_INDEX = 2
+
+
+def _workbook(path: Path, records: list[list[object]], *, dimension: str | None = None) -> Path:
+    """Write ``records`` to a sheet named ``Orders``, optionally faking its dimension ref.
+
+    openpyxl always records the true extent, so reproducing the understated ref
+    that other writers emit means rewriting the stored sheet XML.
+    """
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Orders"
+    for record in records:
+        sheet.append(record)
+    book.save(path)
+    if dimension is None:
+        return path
+    target = path.with_name(f"understated_{path.name}")
+    with zipfile.ZipFile(path) as src_zip, zipfile.ZipFile(target, "w") as dst_zip:
+        for item in src_zip.infolist():
+            data = src_zip.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                data, count = re.subn(
+                    rb'<dimension ref="[^"]*"\s*/>',
+                    f'<dimension ref="{dimension}" />'.encode(),
+                    data,
+                )
+                assert count == 1, "sheet XML carried no <dimension> to rewrite"
+            dst_zip.writestr(item, data)
+    return target
+
+
+def _read_via_example(path: Path, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    namespace = _define_example(_rendered_code_fences()[_XLSX_FENCE_INDEX])
+    monkeypatch.setattr(sys, "argv", ["model.py", str(path)])
+    result: list[dict[str, Any]] = namespace["read_input"]()
+    return result
+
+
+def test_cpsat_prompt_xlsx_example_reads_every_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _workbook(tmp_path / "d.xlsx", [["name", "qty"], ["widget", 3], ["gadget", 10]])
+
+    assert _read_via_example(path, monkeypatch) == [
+        {"name": "widget", "qty": 3},
+        {"name": "gadget", "qty": 10},
+    ]
+
+
+def test_cpsat_prompt_xlsx_example_survives_an_understated_dimension_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The whole reason the example carries reset_dimensions(): without it
+    # openpyxl trims iteration to this ref and the sheet reads as header-only,
+    # silently solving a smaller instance.
+    path = _workbook(
+        tmp_path / "d.xlsx",
+        [["name", "qty"], ["widget", 3], ["gadget", 10]],
+        dimension="A1:A1",
+    )
+
+    assert _read_via_example(path, monkeypatch) == [
+        {"name": "widget", "qty": 3},
+        {"name": "gadget", "qty": 10},
+    ]
+
+
+def test_cpsat_prompt_xlsx_example_keeps_a_dropped_column_when_the_ref_is_narrow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The trim hits the header row too, so the missing column leaves no width
+    # mismatch behind for a zip(strict=True) check to notice.
+    path = _workbook(
+        tmp_path / "d.xlsx", [["name", "qty", "due"], ["widget", 3, "friday"]], dimension="A1:B2"
+    )
+
+    assert _read_via_example(path, monkeypatch) == [{"name": "widget", "qty": 3, "due": "friday"}]
+
+
+def test_cpsat_prompt_xlsx_example_pads_a_row_whose_last_cell_is_blank(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # At natural width such a row is SHORT, so a bare strict=True would reject
+    # an ordinary sheet rather than reading it.
+    path = _workbook(tmp_path / "d.xlsx", [["name", "qty"], ["widget", None]])
+
+    assert _read_via_example(path, monkeypatch) == [{"name": "widget", "qty": None}]
+
+
+def test_cpsat_prompt_xlsx_example_skips_a_trailing_blank_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _workbook(tmp_path / "d.xlsx", [["name", "qty"], ["widget", 3], [None, None]])
+
+    assert _read_via_example(path, monkeypatch) == [{"name": "widget", "qty": 3}]
+
+
+def test_cpsat_prompt_xlsx_example_rejects_duplicate_headers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # dict() would keep only the last of the two, dropping a column in silence.
+    path = _workbook(tmp_path / "d.xlsx", [["name", "name"], ["widget", "gadget"]])
+
+    with pytest.raises(ValueError, match="duplicate column names"):
+        _read_via_example(path, monkeypatch)
+
+
+def test_cpsat_prompt_xlsx_example_rejects_a_row_wider_than_the_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _workbook(tmp_path / "d.xlsx", [["name", "qty"], ["widget", 3, "extra"]])
+
+    with pytest.raises(ValueError, match="cells under"):
+        _read_via_example(path, monkeypatch)
