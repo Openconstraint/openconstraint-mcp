@@ -158,17 +158,18 @@ class OPSInstance(ClosedModel):
         for operation_id, operation in self.operations.items():
             if len(operation.successors) != len(set(operation.successors)):
                 raise ValueError(f"operation {operation_id!r} contains duplicate successors")
-            for successor_id in operation.successors:
-                successor: Operation | None = self.operations.get(successor_id)
+            for successor_operation_id in operation.successors:
+                successor: Operation | None = self.operations.get(successor_operation_id)
                 if successor is None:
                     raise ValueError(
-                        f"operation {operation_id!r} references unknown successor {successor_id!r}"
+                        f"operation {operation_id!r} references unknown "
+                        f"successor {successor_operation_id!r}"
                     )
                 if successor.job != operation.job:
                     raise ValueError(
                         f"operation {operation_id!r} has successor outside job {operation.job!r}"
                     )
-                indegree[successor_id] += 1
+                indegree[successor_operation_id] += 1
 
             unknown_machines: set[str] = set(operation.machine_options) - machine_ids
             if unknown_machines:
@@ -191,10 +192,10 @@ class OPSInstance(ClosedModel):
         while ready:
             operation_id = ready.pop()
             visited += 1
-            for successor_id in self.operations[operation_id].successors:
-                indegree[successor_id] -= 1
-                if indegree[successor_id] == 0:
-                    ready.append(successor_id)
+            for successor_operation_id in self.operations[operation_id].successors:
+                indegree[successor_operation_id] -= 1
+                if indegree[successor_operation_id] == 0:
+                    ready.append(successor_operation_id)
         if visited != len(operation_ids):
             raise ValueError("operation precedence graph must be acyclic")
 
@@ -502,9 +503,11 @@ def solve(instance: OPSInstance) -> Solution:
     # A successor may overlap its predecessor after the required theta fraction
     # is processed, but may not finish before its predecessor.
     for operation_id, operation in instance.operations.items():
-        for successor_id in operation.successors:
-            model.add(processing_starts[successor_id] >= theta_completion_times[operation_id])
-            model.add(processing_ends[successor_id] >= processing_ends[operation_id])
+        for successor_operation_id in operation.successors:
+            model.add(
+                processing_starts[successor_operation_id] >= theta_completion_times[operation_id]
+            )
+            model.add(processing_ends[successor_operation_id] >= processing_ends[operation_id])
 
     # Build one optional sequence per machine. AddCircuit sees a depot (node 0)
     # plus one node for every operation eligible for the machine. Selected
