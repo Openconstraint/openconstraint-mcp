@@ -246,21 +246,21 @@ def _parse_instance(raw: dict[str, Any]) -> tuple[Instance | None, str | None]:
                 or fixed_start < operation.release_time
             ):
                 return None, f"operation {operation_id!r} has an invalid fixed assignment"
-        for successor_id in operation.successors:
-            successor = operations.get(successor_id)
+        for successor_operation_id in operation.successors:
+            successor = operations.get(successor_operation_id)
             if successor is None or successor.job != operation.job:
                 return None, f"operation {operation_id!r} has an invalid successor"
-            indegree[successor_id] += 1
+            indegree[successor_operation_id] += 1
 
     ready = [operation_id for operation_id, degree in indegree.items() if degree == 0]
     visited = 0
     while ready:
         operation_id = ready.pop()
         visited += 1
-        for successor_id in operations[operation_id].successors:
-            indegree[successor_id] -= 1
-            if indegree[successor_id] == 0:
-                ready.append(successor_id)
+        for successor_operation_id in operations[operation_id].successors:
+            indegree[successor_operation_id] -= 1
+            if indegree[successor_operation_id] == 0:
+                ready.append(successor_operation_id)
     if visited != len(operations):
         return None, "problem instance precedence graph is cyclic"
 
@@ -554,8 +554,8 @@ def check_payload(payload: dict[str, Any]) -> dict[str, Any]:
         predecessor_entry = entries.get(operation_id)
         if predecessor_entry is None:
             continue
-        for successor_id in operation.successors:
-            successor_entry = entries.get(successor_id)
+        for successor_operation_id in operation.successors:
+            successor_entry = entries.get(successor_operation_id)
             if successor_entry is None:
                 continue
             theta_completion_time = expected_theta_completion_time.get(
@@ -564,11 +564,13 @@ def check_payload(payload: dict[str, Any]) -> dict[str, Any]:
             end = expected_end.get(operation_id, predecessor_entry.end)
             if successor_entry.start < theta_completion_time:
                 errors.append(
-                    f"successor {successor_id!r} starts before operation {operation_id!r} is ready"
+                    f"successor {successor_operation_id!r} starts before "
+                    f"operation {operation_id!r} is ready"
                 )
             if successor_entry.end < end:
                 errors.append(
-                    f"successor {successor_id!r} ends before operation {operation_id!r} ends"
+                    f"successor {successor_operation_id!r} ends before "
+                    f"operation {operation_id!r} ends"
                 )
 
     max_end = max((entry.end for entry in solution.schedule), default=0)
