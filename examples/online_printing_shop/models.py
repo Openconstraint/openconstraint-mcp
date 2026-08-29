@@ -282,11 +282,11 @@ def _solver_config() -> dict[str, Any]:
     config_path: str | None = os.environ.get("OPENCONSTRAINT_MCP_CPSAT_CONFIG")
     if not config_path:
         return {}
-    config: dict[str, Any] = json.loads(Path(config_path).read_text(encoding="utf-8"))
-    return config
+    solver_config: dict[str, Any] = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    return solver_config
 
 
-def _solver_time_limit_seconds(config: dict[str, Any]) -> float | None:
+def _solver_time_limit_seconds(solver_config: dict[str, Any]) -> float | None:
     """Return the caller's CP-SAT SEARCH limit, or None to search unbounded.
 
     Bounds ``solver.solve`` only — not reading the instance, building the model,
@@ -296,11 +296,11 @@ def _solver_time_limit_seconds(config: dict[str, Any]) -> float | None:
     instead of being killed at the tool's ``script_timeout_ms``.
     """
 
-    limit: Any = config.get("solver_time_limit_seconds")
+    limit: Any = solver_config.get("solver_time_limit_seconds")
     return None if limit is None else float(limit)
 
 
-def _num_workers(config: dict[str, Any]) -> int:
+def _num_workers(solver_config: dict[str, Any]) -> int:
     """Return the caller's CP-SAT worker count, defaulting to one.
 
     One worker keeps a seeded run reproducible, and that is enough to prove the
@@ -309,7 +309,7 @@ def _num_workers(config: dict[str, Any]) -> int:
     same way it sets the time limit.
     """
 
-    workers: Any = config.get("num_workers")
+    workers: Any = solver_config.get("num_workers")
     return 1 if workers is None else int(workers)
 
 
@@ -327,7 +327,7 @@ def _horizon(instance: OPSInstance) -> int:
     work: int = 0
     for operation_id, operation in instance.operations.items():
         processing: int = max(
-            option.processing_time for option in operation.machine_options.values()
+            machine_option.processing_time for machine_option in operation.machine_options.values()
         )
         setup: int = max(
             duration
@@ -430,18 +430,20 @@ def solve(instance: OPSInstance) -> Solution:
     # The selected alternative activates the calendar and duration constraints
     # for its machine; the other alternatives leave those constraints inactive.
     for operation_index, (operation_id, operation) in enumerate(instance.operations.items()):
-        suffix: str = str(operation_index)
+        operation_suffix: str = str(operation_index)
         processing_start: CpsatIntVar = model.new_int_var(
-            operation.release_time, horizon, f"processing_start_{suffix}"
+            operation.release_time, horizon, f"processing_start_{operation_suffix}"
         )
         theta_completion_time: CpsatIntVar = model.new_int_var(
-            operation.release_time, horizon, f"theta_completion_time_{suffix}"
+            operation.release_time, horizon, f"theta_completion_time_{operation_suffix}"
         )
         processing_end: CpsatIntVar = model.new_int_var(
-            operation.release_time, horizon, f"processing_end_{suffix}"
+            operation.release_time, horizon, f"processing_end_{operation_suffix}"
         )
-        setup_start: CpsatIntVar = model.new_int_var(0, horizon, f"setup_start_{suffix}")
-        setup_duration: CpsatIntVar = model.new_int_var(0, horizon, f"setup_duration_{suffix}")
+        setup_start: CpsatIntVar = model.new_int_var(0, horizon, f"setup_start_{operation_suffix}")
+        setup_duration: CpsatIntVar = model.new_int_var(
+            0, horizon, f"setup_duration_{operation_suffix}"
+        )
         processing_starts[operation_id] = processing_start
         theta_completion_times[operation_id] = theta_completion_time
         processing_ends[operation_id] = processing_end
@@ -453,12 +455,16 @@ def solve(instance: OPSInstance) -> Solution:
         model.add(theta_completion_time <= processing_end)
 
         # Assignment literals for this operation, consumed by AddExactlyOne.
-        alternatives: list[CpsatIntVar] = []
-        for machine_index, (machine_id, option) in enumerate(operation.machine_options.items()):
-            is_assigned: CpsatIntVar = model.new_bool_var(f"is_assigned_{suffix}_{machine_index}")
+        operation_assignments: list[CpsatIntVar] = []
+        for machine_index, (machine_id, machine_option) in enumerate(
+            operation.machine_options.items()
+        ):
+            is_assigned: CpsatIntVar = model.new_bool_var(
+                f"is_assigned_{operation_suffix}_{machine_index}"
+            )
             assignments[operation_id, machine_id] = is_assigned
             machine_incoming_arcs[operation_id, machine_id] = []
-            alternatives.append(is_assigned)
+            operation_assignments.append(is_assigned)
 
             machine: Machine = instance.machines[machine_id]
             # Both completion times advance through active machine time only.
@@ -467,19 +473,19 @@ def solve(instance: OPSInstance) -> Solution:
                 model,
                 processing_start,
                 theta_completion_time,
-                _required_processing(operation.theta, option.processing_time),
+                _required_processing(operation.theta, machine_option.processing_time),
                 machine.unavailability,
                 is_assigned,
-                f"theta_completion_time_{suffix}_{machine_index}",
+                f"theta_completion_time_{operation_suffix}_{machine_index}",
             )
             _add_resumable_duration(
                 model,
                 processing_start,
                 processing_end,
-                option.processing_time,
+                machine_option.processing_time,
                 machine.unavailability,
                 is_assigned,
-                f"processing_end_{suffix}_{machine_index}",
+                f"processing_end_{operation_suffix}_{machine_index}",
             )
             machine_setup_intervals[machine_id].append(
                 # A selected operation's setup ends exactly when processing starts.
@@ -489,11 +495,11 @@ def solve(instance: OPSInstance) -> Solution:
                     setup_duration,
                     processing_start,
                     is_assigned,
-                    f"setup_{suffix}_{machine_index}",
+                    f"setup_{operation_suffix}_{machine_index}",
                 )
             )
         # Every operation is mandatory and uses exactly one eligible machine.
-        model.add_exactly_one(alternatives)
+        model.add_exactly_one(operation_assignments)
         if operation.fixed is not None:
             # A fixed operation still participates in its machine's sequence.
             model.add(assignments[operation_id, operation.fixed.machine] == 1)
@@ -548,59 +554,70 @@ def solve(instance: OPSInstance) -> Solution:
 
             # A depot -> operation arc makes this the first assigned operation and
             # therefore selects the machine's first-operation setup duration.
-            is_first: CpsatIntVar = model.new_bool_var(f"is_first_{machine_index}_{operation_node}")
-            sequence_arcs.append((0, operation_node, is_first))
+            is_first_on_machine: CpsatIntVar = model.new_bool_var(
+                f"is_first_{machine_index}_{operation_node}"
+            )
+            sequence_arcs.append((0, operation_node, is_first_on_machine))
             # Output bookkeeping only: if this arc wins, extraction prints no
-            # predecessor. The is_first literal itself still constrains the model.
-            machine_incoming_arcs[operation_id, machine_id].append((None, is_first))
-            first_setup: int = machine.setup_times.first[operation_id]
-            model.add(setup_durations[operation_id] == first_setup).only_enforce_if(is_first)
+            # predecessor. The is_first_on_machine literal itself still constrains the model.
+            machine_incoming_arcs[operation_id, machine_id].append((None, is_first_on_machine))
+            first_setup_duration: int = machine.setup_times.first[operation_id]
+            model.add(setup_durations[operation_id] == first_setup_duration).only_enforce_if(
+                is_first_on_machine
+            )
             model.add(
-                setup_starts[operation_id] + first_setup == processing_starts[operation_id]
-            ).only_enforce_if(is_first)
+                setup_starts[operation_id] + first_setup_duration == processing_starts[operation_id]
+            ).only_enforce_if(is_first_on_machine)
 
             # An operation -> depot arc makes this the last assigned operation.
-            is_last: CpsatIntVar = model.new_bool_var(f"is_last_{machine_index}_{operation_node}")
-            sequence_arcs.append((operation_node, 0, is_last))
+            is_last_on_machine: CpsatIntVar = model.new_bool_var(
+                f"is_last_{machine_index}_{operation_node}"
+            )
+            sequence_arcs.append((operation_node, 0, is_last_on_machine))
 
         # Unlike fixed JSON job precedence, these arcs enumerate every possible
         # immediate adjacency on this machine. Selecting one fixes the successor's
         # setup duration and places it after the selected machine predecessor.
         # The resulting circuit order prevents machine work from overlapping.
-        for candidate_machine_predecessor_id in eligible_operation_ids:
-            for candidate_machine_successor_id in eligible_operation_ids:
-                if candidate_machine_predecessor_id == candidate_machine_successor_id:
+        for candidate_machine_predecessor_operation_id in eligible_operation_ids:
+            for candidate_machine_successor_operation_id in eligible_operation_ids:
+                if (
+                    candidate_machine_predecessor_operation_id
+                    == candidate_machine_successor_operation_id
+                ):
                     continue
                 is_machine_transition: CpsatIntVar = model.new_bool_var(
-                    f"arc_{machine_index}_{node_index[candidate_machine_predecessor_id]}_"
-                    f"{node_index[candidate_machine_successor_id]}"
+                    f"arc_{machine_index}_"
+                    f"{node_index[candidate_machine_predecessor_operation_id]}_"
+                    f"{node_index[candidate_machine_successor_operation_id]}"
                 )
                 sequence_arcs.append(
                     (
-                        node_index[candidate_machine_predecessor_id],
-                        node_index[candidate_machine_successor_id],
+                        node_index[candidate_machine_predecessor_operation_id],
+                        node_index[candidate_machine_successor_operation_id],
                         is_machine_transition,
                     )
                 )
                 # Keep the incoming arc and its predecessor for solution extraction.
                 # The arc literal itself also drives the constraints below.
-                machine_incoming_arcs[candidate_machine_successor_id, machine_id].append(
-                    (candidate_machine_predecessor_id, is_machine_transition)
+                machine_incoming_arcs[candidate_machine_successor_operation_id, machine_id].append(
+                    (candidate_machine_predecessor_operation_id, is_machine_transition)
                 )
                 machine_transition_setup_duration: int = machine.setup_times.transitions[
-                    candidate_machine_predecessor_id
-                ][candidate_machine_successor_id]
+                    candidate_machine_predecessor_operation_id
+                ][candidate_machine_successor_operation_id]
                 model.add(
-                    setup_durations[candidate_machine_successor_id]
+                    setup_durations[candidate_machine_successor_operation_id]
                     == machine_transition_setup_duration
                 ).only_enforce_if(is_machine_transition)
                 model.add(
-                    setup_starts[candidate_machine_successor_id] + machine_transition_setup_duration
-                    == processing_starts[candidate_machine_successor_id]
+                    setup_starts[candidate_machine_successor_operation_id]
+                    + machine_transition_setup_duration
+                    == processing_starts[candidate_machine_successor_operation_id]
                 ).only_enforce_if(is_machine_transition)
                 model.add(
-                    processing_ends[candidate_machine_predecessor_id]
-                    <= setup_starts[candidate_machine_successor_id]
+                    processing_ends[candidate_machine_predecessor_operation_id]
+                    <= setup_starts[candidate_machine_successor_operation_id]
                 ).only_enforce_if(is_machine_transition)
 
         model.add_circuit(sequence_arcs)
@@ -623,7 +640,7 @@ def solve(instance: OPSInstance) -> Solution:
     model.minimize(makespan)
 
     def extract_schedule(
-        reader: cp_model.CpSolver | cp_model.CpSolverSolutionCallback,
+        solution_reader: cp_model.CpSolver | cp_model.CpSolverSolutionCallback,
     ) -> list[ScheduledOperation]:
         """Translate selected assignment and sequence arcs into output records."""
 
@@ -632,14 +649,14 @@ def solve(instance: OPSInstance) -> Solution:
             machine_id: str = next(
                 machine_id
                 for machine_id in operation.machine_options
-                if reader.boolean_value(assignments[operation_id, machine_id])
+                if solution_reader.boolean_value(assignments[operation_id, machine_id])
             )
             machine_predecessor: str | None = next(
-                candidate_machine_predecessor
-                for candidate_machine_predecessor, is_machine_transition in machine_incoming_arcs[
-                    operation_id, machine_id
-                ]
-                if reader.boolean_value(is_machine_transition)
+                candidate_machine_predecessor_operation_id
+                for candidate_machine_predecessor_operation_id, is_machine_transition in (
+                    machine_incoming_arcs[operation_id, machine_id]
+                )
+                if solution_reader.boolean_value(is_machine_transition)
             )
             schedule.append(
                 ScheduledOperation(
@@ -647,12 +664,14 @@ def solve(instance: OPSInstance) -> Solution:
                     job=operation.job,
                     machine=machine_id,
                     predecessor=machine_predecessor,
-                    setup_start=reader.value(setup_starts[operation_id]),
-                    setup_duration=reader.value(setup_durations[operation_id]),
-                    start=reader.value(processing_starts[operation_id]),
+                    setup_start=solution_reader.value(setup_starts[operation_id]),
+                    setup_duration=solution_reader.value(setup_durations[operation_id]),
+                    start=solution_reader.value(processing_starts[operation_id]),
                     processing_time=operation.machine_options[machine_id].processing_time,
-                    theta_completion_time=reader.value(theta_completion_times[operation_id]),
-                    end=reader.value(processing_ends[operation_id]),
+                    theta_completion_time=solution_reader.value(
+                        theta_completion_times[operation_id]
+                    ),
+                    end=solution_reader.value(processing_ends[operation_id]),
                 )
             )
         return schedule
@@ -683,11 +702,11 @@ def solve(instance: OPSInstance) -> Solution:
             print(line)
             self._remaining_output_bytes -= line_bytes
 
-    config: dict[str, Any] = _solver_config()
+    solver_config: dict[str, Any] = _solver_config()
     solver: cp_model.CpSolver = cp_model.CpSolver()
     solver.parameters.random_seed = int(os.environ.get("OPENCONSTRAINT_MCP_CPSAT_SEED", "42"))
-    solver.parameters.num_workers = _num_workers(config)
-    solver_time_limit_seconds: float | None = _solver_time_limit_seconds(config)
+    solver.parameters.num_workers = _num_workers(solver_config)
+    solver_time_limit_seconds: float | None = _solver_time_limit_seconds(solver_config)
     if solver_time_limit_seconds is not None:
         solver.parameters.max_time_in_seconds = solver_time_limit_seconds
     # Intermediate envelopes exist for one reason: a child killed at the tool's
