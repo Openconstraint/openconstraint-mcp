@@ -17,6 +17,21 @@ The server performs **mechanical I/O only** — it never infers what a column
 the client LLM's job: **LLM proposes, server verifies**, the same division of
 labour as the solving tools.
 
+**`load_tabular_data` is not a bulk data channel.** It returns at most
+`max_rows` rows (default 1000) into the client's context. The tool itself is
+loud about that — `truncated`, `truncation_reason`, and `next_row_offset` are
+all set, and `total_rows` still counts every row in the file (see
+[Pagination and the response ceiling](#pagination-and-the-response-ceiling)).
+What ends up silent is the *model*: a client that reads one page and hardcodes
+those rows produces an instance that looks complete and solves a different
+problem than the user asked about. For an instance big enough to matter, use
+this tool to learn the *shape* — `headers`,
+`available_sheets`, `total_rows`, a sample of rows — and let the solver script
+open the file itself. See
+[File-backed instances](cpsat-python.md#file-backed-instances-spreadsheets-and-large-data)
+for the CP-SAT route; the MiniZinc path has no equivalent, since MiniZinc reads
+`.dzn` and cannot open a workbook.
+
 ## The cell contract
 
 A cell is a **JSON scalar only**: string, number, boolean, or `null`. Nested
@@ -29,6 +44,15 @@ becomes the positional name `col_1`, `col_2`, … — as do all columns when
 `has_header=false`, where positional names are derived from the widest row in
 the file so they stay stable across pages. Duplicate header names are preserved
 as-is (de-duplicating them would be interpretation).
+
+**Every row is as wide as `headers`.** A record narrower than the header — a
+short CSV row, or an XLSX row whose trailing cells are blank and are therefore
+stored nowhere — is padded with `null`, so `rows[i][j]` always names
+`headers[j]`. A record *wider* than the header row instead widens `headers`,
+naming the extra columns positionally. XLSX reads deliberately ignore the
+worksheet's stored `<dimension>` ref: in streaming mode `openpyxl` would trim
+every row to it, so a writer that understates or omits the ref would make a
+populated sheet read as narrow or empty with `truncated` still `false`.
 
 **Types.** On an XLSX read, date/time cells are converted to ISO-8601 strings
 while numeric and boolean cells keep their scalar types. **CSV is textual**:

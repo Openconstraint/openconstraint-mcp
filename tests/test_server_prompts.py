@@ -1221,6 +1221,95 @@ async def test_cpsat_python_solution_workflow_prompt_still_teaches_direct_instan
 
 
 @pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_routes_a_file_instance_to_the_script() -> None:
+    # The step-3 default is to hardcode the instance, which silently truncates a
+    # spreadsheet at `load_tabular_data`'s row cap. The file branch has to name
+    # that tool as an INSPECTION step and hand the data itself to the child.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "when the instance lives in a file" in normalized
+    assert "it is an inspection tool, not the data channel" in normalized
+    assert "`read_input()` open the path the child receives as `sys.argv[1]`" in normalized
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_workflow_prompt_branches_the_execute_step_by_input_mode() -> None:
+    # Step 3 routes a file-backed instance to `run_cpsat_python_file_checked`,
+    # but a client reads the numbered steps in order: an unconditional step 4
+    # would send it back to the inline tool, which takes no `args` and so
+    # leaves `sys.argv[1]` unset.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "call the tool matching the input mode step 3 chose" in normalized
+    assert "`run_cpsat_python` accepts no `args` and runs from a temporary directory" in normalized
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_workflow_prompt_scopes_load_tabular_data_to_tabular_files() -> None:
+    # `validate_tabular_read_path` rejects every suffix but `.xlsx` and `.csv`,
+    # so pointing "any instance too large to paste" at that tool hands the
+    # client a call that cannot succeed on a large JSON or DZN instance.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "that tool accepts `.xlsx` and `.csv` only and rejects any other suffix" in normalized
+    assert "with the client's own file tools instead" in normalized
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_sends_the_data_path_through_problem() -> None:
+    # The checker child is launched with the payload path as its ONLY argument,
+    # so `args` never reaches it; a checker told to reread the instance file can
+    # only learn where that file is from `problem`.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "receives only the payload path as its argument and never `args`" in normalized
+    assert "the data file's path travels inside `problem`" in normalized
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_requires_absolute_data_paths() -> None:
+    # `run_cpsat_python_file` runs the child with cwd set to the SCRIPT's parent,
+    # so a path relative to the user's working directory resolves against the
+    # wrong directory and the child dies before the model is ever built.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "make every path absolute" in normalized
+    assert "the child runs from the script's own directory" in normalized
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_checker_stdlib_rule_carves_out_reading_the_instance_file() -> None:
+    # The file-instance branch tells the checker to REREAD the workbook, which
+    # needs `openpyxl`; step 7c otherwise says standard library only. Without an
+    # explicit carve-out the two instructions cannot both be followed.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "reading an instance file the payload points at may use `openpyxl`" in normalized
+    assert "because parsing input is not solving" in normalized
+    # The carve-out must not weaken the rule it qualifies.
+    assert "never `import ortools` and never re-solve" in normalized
+
+
+@pytest.mark.asyncio
+async def test_cpsat_python_solution_workflow_prompt_scales_by_changing_read_input_only() -> None:
+    # Swapping a small inline instance for a large file must not re-open the
+    # model: the spine exists so the data source is a one-function change. The
+    # save exclusion belongs here too — step 6 states it only for experiment
+    # attempts, so a plain file run would otherwise look savable.
+    text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
+    normalized = " ".join(text.split()).lower()
+
+    assert "changes `read_input()` and nothing else" in normalized
+    assert "this route cannot be saved" in normalized
+
+
+@pytest.mark.asyncio
 async def test_cpsat_python_solution_workflow_prompt_nudges_cross_backend() -> None:
     text = await _get_prompt_text("cpsat_python_solution_workflow", {"problem": SAMPLE_PROBLEM})
 

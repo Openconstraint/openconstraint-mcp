@@ -134,7 +134,16 @@ def _xlsx_records(worksheet: Any, path: Path) -> Iterator[list[Any]]:
     here, not from the ``load_workbook`` call in ``_open_xlsx_rows``. The
     raised type (``xml.etree.ElementTree.ParseError`` and others) is not a
     ``ValueError``, so it would otherwise bypass the tools' error translation.
+
+    ``reset_dimensions()`` is load-bearing. In read-only mode openpyxl trusts
+    the worksheet's stored ``<dimension>`` and normalizes EVERY row to it,
+    padding short rows with ``None`` and dropping cells past the recorded
+    width. Writers that omit or understate that ref — a common trait of
+    exported workbooks — would therefore make a populated sheet read as
+    narrower, or as empty, with no error and no truncation flag. Clearing the
+    cached bounds makes ``iter_rows`` yield each row at its real width.
     """
+    worksheet.reset_dimensions()
     try:
         for row in worksheet.iter_rows(values_only=True):
             yield list(row)
