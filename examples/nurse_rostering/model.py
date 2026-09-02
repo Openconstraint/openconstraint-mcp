@@ -545,12 +545,12 @@ def _pin_roster(builder: RosterModel, instance: Instance, path: Path) -> None:
                 )
 
 
-def write_csv(roster: dict[str, list[str]], num_days: int, path: Path) -> None:
-    header: str = "employee," + ",".join(f"d{day}" for day in range(num_days))
-    rows: list[str] = [header] + [
-        employee_id + "," + ",".join(schedule) for employee_id, schedule in sorted(roster.items())
-    ]
-    path.write_text("\n".join(rows) + "\n")
+# def write_csv(roster: dict[str, list[str]], num_days: int, path: Path) -> None:
+#     header: str = "employee," + ",".join(f"d{day}" for day in range(num_days))
+#     rows: list[str] = [header] + [
+#         employee_id + "," + ",".join(schedule) for employee_id, schedule in sorted(roster.items())
+#     ]
+#     path.write_text("\n".join(rows) + "\n")
 
 
 def serialize_solution(solution: Solution) -> dict[str, Any]:
@@ -577,7 +577,7 @@ def main() -> None:
     # roster and printed a cost the reader naturally attributes to the run that
     # just failed. An empty roster writes the header alone, which scorer.py's
     # reader rejects by name.
-    write_csv(solution.roster, parsed[0].num_days, raw.csv_path)
+    # write_csv(solution.roster, parsed[0].num_days, raw.csv_path)
     write_output(serialize_solution(solution))
 
 
