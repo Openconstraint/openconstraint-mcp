@@ -30,7 +30,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from model import Solution, solve  # noqa: E402
+from model import Options, Solution, solve  # noqa: E402
 from parse_instance import Instance, parse_instance  # noqa: E402
 from scorer import Breakdown, read_roster_xml, score  # noqa: E402
 
@@ -69,16 +69,16 @@ def _report(ok: bool, message: str) -> bool:
     return ok
 
 
-def _options(instance_path: Path, seed: int, fix_roster: str | None = None) -> dict:
-    return {
-        "instance_path": str(instance_path),
-        "csv_path": str(HERE / "verify_scratch.csv"),
-        "time_limit": 120.0,
-        "workers": 8,
-        "seed": seed,
-        "harden": False,
-        "fix_roster": fix_roster,
-    }
+def _options(instance_path: Path, seed: int, fix_roster: Path | None = None) -> Options:
+    return Options(
+        instance_path=instance_path,
+        csv_path=HERE / "verify_scratch.csv",
+        time_limit=120.0,
+        workers=8,
+        seed=seed,
+        harden=False,
+        fix_roster=fix_roster,
+    )
 
 
 def main() -> None:
@@ -98,7 +98,7 @@ def main() -> None:
     )
 
     print("\ngate 2 -- model pinned to that same roster")
-    pinned: Solution = solve((instance, _options(HERE / "QMC-2.ros", 42, str(PUBLISHED_ROSTER))))
+    pinned: Solution = solve((instance, _options(HERE / "QMC-2.ros", 42, PUBLISHED_ROSTER)))
     passed.append(
         _report(pinned.objective == PUBLISHED_TOTAL, f"model objective = {pinned.objective}")
     )

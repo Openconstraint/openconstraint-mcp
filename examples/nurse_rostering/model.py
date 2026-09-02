@@ -29,14 +29,16 @@ import sys
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from typing import Any
 
-from ortools.sat.python import cp_model
+from ortools.sat.python import cp_model, cp_model_helper
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from parse_instance import (  # noqa: E402
     Contract,
     Instance,
+    Limit,
     Match,
     Pattern,
     Symbol,
@@ -73,7 +75,28 @@ class Solution:
     breakdown: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
-def read_input() -> dict:
+@dataclass(frozen=True)
+class Options:
+    """Everything the command line settles before any modelling happens.
+
+    A typed record rather than the string-keyed dict this used to be. `solve()`
+    reads five of these fields and `main()` a sixth, so a dict turned every read
+    into a place where a typo surfaces as a KeyError at solve time instead of an
+    error at the boundary -- and it left the two path fields as bare strings,
+    re-wrapped in `Path(...)` downstream. docs/cpsat-python.md asks the spine for
+    a typed record across `solve()` for exactly this reason.
+    """
+
+    instance_path: Path
+    csv_path: Path
+    time_limit: float
+    workers: int
+    seed: int
+    harden: bool
+    fix_roster: Path | None
+
+
+def read_input() -> Options:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--instance", default="QMC-2.ros")
     parser.add_argument("--time-limit", type=float, default=300.0)
@@ -105,24 +128,24 @@ def read_input() -> dict:
     args = parser.parse_args()
 
     here: Path = Path(__file__).parent
-    return {
-        "instance_path": str(here / args.instance),
-        "csv_path": str(here / args.csv),
-        "time_limit": args.time_limit,
-        "workers": args.workers,
-        "seed": args.seed,
-        "harden": args.harden,
+    return Options(
+        instance_path=here / args.instance,
+        csv_path=here / args.csv,
+        time_limit=args.time_limit,
+        workers=args.workers,
+        seed=args.seed,
+        harden=args.harden,
         # Resolved against the script directory, exactly like --instance and
         # --csv above. Left CWD-relative it broke the invocation this file's own
         # docstring documents -- `uv run examples/nurse_rostering/model.py
         # --fix-roster QMC-2.Solution.29.roster` from the repository root died
         # with FileNotFoundError instead of pinning the published optimum.
-        "fix_roster": None if args.fix_roster is None else str(here / args.fix_roster),
-    }
+        fix_roster=None if args.fix_roster is None else here / args.fix_roster,
+    )
 
 
-def parse_input(raw: dict) -> tuple[Instance, dict]:
-    return parse_instance(Path(raw["instance_path"])), raw
+def parse_input(raw: Options) -> tuple[Instance, Options]:
+    return parse_instance(raw.instance_path), raw
 
 
 class RosterModel:
@@ -172,7 +195,9 @@ class RosterModel:
 
     # -- pattern machinery -------------------------------------------------
 
-    def _symbol_literal(self, employee_id: str, day: int, symbol: Symbol):
+    def _symbol_literal(
+        self, employee_id: str, day: int, symbol: Symbol
+    ) -> cp_model_helper.Literal:
         """Map one pattern symbol on one day to a single boolean literal.
 
         Every symbol in this instance reduces to a literal, which is what keeps
@@ -193,12 +218,8 @@ class RosterModel:
                 # "worked". Resolved through <ShiftGroups>, not assumed: another
                 # instance may define a proper subset, handled below.
                 return self.works[employee_id, day]
-            in_group: cp_model.IntVar = self.model.new_bool_var(
-                f"g_{employee_id}_{day}_{value}"
-            )
-            self.model.add_max_equality(
-                in_group, [self.x[employee_id, day, s] for s in members]
-            )
+            in_group: cp_model.IntVar = self.model.new_bool_var(f"g_{employee_id}_{day}_{value}")
+            self.model.add_max_equality(in_group, [self.x[employee_id, day, s] for s in members])
             return in_group
 
         if kind == "notshift":
@@ -230,7 +251,9 @@ class RosterModel:
             ]
         return list(range(lowest, highest + 1))
 
-    def _hit_variable(self, employee_id: str, literals: list) -> cp_model.IntVar:
+    def _hit_variable(
+        self, employee_id: str, literals: list[cp_model_helper.Literal]
+    ) -> cp_model.IntVar:
         """A boolean that is true exactly when every literal in the window holds.
 
         Reified in both directions. Only `hit >= AND(literals)` is needed to make
@@ -245,7 +268,12 @@ class RosterModel:
         return hit
 
     def _add_clamped_penalty(
-        self, group: str, key: str, observed: cp_model.LinearExpr, limit, observed_upper: int
+        self,
+        group: str,
+        key: str,
+        observed: cp_model.LinearExprT,
+        limit: Limit,
+        observed_upper: int,
     ) -> None:
         """Add `max(0, observed - count) * weight` (or the Min mirror image).
 
@@ -263,12 +291,8 @@ class RosterModel:
         `penalty >= excess` unsatisfiable whenever `count` exceeds it, which
         reports the whole instance INFEASIBLE rather than expensive.
         """
-        excess = (
-            observed - limit.count if limit.sense == "max" else limit.count - observed
-        )
-        upper: int = (
-            observed_upper - limit.count if limit.sense == "max" else limit.count
-        )
+        excess = observed - limit.count if limit.sense == "max" else limit.count - observed
+        upper: int = observed_upper - limit.count if limit.sense == "max" else limit.count
         penalty: cp_model.IntVar = self.model.new_int_var(
             0, max(upper, 0), f"pen_{key}_{len(self.penalties)}"
         )
@@ -295,10 +319,10 @@ class RosterModel:
                 # Hit counts across the several <Pattern> children are SUMMED.
                 # OR-ing them would cap `Max 3 working weekends` at 1 and make the
                 # rule unfalsifiable.
-                hits: list = []
+                hits: list[cp_model.IntVar] = []
                 for pattern in match.patterns:
                     for start in self._candidate_starts(pattern, match):
-                        literals: list = [
+                        literals: list[cp_model_helper.Literal] = [
                             self._symbol_literal(employee.id, start + offset, symbol)
                             for offset, symbol in enumerate(pattern.symbols)
                         ]
@@ -398,7 +422,13 @@ class RosterModel:
                         num_employees,
                     )
 
-    def _add_cover_penalty(self, key: str, excess, weight: int, upper: int) -> None:
+    def _add_cover_penalty(
+        self,
+        key: str,
+        excess: cp_model.LinearExprT,
+        weight: int,
+        upper: int,
+    ) -> None:
         penalty: cp_model.IntVar = self.model.new_int_var(
             0, max(upper, 0), f"cov_{len(self.penalties)}"
         )
@@ -435,27 +465,27 @@ class RosterModel:
                 )
             )
 
-    def objective(self) -> cp_model.LinearExpr:
+    def objective(self) -> cp_model.LinearExprT:
         return sum(term.weight * term.expression for term in self.penalties)
 
 
-def solve(parsed: tuple[Instance, dict]) -> Solution:
+def solve(parsed: tuple[Instance, Options]) -> Solution:
     instance, options = parsed
-    builder: RosterModel = RosterModel(instance, harden=options["harden"])
+    builder: RosterModel = RosterModel(instance, harden=options.harden)
 
-    if options["fix_roster"]:
-        _pin_roster(builder, instance, Path(options["fix_roster"]))
+    if options.fix_roster is not None:
+        _pin_roster(builder, instance, options.fix_roster)
 
     builder.model.minimize(builder.objective())
 
     solver: cp_model.CpSolver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = options["time_limit"]
-    solver.parameters.num_workers = options["workers"]
-    solver.parameters.random_seed = options["seed"]
+    solver.parameters.max_time_in_seconds = options.time_limit
+    solver.parameters.num_workers = options.workers
+    solver.parameters.random_seed = options.seed
     solver.parameters.log_search_progress = False
-    status: int = solver.solve(builder.model)
+    status: cp_model.CpSolverStatus = solver.solve(builder.model)
 
-    status_map: dict[int, str] = {
+    status_map: dict[cp_model.CpSolverStatus, str] = {
         cp_model.OPTIMAL: "optimal",
         cp_model.FEASIBLE: "feasible",
         cp_model.INFEASIBLE: "infeasible",
@@ -518,13 +548,12 @@ def _pin_roster(builder: RosterModel, instance: Instance, path: Path) -> None:
 def write_csv(roster: dict[str, list[str]], num_days: int, path: Path) -> None:
     header: str = "employee," + ",".join(f"d{day}" for day in range(num_days))
     rows: list[str] = [header] + [
-        employee_id + "," + ",".join(schedule)
-        for employee_id, schedule in sorted(roster.items())
+        employee_id + "," + ",".join(schedule) for employee_id, schedule in sorted(roster.items())
     ]
     path.write_text("\n".join(rows) + "\n")
 
 
-def serialize_solution(solution: Solution) -> dict:
+def serialize_solution(solution: Solution) -> dict[str, Any]:
     return {
         "status": solution.status,
         "objective": solution.objective,
@@ -534,13 +563,13 @@ def serialize_solution(solution: Solution) -> dict:
     }
 
 
-def write_output(payload: dict) -> None:
+def write_output(payload: dict[str, Any]) -> None:
     print(json.dumps(payload))
 
 
 def main() -> None:
-    raw: dict = read_input()
-    parsed: tuple[Instance, dict] = parse_input(raw)
+    raw: Options = read_input()
+    parsed: tuple[Instance, Options] = parse_input(raw)
     solution: Solution = solve(parsed)
     # Written unconditionally. Skipping the write on a run that found no
     # incumbent left the PREVIOUS run's roster in place, and the follow-up step
@@ -548,7 +577,7 @@ def main() -> None:
     # roster and printed a cost the reader naturally attributes to the run that
     # just failed. An empty roster writes the header alone, which scorer.py's
     # reader rejects by name.
-    write_csv(solution.roster, parsed[0].num_days, Path(raw["csv_path"]))
+    write_csv(solution.roster, parsed[0].num_days, raw.csv_path)
     write_output(serialize_solution(solution))
 
 

@@ -214,9 +214,7 @@ def _parse_pattern(node: ET.Element) -> Pattern:
 
     if not symbols:
         raise ValueError("pattern has no symbols")
-    return Pattern(
-        symbols=symbols, start_day_index=start_day_index, start_weekday=start_weekday
-    )
+    return Pattern(symbols=symbols, start_day_index=start_day_index, start_weekday=start_weekday)
 
 
 def _parse_contract(node: ET.Element, last_day: int) -> Contract:
@@ -246,9 +244,7 @@ def _parse_contract(node: ET.Element, last_day: int) -> Contract:
                     limit=_parse_limit(match_node),
                     region_start=_optional_int(match_node, "RegionStart", 0),
                     region_end=_optional_int(match_node, "RegionEnd", last_day),
-                    patterns=[
-                        _parse_pattern(p) for p in match_node.findall("Pattern")
-                    ],
+                    patterns=[_parse_pattern(p) for p in match_node.findall("Pattern")],
                 )
             )
 
@@ -323,9 +319,7 @@ def parse_instance(xml_path: Path) -> Instance:
 
     def day_index(iso_date: str) -> int:
         if iso_date not in day_of:
-            day_of[iso_date] = (
-                date.fromisoformat(iso_date) - date.fromisoformat(start_date)
-            ).days
+            day_of[iso_date] = (date.fromisoformat(iso_date) - date.fromisoformat(start_date)).days
         return day_of[iso_date]
 
     day_off_requests: list[Request] = [

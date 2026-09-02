@@ -21,6 +21,7 @@ import pytest
 
 from examples.nurse_rostering.checker import check_payload
 from examples.nurse_rostering.model import (
+    Options,
     Solution,
     parse_instance,
     solve,
@@ -53,16 +54,16 @@ def published_roster(instance):
     return read_roster_xml(PUBLISHED_ROSTER, instance)
 
 
-def _options(instance_path: Path, csv_path: Path, fix_roster: str | None = None) -> dict:
-    return {
-        "instance_path": str(instance_path),
-        "csv_path": str(csv_path),
-        "time_limit": 60.0,
-        "workers": 8,
-        "seed": 42,
-        "harden": False,
-        "fix_roster": fix_roster,
-    }
+def _options(instance_path: Path, csv_path: Path, fix_roster: Path | None = None) -> Options:
+    return Options(
+        instance_path=instance_path,
+        csv_path=csv_path,
+        time_limit=60.0,
+        workers=8,
+        seed=42,
+        harden=False,
+        fix_roster=fix_roster,
+    )
 
 
 def _flatten(*buckets: dict[str, int]) -> dict[str, int]:
@@ -96,24 +97,16 @@ def test_scorer_attributes_the_published_cost_to_the_published_rules(
     assert flat == PUBLISHED_BREAKDOWN
 
 
-def test_model_pinned_to_the_published_roster_agrees_with_the_scorer(
-    instance, tmp_path
-) -> None:
+def test_model_pinned_to_the_published_roster_agrees_with_the_scorer(instance, tmp_path) -> None:
     """The sharpest cheap test of the penalty structure: pinned to a roster of
     known cost, a model missing a penalty scores it below 29."""
-    solution = solve(
-        (instance, _options(INSTANCE_PATH, tmp_path / "out.csv", str(PUBLISHED_ROSTER)))
-    )
+    solution = solve((instance, _options(INSTANCE_PATH, tmp_path / "out.csv", PUBLISHED_ROSTER)))
 
     assert (solution.status, solution.objective) == ("optimal", PUBLISHED_TOTAL)
 
 
-def test_model_pinned_breakdown_matches_the_scorer_label_for_label(
-    instance, tmp_path
-) -> None:
-    solution = solve(
-        (instance, _options(INSTANCE_PATH, tmp_path / "out.csv", str(PUBLISHED_ROSTER)))
-    )
+def test_model_pinned_breakdown_matches_the_scorer_label_for_label(instance, tmp_path) -> None:
+    solution = solve((instance, _options(INSTANCE_PATH, tmp_path / "out.csv", PUBLISHED_ROSTER)))
 
     assert _flatten(*solution.breakdown.values()) == PUBLISHED_BREAKDOWN
 
@@ -149,9 +142,7 @@ def _pinned_min_sense(tmp_path: Path, region: str, count: int) -> tuple[Solution
     """Solve the variant pinned to the published roster; return it and the scorer's total."""
     path = _with_min_sense_match(tmp_path, region, count)
     variant = parse_instance(path)
-    solution = solve(
-        (variant, _options(path, tmp_path / "out.csv", str(PUBLISHED_ROSTER)))
-    )
+    solution = solve((variant, _options(path, tmp_path / "out.csv", PUBLISHED_ROSTER)))
     if not solution.roster:
         return solution, -1
     return solution, score(variant, solution.roster).total
@@ -226,9 +217,7 @@ def test_checker_errors_when_problem_is_not_a_ros_path(published_roster) -> None
 # -- roster CSV round trip -----------------------------------------------------
 
 
-def test_roster_csv_round_trips_through_the_scorer(
-    instance, published_roster, tmp_path
-) -> None:
+def test_roster_csv_round_trips_through_the_scorer(instance, published_roster, tmp_path) -> None:
     path = tmp_path / "solution.csv"
     write_csv(published_roster, instance.num_days, path)
 
@@ -246,9 +235,7 @@ def test_header_only_roster_csv_is_rejected_by_name(instance, tmp_path) -> None:
         read_roster_csv(path, instance)
 
 
-def test_truncated_roster_csv_row_is_rejected(
-    instance, published_roster, tmp_path
-) -> None:
+def test_truncated_roster_csv_row_is_rejected(instance, published_roster, tmp_path) -> None:
     """A short row used to score silently: pattern rules read `len(schedule)`,
     so that employee's penalties were counted over a shortened period."""
     path = tmp_path / "solution.csv"

@@ -74,8 +74,7 @@ def _load_instance(problem: object) -> tuple[Instance | None, str | None]:
         return _parse_at(DEFAULT_INSTANCE)
     if not isinstance(problem, str):
         return None, (
-            f"payload.problem must be a path to a .ros file or null, "
-            f"got {type(problem).__name__}"
+            f"payload.problem must be a path to a .ros file or null, got {type(problem).__name__}"
         )
 
     text: str = problem.strip()
@@ -91,9 +90,7 @@ def _load_instance(problem: object) -> tuple[Instance | None, str | None]:
         )
 
     candidate: Path = Path(text)
-    return _parse_at(
-        candidate if candidate.is_absolute() else DEFAULT_INSTANCE.parent / candidate
-    )
+    return _parse_at(candidate if candidate.is_absolute() else DEFAULT_INSTANCE.parent / candidate)
 
 
 def _extract_roster(
@@ -116,17 +113,14 @@ def _extract_roster(
     roster: dict[str, list[str]] = {}
     for employee_id, schedule in raw.items():
         if not isinstance(schedule, list) or len(schedule) != instance.num_days:
-            return None, (
-                f"roster row {employee_id} must be a list of {instance.num_days} entries"
-            )
+            return None, (f"roster row {employee_id} must be a list of {instance.num_days} entries")
         for day, cell in enumerate(schedule):
             # A grid cannot represent a double booking, so the one-shift-per-day
             # rule is enforced by the shape; this rejects anything outside the
             # alphabet that would otherwise score as a silent day off.
             if cell not in valid:
                 return None, (
-                    f"roster[{employee_id}][{day}] = {cell!r} is not one of "
-                    f"{sorted(valid)}"
+                    f"roster[{employee_id}][{day}] = {cell!r} is not one of {sorted(valid)}"
                 )
         roster[employee_id] = list(schedule)
     return roster, None
@@ -135,9 +129,7 @@ def _extract_roster(
 def check_payload(payload: dict[str, Any]) -> dict[str, Any]:
     solver_status: object = payload.get("solver_status")
     if not isinstance(solver_status, str) or solver_status not in ACCEPT_STATUSES:
-        return _verdict(
-            "error", [f"solver_status {solver_status!r} is not gradeable"], {}
-        )
+        return _verdict("error", [f"solver_status {solver_status!r} is not gradeable"], {})
 
     instance, instance_error = _load_instance(payload.get("problem"))
     if instance is None:

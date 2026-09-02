@@ -163,9 +163,7 @@ def score_employee_rules(
             count_pattern_hits(pattern, match, schedule, instance.shift_groups, first_weekday)
             for pattern in match.patterns
         )
-        penalty: int = _clamped(
-            match.limit.sense, observed, match.limit.count, match.limit.weight
-        )
+        penalty: int = _clamped(match.limit.sense, observed, match.limit.count, match.limit.weight)
         breakdown.add(breakdown.by_label, match.limit.label, penalty)
         if penalty:
             breakdown.violations.append(
@@ -181,9 +179,7 @@ def score_employee_rules(
             for shift in (schedule[day],)
             if shift != OFF
         )
-        penalty = _clamped(
-            workload.limit.sense, hours, workload.limit.count, workload.limit.weight
-        )
+        penalty = _clamped(workload.limit.sense, hours, workload.limit.count, workload.limit.weight)
         breakdown.add(breakdown.by_label, workload.limit.label, penalty)
         if penalty:
             breakdown.violations.append(
@@ -231,9 +227,7 @@ def score_cover(
 
             assigned: int = len(on_shift)
             if block.min is not None:
-                penalty = max(0, block.min - assigned) * instance.cover_weights[
-                    "MinUnderStaffing"
-                ]
+                penalty = max(0, block.min - assigned) * instance.cover_weights["MinUnderStaffing"]
                 breakdown.add(breakdown.by_cover_type, "Min understaffing", penalty)
                 if penalty:
                     breakdown.violations.append(
@@ -241,9 +235,7 @@ def score_cover(
                         f"vs min {block.min} = {penalty}"
                     )
             if block.max is not None:
-                penalty = max(0, assigned - block.max) * instance.cover_weights[
-                    "MaxOverStaffing"
-                ]
+                penalty = max(0, assigned - block.max) * instance.cover_weights["MaxOverStaffing"]
                 breakdown.add(breakdown.by_cover_type, "Max overstaffing", penalty)
                 if penalty:
                     breakdown.violations.append(
@@ -275,16 +267,18 @@ def score_cover(
 def score_requests(instance: Instance, roster: Roster, breakdown: Breakdown) -> None:
     for request in instance.day_off_requests:
         if roster[request.employee_id][request.day] != OFF:
-            breakdown.add(breakdown.requests, f"DayOff request (weight {request.weight})",
-                          request.weight)
+            breakdown.add(
+                breakdown.requests, f"DayOff request (weight {request.weight})", request.weight
+            )
             breakdown.violations.append(
                 f"{request.employee_id}: worked on requested day off {request.day} "
                 f"= {request.weight}"
             )
     for request in instance.shift_on_requests:
         if roster[request.employee_id][request.day] != request.shift:
-            breakdown.add(breakdown.requests, f"ShiftOn request (weight {request.weight})",
-                          request.weight)
+            breakdown.add(
+                breakdown.requests, f"ShiftOn request (weight {request.weight})", request.weight
+            )
             breakdown.violations.append(
                 f"{request.employee_id}: wanted {request.shift} on day {request.day}, "
                 f"got {roster[request.employee_id][request.day]} = {request.weight}"
@@ -365,13 +359,10 @@ def read_roster_csv(path: Path, instance: Instance) -> Roster:
     missing: list[str] = [key for key in expected if key not in roster]
     if missing:
         raise ValueError(f"{path.name}: no roster row for employee(s) {missing}")
-    short: list[str] = [
-        key for key in expected if len(roster[key]) != instance.num_days
-    ]
+    short: list[str] = [key for key in expected if len(roster[key]) != instance.num_days]
     if short:
         raise ValueError(
-            f"{path.name}: employee(s) {short} do not have "
-            f"{instance.num_days} day columns"
+            f"{path.name}: employee(s) {short} do not have {instance.num_days} day columns"
         )
     return roster
 
@@ -394,8 +385,7 @@ def format_report(breakdown: Breakdown, instance: Instance) -> str:
 
     zero_labels: list[str] = sorted(
         {m.limit.label for c in instance.contracts for m in c.matches}
-        | {w.limit.label for c in instance.contracts for w in c.workload}
-        - set(breakdown.by_label)
+        | {w.limit.label for c in instance.contracts for w in c.workload} - set(breakdown.by_label)
     )
     zero_labels = [lbl for lbl in zero_labels if lbl not in breakdown.by_label]
     if zero_labels:
@@ -428,7 +418,7 @@ def main() -> None:
         for violation in sorted(breakdown.violations):
             print(f"  {violation}")
 
-    shifts: collections.Counter = collections.Counter(
+    shifts: collections.Counter[str] = collections.Counter(
         shift for schedule in roster.values() for shift in schedule if shift != OFF
     )
     print(f"\nassignments: {sum(shifts.values())} ({dict(sorted(shifts.items()))})")
