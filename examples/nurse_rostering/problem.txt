@@ -1,0 +1,81 @@
+Nurse rostering, SchedulingPeriod-3.0 XML format. Assign each of 19 employees
+one shift per day (Early, Late, Night) or a day off across a 28-day period,
+minimizing the weighted sum of soft-constraint violations.
+
+QMC-2.ros is a real hospital instance: the ophthalmology ward at Queen's Medical
+Centre University Hospital NHS Trust, Nottingham, March 2001, from the public
+benchmark set at https://www.schedulingbenchmarks.org/nrp/. The published lower
+bound is 29 and a cost-29 solution is published, so 29 is optimal.
+QMC-2.Solution.29.roster is that published solution, kept here as the scorer's
+golden test rather than as something to copy from.
+
+THE FORMAT HAS NO HARD CONSTRAINTS. Every rule in the file is soft; hardness is
+encoded as weight magnitude -- 1000 is de facto hard (shift succession, the
+consecutive-day caps, the coverage band), 100 is the hour limits, 1 is a genuine
+preference. The objective is the weighted sum of all violations, so the
+objective IS the problem. Exactly one hard constraint exists and it is not
+written in the file: an employee works at most one shift per day.
+
+Rule families, all per-employee except coverage:
+
+- Pattern rules (121 <Match> blocks over 19 contracts). Each counts how often a
+  set of short patterns occurs in that employee's 28-day string and charges
+  max(0, matches - threshold) * weight. Hit counts of the several patterns in
+  one block are SUMMED, not OR-ed. The eleven rules are: No N-E, No N-L, Max 6
+  consecutive working days, Min 2 consecutive working days, No half weekends,
+  Max 3 working weekends, Min 2 consecutive 'N' shifts, and four hour caps.
+- Workload rules (57 <TimeUnits> blocks). Hours in tenths of an hour, summed
+  over three overlapping two-week windows: days 0-13, 7-20 and 14-27, and only
+  those three. Per-shift duration comes from <ShiftTypes><TimeUnits>
+  (E=75, L=75, N=100), never from EndTime - StartTime, which is 15 minutes
+  longer than the paid figure for every shift.
+- Coverage (52 <Cover> blocks, 31 of them skill-qualified). Specified per day of
+  the week and expanded over the 28 days. This is the ONLY rule family that sums
+  across employees; delete it and the instance falls apart into 19 independent
+  single-nurse problems.
+- Requests: 223 day-off requests (168 at weight 1, 55 at weight 1000) and 155
+  shift-on requests, all at weight 1.
+
+Format subtleties that decide whether a model is right:
+
+- <RegionStart>/<RegionEnd> slice the SEARCH TEXT, not a validity period, so the
+  ENTIRE match window must fit inside the region -- not merely its first day.
+- <Start>N</Start> pins a match to absolute day N; <StartDay>Saturday</StartDay>
+  allows any Saturday. Anchor and region stack: both filters apply.
+- The max(0, .) in the penalty formula is in BOTH the Max and Min forms and is
+  unrelated to which tag was used. It only denies credit for over-satisfying.
+- <NotShift>N</NotShift> matches anything except N, a day off included.
+- <ShiftGroup>All</ShiftGroup> resolves against <ShiftGroups>; `All` is an
+  instance-defined ID meaning {E, L, N} here, not a keyword.
+- Employee P uses contract O, and contract P is unused. Follow <ContractID>.
+- The Preferred coverage penalty applies inside the [Min, Max] band too.
+- A nurse holding both skills satisfies both skill minima with one assignment.
+
+Files:
+
+  parse_instance.py   XML -> compact JSON/objects. Discriminates the two
+                      meanings of <TimeUnits> by parent node.
+  verify_parse.py     Gate: asserts the parse reproduces every published count
+                      (19 employees, 121 <Match>, 235 <Pattern>, 52 <Cover>,
+                      223+155 requests, the <Weight> histogram). 59 checks.
+  model.py            The CP-SAT model. All rules soft at true weights by
+                      default; --harden is an optional second-pass speedup and
+                      --fix-roster pins the variables to a given roster.
+  scorer.py           The independent scorer. Recomputes every penalty from the
+                      instance and a finished roster, and shares no penalty code
+                      with model.py -- that independence is what makes agreement
+                      between the two mean anything.
+  checker.py          scorer.py wrapped in the MCP checker protocol: rejects
+                      unless the model's objective equals the recomputed total.
+  verify_model.py     The acceptance criterion, executable. Three gates: scorer
+                      vs. the published roster, model pinned to that same
+                      roster, and model-vs-scorer agreement across four seeds.
+  solution.csv        The 19 x 28 roster this model produces (rows A..S).
+
+Reproduce:
+
+  uv run examples/nurse_rostering/verify_parse.py
+  uv run examples/nurse_rostering/verify_model.py
+  uv run examples/nurse_rostering/model.py --time-limit 300
+  uv run examples/nurse_rostering/scorer.py solution.csv
+  uv run examples/nurse_rostering/scorer.py QMC-2.Solution.29.roster
