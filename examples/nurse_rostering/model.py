@@ -112,7 +112,7 @@ class Options:
     re-wrapped in `Path(...)` downstream. docs/cpsat-python.md asks the spine for
     a typed record across `solve()` for exactly this reason.
     """
-
+    
     instance_path: Path
     csv_path: Path
     time_limit: float
