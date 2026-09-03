@@ -19,8 +19,9 @@ tag was written; it only denies credit for over-satisfying a rule. Dropping it
 lets an over-satisfied rule score a negative penalty and the objective runs off
 to minus infinity.
 
-Run standalone:
+Run standalone (the instance defaults to QMC-2.ros):
     uv run examples/nurse_rostering/scorer.py QMC-2.Solution.29.roster
+    uv run examples/nurse_rostering/scorer.py BCV-3.46.2.Solution.894.roster BCV-3.46.2.ros
 """
 
 from __future__ import annotations
@@ -43,6 +44,17 @@ from parse_instance import (  # noqa: E402
 )
 
 OFF: str = "-"
+
+# The request 2x2, keyed by (wants, names a specific shift). Deliberately spelt
+# out again here rather than imported from model.py: these strings are the keys
+# the two independent breakdowns are compared on, so a shared table would make
+# them agree by construction instead of by both being right.
+REQUEST_NAMES: dict[tuple[bool, bool], str] = {
+    (False, False): "DayOff",
+    (True, False): "DayOn",
+    (True, True): "ShiftOn",
+    (False, True): "ShiftOff",
+}
 
 Roster = dict[str, list[str]]
 
@@ -90,6 +102,13 @@ def _symbol_matches(symbol: Symbol, assigned: str, shift_groups: dict[str, list[
         # shift other than N" would under-count every `Min 2 consecutive 'N'`
         # violation that sits next to a rest day, which is most of them.
         return assigned != value
+    if kind == "notgroup":
+        # `notshift` one level up: anything outside the group, a day off
+        # included. BCV-3.46.2 spells "free day" as <NotGroup>ON</NotGroup>
+        # rather than <Shift>-</Shift>, so reading this as "a working shift
+        # outside the group" makes every free-weekend rule unfalsifiable --
+        # the symbol would never match the day off it exists to describe.
+        return assigned not in shift_groups[value]
     raise ValueError(f"unknown symbol kind {kind!r}")
 
 
@@ -194,17 +213,30 @@ def score_cover(
 ) -> None:
     """Score coverage: the only place headcounts are summed across employees.
 
-    Cover is specified per day of the week and expanded across all 28 days. A
-    block with a <Skill> constrains how many of that shift's staff hold the
+    Cover is specified per day of the week and expanded across the whole period.
+    A block with a <Skill> constrains how many of that shift's staff hold the
     skill; a block without one constrains the total headcount. A nurse holding
     both skills satisfies both skill minima with her single assignment.
+
+    A <DateSpecificCover> block names one absolute day and REPLACES the weekday
+    block for that (day, shift) -- see `CoverBlock`. Scoring both would charge
+    the difference between them twice over.
     """
     skills_of: dict[str, set[str]] = {e.id: set(e.skills) for e in instance.employees}
+    # (day, shift) pairs a date-specific block speaks for. Empty for QMC-2,
+    # which has no <DateSpecificCover> at all, so the loop below then reduces
+    # to the plain weekday match.
+    overridden: set[tuple[int, str]] = {
+        (block.day, block.shift) for block in instance.cover if block.day is not None
+    }
 
     for day in range(instance.num_days):
         weekday: int = (first_weekday + day) % 7
         for block in instance.cover:
-            if block.weekday != weekday:
+            if block.day is not None:
+                if block.day != day:
+                    continue
+            elif block.weekday != weekday or (day, block.shift) in overridden:
                 continue
 
             on_shift: list[str] = [
@@ -265,24 +297,32 @@ def score_cover(
 
 
 def score_requests(instance: Instance, roster: Roster, breakdown: Breakdown) -> None:
-    for request in instance.day_off_requests:
-        if roster[request.employee_id][request.day] != OFF:
-            breakdown.add(
-                breakdown.requests, f"DayOff request (weight {request.weight})", request.weight
-            )
-            breakdown.violations.append(
-                f"{request.employee_id}: worked on requested day off {request.day} "
-                f"= {request.weight}"
-            )
-    for request in instance.shift_on_requests:
-        if roster[request.employee_id][request.day] != request.shift:
-            breakdown.add(
-                breakdown.requests, f"ShiftOn request (weight {request.weight})", request.weight
-            )
-            breakdown.violations.append(
-                f"{request.employee_id}: wanted {request.shift} on day {request.day}, "
-                f"got {roster[request.employee_id][request.day]} = {request.weight}"
-            )
+    """Charge every unmet request, over all four corners of the 2x2.
+
+    A request names either a specific shift or "any shift at all", and either
+    wants it or wants to avoid it. Whether the day is satisfied therefore
+    reduces to one equality compared against `wants`; the four XML tags need no
+    separate code paths. model.py builds the same 2x2 out of CP-SAT literals
+    from scratch, and the two must land on the same number.
+    """
+    for request in instance.requests:
+        assigned: str = roster[request.employee_id][request.day]
+        # "any shift at all" is `assigned != OFF`; a named shift is equality.
+        holds: bool = assigned != OFF if request.shift is None else assigned == request.shift
+        if holds == request.wants:
+            continue
+
+        name: str = REQUEST_NAMES[request.wants, request.shift is not None]
+        breakdown.add(
+            breakdown.requests, f"{name} request (weight {request.weight})", request.weight
+        )
+        wanted: str = (
+            (request.shift or "any shift") if request.wants else f"not {request.shift or 'to work'}"
+        )
+        breakdown.violations.append(
+            f"{request.employee_id}: wanted {wanted} on day {request.day}, "
+            f"got {assigned} = {request.weight}"
+        )
 
 
 def check_one_shift_per_day(roster: Roster) -> list[str]:
@@ -340,7 +380,7 @@ def read_roster_xml(path: Path, instance: Instance) -> Roster:
 
 
 def read_roster_csv(path: Path, instance: Instance) -> Roster:
-    """Read the 19 x 28 CSV this example emits (header row, employee ID first).
+    """Read the employees x days CSV this example emits (header, ID column first).
 
     Validated rather than trusted, because the two malformed shapes that
     actually occur both used to reach the scoring code and fail obscurely there:
@@ -405,7 +445,11 @@ def main() -> None:
     if not roster_path.exists():
         roster_path = here / roster_arg
 
-    instance: Instance = parse_instance(here / "QMC-2.ros")
+    # A roster only means something against the instance it was built for, and
+    # there are now two. Scoring BCV's roster against QMC-2 would not fail
+    # loudly -- read_roster_xml keys off the employee list, so it would return
+    # 46 empty rows and report a confident number computed from nothing.
+    instance: Instance = parse_instance(here / (sys.argv[2] if len(sys.argv) > 2 else "QMC-2.ros"))
     reader = read_roster_csv if roster_path.suffix == ".csv" else read_roster_xml
     roster: Roster = reader(roster_path, instance)
 

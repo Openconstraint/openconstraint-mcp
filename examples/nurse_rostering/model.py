@@ -1,24 +1,37 @@
-"""Reference CP-SAT script: nurse rostering (SchedulingPeriod-3.0 / QMC-2).
+"""Reference CP-SAT script: nurse rostering (SchedulingPeriod-3.0).
 
 Minimizes the weighted sum of all soft-constraint violations for a nurse
 rostering instance. The format has no hard constraints at all -- a "hard" rule
-is written as a soft one with weight 1000 -- so the objective is the whole
+is written as a soft one with a large weight -- so the objective is the whole
 problem. Exactly one hard constraint is added, and it is the one the file does
 NOT contain: an employee works at most one shift per day.
 
 Modelling posture (first pass): every rule in the file is soft, at its true
 weight. Nothing is hardened with `add_forbidden_assignments`, because hardening
 turns "expensive" into INFEASIBLE and hides modelling bugs -- and for the
-weight-1 rules it is outright wrong, since the published optimum violates one of
-them. Pass --harden to enable the sound-but-lossy speedup described below.
+cheapest rules it is outright wrong, since QMC-2's published optimum violates
+one of them. Pass --harden to enable the sound-but-lossy speedup described
+below.
 
 Structure worth knowing: `<CoverRequirements>` is the only thing that couples
 two employees. Contracts, workload and requests each read a single row of the
-19 x 28 matrix; cover sums a column. Drop cover and the instance falls apart
-into 19 independent single-nurse problems.
+employees x days matrix; cover sums a column. Drop cover and the instance falls
+apart into independent single-nurse problems.
+
+Two instances ship with this example and they are not interchangeable in
+difficulty or in convention:
+
+- QMC-2.ros -- 19 employees x 28 days x 3 shifts, 121 <Match> blocks, published
+  proven optimum 29. Its weights form a 1000 / 100 / 1 ladder.
+- BCV-3.46.2.ros -- 46 employees x 26 days x 3 shifts, 122 <Match> blocks over
+  only 5 shared contracts (so ~1124 per-employee match instances, roughly nine
+  times QMC-2's), published proven optimum 894. Its weights are a different
+  vocabulary entirely: cover at 10000, requests at 50, rules from 1 to 1000.
+  Reading 1000 as "de facto hard" here is a QMC-2 habit, not a format rule.
 
 Run from the repository root:
     uv run examples/nurse_rostering/model.py --time-limit 300
+    uv run examples/nurse_rostering/model.py --instance BCV-3.46.2.ros --time-limit 300
 """
 
 from __future__ import annotations
@@ -47,10 +60,23 @@ from parse_instance import (  # noqa: E402
 
 OFF: str = "-"
 
-# Weight classes. The format encodes hardness as magnitude: 1000 is de facto
-# hard (shift succession, consecutive-day caps, cover bands), 100 is the hour
-# limits, 1 is a genuine preference. Since the optimum is 29 < 100, an optimal
-# roster violates nothing at 100 or above.
+# The request 2x2, keyed by (wants, names a specific shift). Written out again
+# here rather than imported from scorer.py on purpose: these strings are the
+# keys the model's breakdown and the scorer's are compared on, and a shared
+# table would make the two agree by construction instead of by both being right.
+REQUEST_NAMES: dict[tuple[bool, bool], str] = {
+    (False, False): "DayOff",
+    (True, False): "DayOn",
+    (True, True): "ShiftOn",
+    (False, True): "ShiftOff",
+}
+
+# Weight classes, and they are QMC-2's, not the format's. There, magnitude
+# encodes hardness: 1000 is de facto hard (shift succession, consecutive-day
+# caps, cover bands), 100 is the hour limits, 1 is a genuine preference, and
+# since the optimum is 29 < 100 an optimal roster violates nothing at 100 or
+# above. BCV-3.46.2 numbers its rules on a different scale entirely, so these
+# two constants -- read only by --harden -- carry no meaning for it.
 HARD_WEIGHT: int = 1000
 WORKLOAD_WEIGHT: int = 100
 
@@ -110,7 +136,9 @@ def read_input() -> Options:
             "hard constraints. Sound only because a single violation of either "
             "costs more than the known upper bound of 29, so no optimal solution "
             "is cut off. Never applied to the weight-1 rules, whose real semantics "
-            "is 'you may violate this, it costs 1' -- the published optimum does."
+            "is 'you may violate this, it costs 1' -- the published optimum does. "
+            "That argument is derived from QMC-2's weight ladder and its bound of "
+            "29; it does not carry over to another instance unaided."
         ),
     )
     parser.add_argument("--csv", default="solution.csv")
@@ -212,22 +240,38 @@ class RosterModel:
             return self.x[employee_id, day, value]
 
         if kind == "group":
-            members: list[str] = self.instance.shift_groups[value]
-            if set(members) == set(self.instance.shift_types):
-                # `All` = {E, L, N} here, so "any shift in the group" is exactly
-                # "worked". Resolved through <ShiftGroups>, not assumed: another
-                # instance may define a proper subset, handled below.
-                return self.works[employee_id, day]
-            in_group: cp_model.IntVar = self.model.new_bool_var(f"g_{employee_id}_{day}_{value}")
-            self.model.add_max_equality(in_group, [self.x[employee_id, day, s] for s in members])
-            return in_group
+            return self._in_group_literal(employee_id, day, value)
 
         if kind == "notshift":
             # "anything except N", a day off included -- so it is the negation of
             # the single shift literal, NOT "some other working shift".
             return self.x[employee_id, day, value].Not()
 
+        if kind == "notgroup":
+            # "anything outside the group", a day off included -- the group
+            # literal negated, for the same reason <NotShift> is the shift
+            # literal negated. BCV-3.46.2 writes its free days this way.
+            return self._in_group_literal(employee_id, day, value).Not()
+
         raise ValueError(f"unknown symbol kind {kind!r}")
+
+    def _in_group_literal(self, employee_id: str, day: int, group: str) -> cp_model_helper.Literal:
+        """A literal true exactly when that day's assignment lies in `group`.
+
+        Shared by the `group` and `notgroup` symbol kinds, which differ only by
+        a negation -- keeping the group-membership encoding in one place stops
+        the two from drifting into different resolutions of the same group ID.
+        """
+        members: list[str] = self.instance.shift_groups[group]
+        if set(members) == set(self.instance.shift_types):
+            # The group names every shift type, so "in the group" is exactly
+            # "worked" -- true of QMC-2's `All` and BCV-3.46.2's `ON` alike.
+            # Resolved through <ShiftGroups>, not assumed: another instance may
+            # define a proper subset, handled below.
+            return self.works[employee_id, day]
+        in_group: cp_model.IntVar = self.model.new_bool_var(f"g_{employee_id}_{day}_{group}")
+        self.model.add_max_equality(in_group, [self.x[employee_id, day, s] for s in members])
+        return in_group
 
     def _candidate_starts(self, pattern: Pattern, match: Match) -> list[int]:
         """Days where this pattern may begin, after anchor AND region filtering.
@@ -363,12 +407,22 @@ class RosterModel:
         instance: Instance = self.instance
         weights: dict[str, int] = instance.cover_weights
         num_employees: int = len(instance.employees)
+        # (day, shift) pairs spoken for by a <DateSpecificCover> block, which
+        # REPLACES the weekday block there rather than adding to it -- see
+        # CoverBlock. Empty for QMC-2, so the loop below then reduces exactly to
+        # the plain weekday match it used to be.
+        overridden: set[tuple[int, str]] = {
+            (block.day, block.shift) for block in instance.cover if block.day is not None
+        }
 
         for day in range(instance.num_days):
-            # Cover is given per day of the week and expanded over all 28 days.
+            # Cover is given per day of the week and expanded over the period.
             weekday: int = (self.first_weekday + day) % 7
             for block in instance.cover:
-                if block.weekday != weekday:
+                if block.day is not None:
+                    if block.day != day:
+                        continue
+                elif block.weekday != weekday or (day, block.shift) in overridden:
                     continue
 
                 if block.skill is not None:
@@ -442,25 +496,38 @@ class RosterModel:
     # -- requests ----------------------------------------------------------
 
     def _build_requests(self) -> None:
-        for request in self.instance.day_off_requests:
-            # Violated exactly when the employee works at all that day.
-            self.penalties.append(
-                PenaltyTerm(
-                    group="request",
-                    key=f"DayOff request (weight {request.weight})",
-                    expression=self.works[request.employee_id, request.day],
-                    weight=request.weight,
-                )
+        """Charge every unmet request, over all four corners of the 2x2.
+
+        Each request reduces to one literal -- "worked at all" for a request
+        naming no shift, "on exactly this shift" for one that does. The penalty
+        is that literal when the employee wanted to AVOID the assignment, and
+        its complement when they wanted it, so the four XML tags need no
+        separate code paths:
+
+            wants=False, shift=None -> works[e, d]          (DayOff)
+            wants=True,  shift=None -> 1 - works[e, d]      (DayOn)
+            wants=True,  shift=X    -> 1 - x[e, d, X]       (ShiftOn)
+            wants=False, shift=X    -> x[e, d, X]           (ShiftOff)
+
+        scorer.py rebuilds the same table in plain Python from the roster alone.
+        """
+        for request in self.instance.requests:
+            # Typed as the concrete IntVar both branches produce, not the wide
+            # LinearExprT alias: that alias admits a plain int, which makes the
+            # `else holds` arm of the ternary below a non-expression.
+            holds: cp_model.IntVar = (
+                self.works[request.employee_id, request.day]
+                if request.shift is None
+                else self.x[request.employee_id, request.day, request.shift]
             )
-        for request in self.instance.shift_on_requests:
-            # Violated when the employee is not on that exact shift -- a day off
-            # and a different shift are both violations.
-            assert request.shift is not None
             self.penalties.append(
                 PenaltyTerm(
                     group="request",
-                    key=f"ShiftOn request (weight {request.weight})",
-                    expression=1 - self.x[request.employee_id, request.day, request.shift],
+                    key=(
+                        f"{REQUEST_NAMES[request.wants, request.shift is not None]} "
+                        f"request (weight {request.weight})"
+                    ),
+                    expression=1 - holds if request.wants else holds,
                     weight=request.weight,
                 )
             )

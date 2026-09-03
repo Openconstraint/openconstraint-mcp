@@ -1,6 +1,33 @@
-Nurse rostering, SchedulingPeriod-3.0 XML format. Assign each of 19 employees
-one shift per day (Early, Late, Night) or a day off across a 28-day period,
-minimizing the weighted sum of soft-constraint violations.
+Nurse rostering, SchedulingPeriod-3.0 XML format. Assign each employee one shift
+per day, or a day off, across the planning period, minimizing the weighted sum
+of soft-constraint violations.
+
+Two instances ship here, both from the public benchmark set at
+https://www.schedulingbenchmarks.org/nrp/, and the published roster kept
+alongside each one is PROVEN OPTIMAL -- that site marks proven optima in bold in
+its results table, and both of these are bold:
+
+  QMC-2.ros        19 employees x 28 days x 3 shifts (E, L, N)   optimum   29
+  BCV-3.46.2.ros   46 employees x 26 days x 3 shifts (N, L, V)   optimum  894
+
+They are not two sizes of the same instance. They disagree about skills, about
+what a <Cover> block contains, about which of the four request tags exist, and
+about what a weight of 1000 means. Every "the format does X" sentence below is
+therefore scoped to the instance it was learned from; the pair exists so that no
+QMC-2 habit can silently become a format rule.
+
+THE FORMAT HAS NO HARD CONSTRAINTS, in either instance. Every rule in the file
+is soft; hardness is encoded as weight magnitude, and the magnitudes are
+instance-specific. The objective is the weighted sum of all violations, so the
+objective IS the problem. Exactly one hard constraint exists and it is not
+written in either file: an employee works at most one shift per day.
+
+================================================================================
+QMC-2.ros
+================================================================================
+
+Assign each of 19 employees one shift per day (Early, Late, Night) or a day off
+across a 28-day period.
 
 QMC-2.ros is a real hospital instance: the ophthalmology ward at Queen's Medical
 Centre University Hospital NHS Trust, Nottingham, March 2001, from the public
@@ -9,12 +36,10 @@ bound is 29 and a cost-29 solution is published, so 29 is optimal.
 QMC-2.Solution.29.roster is that published solution, kept here as the scorer's
 golden test rather than as something to copy from.
 
-THE FORMAT HAS NO HARD CONSTRAINTS. Every rule in the file is soft; hardness is
-encoded as weight magnitude -- 1000 is de facto hard (shift succession, the
+QMC-2's weight ladder: 1000 is de facto hard (shift succession, the
 consecutive-day caps, the coverage band), 100 is the hour limits, 1 is a genuine
-preference. The objective is the weighted sum of all violations, so the
-objective IS the problem. Exactly one hard constraint exists and it is not
-written in the file: an employee works at most one shift per day.
+preference. This ladder is QMC-2's, not the format's -- BCV-3.46.2 uses entirely
+different magnitudes, so nothing may key off "1000 means hard" in general.
 
 Rule families, all per-employee except coverage:
 
@@ -36,6 +61,60 @@ Rule families, all per-employee except coverage:
 - Requests: 223 day-off requests (168 at weight 1, 55 at weight 1000) and 155
   shift-on requests, all at weight 1.
 
+================================================================================
+BCV-3.46.2.ros
+================================================================================
+
+Assign each of 46 employees one shift per day (N, L, V) or a day off across a
+26-day period, 2000-03-06 to 2000-03-31. V is a Vacation shift, and it is an
+ordinary assignable shift type with its own duration -- not a second spelling of
+a day off.
+
+Provenance, and it is NOT QMC-2's. QMC-2 is one real ward's historical roster.
+BCV-3.46.2 is not: the benchmark site lists its problem as ANROM (Advanced Nurse
+Rostering Model), a rostering model abstracted from Belgian hospital practice in
+the literature the site cites for it (references BRU07, BRU09, BUR07b, BUR07c),
+rather than a transcript of one hospital's month. Describing it as "a real
+hospital instance" would be borrowing QMC-2's provenance for a file that does
+not have it.
+
+BCV-3.46.2.Solution.894.roster is the published cost-894 solution, found in 2008
+by F. Xue, C.Y. Chan and W.H. Ip and shown in bold -- proven optimal -- on the
+site. It is kept here for the same reason QMC-2's is: as the scorer's golden
+test, not as something to copy from.
+
+BCV's weight vocabulary, which shares nothing with QMC-2's ladder:
+
+  cover     10000  (PrefOverStaffing and PrefUnderStaffing, the only two defined)
+  requests     50  (every one of the 768, whatever the tag)
+  rules    1 .. 1000, mostly 1, 3 and 5, with 2 on the workload caps
+
+Note what this rules out. QMC-2's "1000 is de facto hard, 100 is the hour
+limits" reading is not portable: here 1000 appears on 5 <Match> blocks, the
+workload caps sit at weight 2, and the genuinely near-hard rule family is cover,
+three orders of magnitude above everything else.
+
+Rule families:
+
+- Pattern rules (122 <Match> blocks, but over only 5 contracts, so 46 employees
+  produce 1124 per-employee match instances -- roughly nine times QMC-2's 121).
+  30 of the 122 carry no <Label> element at all and parse to the empty label;
+  that is this file's structure, not a parse failure. One label can carry
+  several thresholds: the 44 `Max shift types per week` blocks cap between 1
+  and 5.
+- Workload rules (5 <TimeUnits> blocks, one per contract, over the whole
+  period). The units are this file's own -- N=10, L=8, V=7 -- and are NOT
+  QMC-2's tenths of an hour. Nothing may convert between them.
+- Coverage (23 <Cover> blocks -- 21 under <DayOfWeekCover>, 2 under
+  <DateSpecificCover> -- none skill-qualified, all carrying only <Preferred>
+  with no Min/Max band). There is no <Skills> section in this file at all, so
+  the skill branch of cover never fires. As in QMC-2 this is the only rule
+  family that sums across employees.
+- Requests: 768 in total, all at weight 50 -- 138 DayOff, 132 DayOn, 498
+  ShiftOff, and no ShiftOn whatsoever. QMC-2 uses the DayOff/ShiftOn diagonal of
+  the request 2x2; BCV uses the other three corners. Between them all four are
+  exercised by a real instance.
+
 Format subtleties that decide whether a model is right:
 
 - <RegionStart>/<RegionEnd> slice the SEARCH TEXT, not a validity period, so the
@@ -50,32 +129,75 @@ Format subtleties that decide whether a model is right:
 - Employee P uses contract O, and contract P is unused. Follow <ContractID>.
 - The Preferred coverage penalty applies inside the [Min, Max] band too.
 - A nurse holding both skills satisfies both skill minima with one assignment.
+- <NotGroup>ON</NotGroup> is <NotShift> one level up: anything OUTSIDE the group,
+  a day off included. BCV spells "free day" this way rather than as
+  <Shift>-</Shift>, so reading it as "some working shift outside the group"
+  makes every free-weekend rule unfalsifiable.
+- <DateSpecificCover> names one absolute <Date> and REPLACES the
+  <DayOfWeekCover> block for that (day, shift). It does not stack with it, and
+  it does not repeat weekly. This one is not documented anywhere; the published
+  optimum settles it. BCV's day 7 is a Monday whose weekday block prefers 6 on
+  N while its date-specific block prefers 4, and the optimum staffs 4; day 13 is
+  a Sunday, 4 against 6, and the optimum staffs 6. At 10000 per head a single
+  unit of deviation costs more than the entire optimum, so the roster can only
+  be optimal if exactly one block binds. Scoring both scores that same roster
+  40894. The override is keyed per (day, shift), not per day: day 7 carries a
+  date-specific block for N only, and its L and V still follow the Monday block.
+- BCV's employee IDs are numeric strings listed OUT of numeric order -- the file
+  opens "1", "46", "2". Anything that sorts them as text reorders the roster
+  relative to the instance.
+- <MaxConsecutiveFreeDays> appears once in BCV-3.46.2.ros and only inside an XML
+  comment. It is dead and is deliberately not implemented.
+
+All four request tags parse into one `Request` record carrying `wants` and an
+optional `shift`, because the tags differ only in those two flags:
+
+    DayOff   (wants=False, shift=None)   ShiftOff (wants=False, shift="V")
+    DayOn    (wants=True,  shift=None)   ShiftOn  (wants=True,  shift="E")
+
+model.py and scorer.py each build that 2x2 independently -- one out of CP-SAT
+literals, one in plain Python -- and neither imports the other's version.
 
 Files:
 
   parse_instance.py   XML -> compact JSON/objects. Discriminates the two
-                      meanings of <TimeUnits> by parent node.
-  verify_parse.py     Gate: asserts the parse reproduces every published count
-                      (19 employees, 121 <Match>, 235 <Pattern>, 52 <Cover>,
-                      223+155 requests, the <Weight> histogram). 59 checks.
-  model.py            The CP-SAT model. All rules soft at true weights by
-                      default; --harden is an optional second-pass speedup and
-                      --fix-roster pins the variables to a given roster.
+                      meanings of <TimeUnits> by parent node, and both kinds of
+                      cover block.
+  verify_parse.py     Gate: asserts each parse reproduces every published count.
+                      QMC-2 (19 employees, 121 <Match>, 235 <Pattern>, 52
+                      <Cover>, 223+155 requests, the <Weight> histogram) plus
+                      BCV-3.46.2 (46 employees, 122 <Match>, 155 <Pattern>, 23
+                      <Cover> of which 2 date-specific, 768 requests, the symbol
+                      census that pins <NotGroup>). 60 + 102 = 162 checks.
+  model.py            The CP-SAT model, for either instance via --instance. All
+                      rules soft at true weights by default; --harden is an
+                      optional second-pass speedup whose soundness argument is
+                      QMC-2-specific, and --fix-roster pins the variables to a
+                      given roster.
   scorer.py           The independent scorer. Recomputes every penalty from the
                       instance and a finished roster, and shares no penalty code
                       with model.py -- that independence is what makes agreement
-                      between the two mean anything.
+                      between the two mean anything. Takes the instance as an
+                      optional second argument, defaulting to QMC-2.ros.
   checker.py          scorer.py wrapped in the MCP checker protocol: rejects
                       unless the model's objective equals the recomputed total.
-  verify_model.py     The acceptance criterion, executable. Three gates: scorer
-                      vs. the published roster, model pinned to that same
-                      roster, and model-vs-scorer agreement across four seeds.
-  solution.csv        The 19 x 28 roster this model produces (rows A..S).
+                      Needs no per-instance code -- it grades whatever `problem`
+                      names, and inherits new rule support from the scorer.
+  verify_model.py     The acceptance criterion, executable. Three gates per
+                      instance: scorer vs. the published roster, model pinned to
+                      that same roster, and model-vs-scorer agreement across
+                      several seeds. 14 gates.
+  solution.csv        The 19 x 28 roster this model produces for QMC-2 (rows
+                      A..S).
+  solution_bcv.csv    The 46 x 26 roster this model produces for BCV-3.46.2.
 
 Reproduce:
 
   uv run examples/nurse_rostering/verify_parse.py
   uv run examples/nurse_rostering/verify_model.py
   uv run examples/nurse_rostering/model.py --time-limit 300
+  uv run examples/nurse_rostering/model.py --instance BCV-3.46.2.ros --time-limit 300
   uv run examples/nurse_rostering/scorer.py solution.csv
   uv run examples/nurse_rostering/scorer.py QMC-2.Solution.29.roster
+  uv run examples/nurse_rostering/scorer.py solution_bcv.csv BCV-3.46.2.ros
+  uv run examples/nurse_rostering/scorer.py BCV-3.46.2.Solution.894.roster BCV-3.46.2.ros

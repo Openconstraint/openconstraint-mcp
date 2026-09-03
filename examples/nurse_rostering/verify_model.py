@@ -1,23 +1,35 @@
 """Cross-check the CP-SAT model against the independent scorer.
 
-Three gates, in the order that makes a failure diagnosable:
+Three gates per instance, in the order that makes a failure diagnosable:
 
-1. GOLDEN -- the scorer, pointed at the published cost-29 roster, must
-   independently reproduce 29 with the published per-constraint breakdown. Until
-   this passes, nothing else is evidence of anything.
+1. GOLDEN -- the scorer, pointed at the published roster, must independently
+   reproduce its published cost with the published per-constraint breakdown.
+   Until this passes, nothing else is evidence of anything.
 2. GROUND TRUTH -- the MODEL, with every variable pinned to that same published
-   roster, must also report 29 with the same breakdown. This is the sharpest
-   test of the model's penalty structure: a model missing a penalty scores a
-   known-cost-29 roster below 29 and is caught here rather than by producing a
-   plausible-looking wrong answer later.
+   roster, must report the same cost and the same breakdown. This is the
+   sharpest test of the model's penalty structure: a model missing a penalty
+   scores a known-cost roster below its published cost and is caught here rather
+   than by producing a plausible-looking wrong answer later.
 3. AGREEMENT -- for several seeds, the scorer's total for the roster the model
    produced must equal the objective the model reported. Different seeds land on
-   different optima with different violation compositions, so each seed is an
+   different rosters with different violation compositions, so each seed is an
    independent test that the objective and the real scoring rules have not
    drifted apart.
 
-Reaching 29 is not itself evidence of correctness; a missing constraint and a
-compensating error can land on 29 by coincidence. These three gates are.
+Reaching the published cost is not itself evidence of correctness; a missing
+constraint and a compensating error can land on it by coincidence. These three
+gates are.
+
+Both instances are gated, and both published rosters are PROVEN OPTIMAL on the
+benchmark site (29 for QMC-2, 894 for BCV-3.46.2), so gates 1 and 2 are graded
+against ground truth rather than against a merely good roster.
+
+Note what gate 3 does and does not claim. It asserts the model and the scorer
+AGREE on whatever roster the search produced, not that the search found the
+optimum. In practice both instances do reach their published cost in these
+budgets -- QMC-2 proves 29 optimal, BCV-3.46.2 reaches 894 without proving it --
+but a seed that merely found something worse would still pass, and should: an
+agreeing pair of implementations is the property under test.
 
 Run from the repository root:
     uv run examples/nurse_rostering/verify_model.py
@@ -26,6 +38,7 @@ Run from the repository root:
 from __future__ import annotations
 
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -35,17 +48,62 @@ from parse_instance import Instance, parse_instance  # noqa: E402
 from scorer import Breakdown, read_roster_xml, score  # noqa: E402
 
 HERE: Path = Path(__file__).parent
-PUBLISHED_ROSTER: Path = HERE / "QMC-2.Solution.29.roster"
 
-PUBLISHED_BREAKDOWN: dict[str, int] = {
-    "ShiftOn request (weight 1)": 24,
-    "DayOff request (weight 1)": 1,
-    "No half weekends": 1,
-    "Preferred overstaffing": 3,
-}
-PUBLISHED_TOTAL: int = 29
 
-SEEDS: tuple[int, ...] = (1, 7, 42, 2001)
+@dataclass(frozen=True)
+class Case:
+    """One instance's three gates, and the published roster they grade against.
+
+    Parameterised rather than duplicated so a new rule cannot be added to the
+    model and gated on one instance only. The two differ in the budget gate 3
+    gets: BCV-3.46.2 is roughly nine times QMC-2's pattern machinery (1124
+    per-employee <Match> instances against 121), and gate 3 only needs an
+    incumbent to score, not a good one.
+    """
+
+    name: str
+    instance: Path
+    roster: Path
+    total: int
+    breakdown: dict[str, int]
+    seeds: tuple[int, ...]
+    time_limit: float
+
+
+CASES: tuple[Case, ...] = (
+    Case(
+        name="QMC-2",
+        instance=HERE / "QMC-2.ros",
+        roster=HERE / "QMC-2.Solution.29.roster",
+        total=29,
+        breakdown={
+            "ShiftOn request (weight 1)": 24,
+            "DayOff request (weight 1)": 1,
+            "No half weekends": 1,
+            "Preferred overstaffing": 3,
+        },
+        seeds=(1, 7, 42, 2001),
+        time_limit=120.0,
+    ),
+    Case(
+        name="BCV-3.46.2",
+        instance=HERE / "BCV-3.46.2.ros",
+        roster=HERE / "BCV-3.46.2.Solution.894.roster",
+        total=894,
+        # Every cover block scores zero, which is the load-bearing detail: at
+        # PrefUnder/PrefOverStaffing = 10000 a single unit of deviation would
+        # dwarf the whole optimum, so this line is what proves the model reads
+        # <DateSpecificCover> as overriding the weekday block rather than adding
+        # to it. The additive reading scores this same roster 40894.
+        breakdown={
+            "DayOn request (weight 50)": 800,
+            "Both days on or off on weekend": 80,
+            "Max 2 consecutive N shifts": 14,
+        },
+        seeds=(1, 42),
+        time_limit=60.0,
+    ),
+)
 
 
 def _flatten(breakdown: Breakdown) -> dict[str, int]:
@@ -69,11 +127,11 @@ def _report(ok: bool, message: str) -> bool:
     return ok
 
 
-def _options(instance_path: Path, seed: int, fix_roster: Path | None = None) -> Options:
+def _options(case: Case, seed: int, time_limit: float, fix_roster: Path | None = None) -> Options:
     return Options(
-        instance_path=instance_path,
+        instance_path=case.instance,
         csv_path=HERE / "verify_scratch.csv",
-        time_limit=120.0,
+        time_limit=time_limit,
         workers=8,
         seed=seed,
         harden=False,
@@ -81,37 +139,37 @@ def _options(instance_path: Path, seed: int, fix_roster: Path | None = None) -> 
     )
 
 
-def main() -> None:
-    instance: Instance = parse_instance(HERE / "QMC-2.ros")
+def run_case(case: Case) -> list[bool]:
+    """Run all three gates for one instance and report each line."""
+    instance: Instance = parse_instance(case.instance)
     passed: list[bool] = []
 
-    print("gate 1 -- scorer vs. the published cost-29 roster")
-    golden: Breakdown = score(instance, read_roster_xml(PUBLISHED_ROSTER, instance))
-    passed.append(
-        _report(golden.total == PUBLISHED_TOTAL, f"scorer total = {golden.total} (expected 29)")
-    )
+    print(f"{case.name} -- gate 1: scorer vs. the published cost-{case.total} roster")
+    golden: Breakdown = score(instance, read_roster_xml(case.roster, instance))
     passed.append(
         _report(
-            _flatten(golden) == PUBLISHED_BREAKDOWN,
-            f"scorer breakdown = {_flatten(golden)}",
+            golden.total == case.total, f"scorer total = {golden.total} (expected {case.total})"
         )
     )
-
-    print("\ngate 2 -- model pinned to that same roster")
-    pinned: Solution = solve((instance, _options(HERE / "QMC-2.ros", 42, PUBLISHED_ROSTER)))
     passed.append(
-        _report(pinned.objective == PUBLISHED_TOTAL, f"model objective = {pinned.objective}")
+        _report(_flatten(golden) == case.breakdown, f"scorer breakdown = {_flatten(golden)}")
     )
+
+    print(f"\n{case.name} -- gate 2: model pinned to that same roster")
+    # Pinned, so the search is trivial and the time limit is irrelevant; the
+    # seed is fixed because there is nothing left to randomise.
+    pinned: Solution = solve((instance, _options(case, 42, case.time_limit, case.roster)))
+    passed.append(_report(pinned.objective == case.total, f"model objective = {pinned.objective}"))
     passed.append(
         _report(
-            _flatten_model(pinned.breakdown) == PUBLISHED_BREAKDOWN,
+            _flatten_model(pinned.breakdown) == case.breakdown,
             f"model breakdown = {_flatten_model(pinned.breakdown)}",
         )
     )
 
-    print("\ngate 3 -- model objective vs. scorer, across seeds")
-    for seed in SEEDS:
-        solution: Solution = solve((instance, _options(HERE / "QMC-2.ros", seed)))
+    print(f"\n{case.name} -- gate 3: model objective vs. scorer, across seeds")
+    for seed in case.seeds:
+        solution: Solution = solve((instance, _options(case, seed, case.time_limit)))
         if not solution.roster:
             # No incumbent inside this seed's budget. That is a FAIL for the
             # seed, not a reason to abandon the run: score() indexes the roster
@@ -119,10 +177,7 @@ def main() -> None:
             # non-OPTIMAL/FEASIBLE status raises KeyError, which takes the
             # remaining seeds and the scratch-file cleanup down with it.
             passed.append(
-                _report(
-                    False,
-                    f"seed {seed:>4}: status {solution.status}, no solution to score",
-                )
+                _report(False, f"seed {seed:>4}: status {solution.status}, no solution to score")
             )
             continue
         recomputed: Breakdown = score(instance, solution.roster)
@@ -136,6 +191,15 @@ def main() -> None:
                 + ("" if same_shape else f"  breakdown differs: {_flatten(recomputed)}"),
             )
         )
+    return passed
+
+
+def main() -> None:
+    passed: list[bool] = []
+    for index, case in enumerate(CASES):
+        if index:
+            print()
+        passed.extend(run_case(case))
 
     scratch: Path = HERE / "verify_scratch.csv"
     if scratch.exists():
