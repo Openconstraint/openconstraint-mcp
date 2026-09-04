@@ -20,15 +20,9 @@ from pathlib import Path
 import pytest
 
 from examples.nurse_rostering.checker import check_payload
-from examples.nurse_rostering.model import (
-    Options,
-    Solution,
-    parse_instance,
-    solve,
-    write_csv,
-)
-from examples.nurse_rostering.scorer import read_roster_csv, read_roster_xml, score
-from examples.nurse_rostering.verify_parse import verify
+from examples.nurse_rostering.model import Options, Solution, parse_instance, solve
+from examples.nurse_rostering.scorer import read_roster_xml, score
+from examples.nurse_rostering.verify_parse import verify, verify_ermgh
 
 ROOT = Path(__file__).parents[2]
 EXAMPLE_DIR = ROOT / "examples" / "nurse_rostering"
@@ -43,6 +37,17 @@ PUBLISHED_BREAKDOWN = {
     "Preferred overstaffing": 3,
 }
 
+# ERMGH, the third instance, carries the format corners QMC-2 has none of:
+# <TimePeriod> cover, skill blocks with <Max>/<Preferred>, the `$` wildcard and
+# inline-<ShiftGroup> requests. Its published cost-779 roster is proven optimal.
+ERMGH_PATH = EXAMPLE_DIR / "ERMGH.ros"
+ERMGH_ROSTER = EXAMPLE_DIR / "ERMGH.Solution.779.roster"
+ERMGH_TOTAL = 779
+ERMGH_BREAKDOWN = {
+    "skill Preferred understaffing": 777,
+    "skill Preferred overstaffing": 2,
+}
+
 
 @pytest.fixture(scope="module")
 def instance():
@@ -54,10 +59,9 @@ def published_roster(instance):
     return read_roster_xml(PUBLISHED_ROSTER, instance)
 
 
-def _options(instance_path: Path, csv_path: Path, fix_roster: Path | None = None) -> Options:
+def _options(instance_path: Path, fix_roster: Path | None = None) -> Options:
     return Options(
         instance_path=instance_path,
-        csv_path=csv_path,
         time_limit=60.0,
         workers=8,
         seed=42,
@@ -97,23 +101,98 @@ def test_scorer_attributes_the_published_cost_to_the_published_rules(
     assert flat == PUBLISHED_BREAKDOWN
 
 
-def test_model_pinned_to_the_published_roster_agrees_with_the_scorer(instance, tmp_path) -> None:
+def test_model_pinned_to_the_published_roster_agrees_with_the_scorer(instance) -> None:
     """The sharpest cheap test of the penalty structure: pinned to a roster of
     known cost, a model missing a penalty scores it below 29."""
-    solution = solve((instance, _options(INSTANCE_PATH, tmp_path / "out.csv", PUBLISHED_ROSTER)))
+    solution = solve((instance, _options(INSTANCE_PATH, PUBLISHED_ROSTER)))
 
     assert (solution.status, solution.objective) == ("optimal", PUBLISHED_TOTAL)
 
 
-def test_model_pinned_breakdown_matches_the_scorer_label_for_label(instance, tmp_path) -> None:
-    solution = solve((instance, _options(INSTANCE_PATH, tmp_path / "out.csv", PUBLISHED_ROSTER)))
+def test_model_pinned_breakdown_matches_the_scorer_label_for_label(instance) -> None:
+    solution = solve((instance, _options(INSTANCE_PATH, PUBLISHED_ROSTER)))
 
     assert _flatten(*solution.breakdown.values()) == PUBLISHED_BREAKDOWN
 
 
+# -- ERMGH --------------------------------------------------------------------
+#
+# Each of these fails on a DIFFERENT misreading, and two of the misreadings are
+# silent on QMC-2 and BCV-3.46.2 because neither file exercises them.
+
+
+@pytest.fixture(scope="module")
+def ermgh():
+    return parse_instance(ERMGH_PATH)
+
+
+@pytest.fixture(scope="module")
+def ermgh_roster(ermgh):
+    return read_roster_xml(ERMGH_ROSTER, ermgh)
+
+
+def test_ermgh_parse_reproduces_every_published_count(ermgh) -> None:
+    failures = [line for ok, line in verify_ermgh(ermgh) if not ok]
+
+    assert failures == []
+
+
+def test_ermgh_time_period_cover_resolves_to_the_shifts_on_duty_throughout(ermgh) -> None:
+    """Containment, not overlap. E starts at 15:30 and so does not staff
+    12:00-15:30; DH runs 12:00-20:00 and does staff 15:30-19:30."""
+    resolved = {block.time_period: tuple(block.shifts) for block in ermgh.cover}
+
+    assert resolved == {
+        ("07:30:00", "11:30:00"): ("D",),
+        ("11:30:00", "12:00:00"): ("D",),
+        ("12:00:00", "15:30:00"): ("D", "DH"),
+        ("15:30:00", "19:30:00"): ("DH", "E"),
+        ("19:30:00", "20:00:00"): ("DH", "E"),
+        ("20:00:00", "23:30:00"): ("E",),
+        ("23:30:00", "07:30:00"): ("N",),
+    }
+
+
+def test_ermgh_dollar_is_a_wildcard_and_not_a_shift_named_dollar(ermgh) -> None:
+    """`<Shift>$</Shift>` must parse to its own kind. As a shift ID it matches
+    nothing, every rule scores 0, and the published optimum STILL totals 779 --
+    so only the symbol census catches it, never the total."""
+    symbols = [s for c in ermgh.contracts for m in c.matches for p in m.patterns for s in p.symbols]
+
+    assert sum(1 for s in symbols if s["kind"] == "worked") == 1288
+    assert [s for s in symbols if s["kind"] == "shift" and s["value"] == "$"] == []
+
+
+def test_ermgh_scorer_reproduces_the_published_optimum(ermgh, ermgh_roster) -> None:
+    breakdown = score(ermgh, ermgh_roster)
+
+    assert breakdown.total == ERMGH_TOTAL
+
+
+def test_ermgh_scorer_charges_the_cost_to_skill_qualified_cover(ermgh, ermgh_roster) -> None:
+    """Reading a skill block as a bare <Min>, which is all QMC-2's skill blocks
+    carry, ignores the <Max>/<Preferred> every ERMGH block carries and scores
+    this roster 0 rather than 779."""
+    breakdown = score(ermgh, ermgh_roster)
+
+    flat = _flatten(breakdown.by_label, breakdown.by_cover_type, breakdown.requests)
+    assert flat == ERMGH_BREAKDOWN
+
+
+def test_ermgh_model_pinned_to_the_published_roster(ermgh) -> None:
+    solution = solve((ermgh, _options(ERMGH_PATH, ERMGH_ROSTER)))
+
+    assert (solution.status, solution.objective) == ("optimal", ERMGH_TOTAL)
+    assert _flatten(*solution.breakdown.values()) == ERMGH_BREAKDOWN
+
+
 # -- <Min>-sense <Match> limits ------------------------------------------------
 #
-# QMC-2 contains none: all 121 of its match limits are <Max>. The model's
+# QMC-2 contains none: all 121 of its match limits are <Max>. ERMGH supplies 18
+# real ones, but only over its own rule shapes; the synthetic variants below
+# still earn their place by putting a <Min> limit on the two corners no shipped
+# instance reaches -- an empty candidate-window set, and a threshold above the
+# window count. The model's
 # penalty encoding is sense-dependent in two places -- whether an empty
 # candidate-window set may be skipped, and how wide the penalty variable's
 # domain must be -- so both need an instance the benchmark does not supply.
@@ -142,7 +221,7 @@ def _pinned_min_sense(tmp_path: Path, region: str, count: int) -> tuple[Solution
     """Solve the variant pinned to the published roster; return it and the scorer's total."""
     path = _with_min_sense_match(tmp_path, region, count)
     variant = parse_instance(path)
-    solution = solve((variant, _options(path, tmp_path / "out.csv", PUBLISHED_ROSTER)))
+    solution = solve((variant, _options(path, PUBLISHED_ROSTER)))
     if not solution.roster:
         return solution, -1
     return solution, score(variant, solution.roster).total
@@ -212,37 +291,3 @@ def test_checker_errors_when_problem_is_not_a_ros_path(published_roster) -> None
     )
 
     assert result["status"] == "error"
-
-
-# -- roster CSV round trip -----------------------------------------------------
-
-
-def test_roster_csv_round_trips_through_the_scorer(instance, published_roster, tmp_path) -> None:
-    path = tmp_path / "solution.csv"
-    write_csv(published_roster, instance.num_days, path)
-
-    assert read_roster_csv(path, instance) == published_roster
-
-
-def test_header_only_roster_csv_is_rejected_by_name(instance, tmp_path) -> None:
-    """What model.py writes when a run found no incumbent. Read unchecked it
-    surfaced as a bare KeyError from a contract lookup, several frames from the
-    real problem, which is that the file holds no roster."""
-    path = tmp_path / "solution.csv"
-    write_csv({}, instance.num_days, path)
-
-    with pytest.raises(ValueError, match="no roster row for employee"):
-        read_roster_csv(path, instance)
-
-
-def test_truncated_roster_csv_row_is_rejected(instance, published_roster, tmp_path) -> None:
-    """A short row used to score silently: pattern rules read `len(schedule)`,
-    so that employee's penalties were counted over a shortened period."""
-    path = tmp_path / "solution.csv"
-    write_csv(published_roster, instance.num_days, path)
-    lines = path.read_text().splitlines()
-    lines[1] = ",".join(lines[1].split(",")[:-3])
-    path.write_text("\n".join(lines) + "\n")
-
-    with pytest.raises(ValueError, match="day columns"):
-        read_roster_csv(path, instance)

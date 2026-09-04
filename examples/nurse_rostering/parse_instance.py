@@ -4,7 +4,7 @@ The XML (119 KB for QMC-2) is highly repetitive; this collapses it into a flat
 structure that the model and the scorer both consume, so neither ever touches
 the XML again.
 
-Three parsing traps this handles explicitly:
+Four parsing traps this handles explicitly:
 
 - `<TimeUnits>` means two different things depending on its parent. Under
   `<ShiftTypes><Shift>` it is a bare number (the shift's paid duration, in
@@ -16,16 +16,24 @@ Three parsing traps this handles explicitly:
   with a `<Start>` child is one symbol shorter than its child count suggests.
 - `<DateSpecificCover>` overrides the `<DayOfWeekCover>` block for the same
   (day, shift) instead of stacking with it. See `CoverBlock`.
+- A `<Cover>` block states its demand EITHER as a `<Shift>` or as a
+  `<TimePeriod>`, never both. The second form is resolved here to the shifts on
+  duty for the whole interval, so downstream code sees one shape. See
+  `_shifts_covering`.
 
-Two instances are parsed by this example and they exercise different corners of
-the format: QMC-2 has skills, a Min/Max/Preferred cover band and only DayOff and
-ShiftOn requests; BCV-3.46.2 has no skills at all, Preferred-only cover with two
-date-specific overrides, `<NotGroup>` pattern symbols, and DayOff, DayOn and
-ShiftOff requests but no ShiftOn.
+Three instances are parsed by this example and they exercise different corners
+of the format: QMC-2 has skills, a Min/Max/Preferred cover band and only DayOff
+and ShiftOn requests; BCV-3.46.2 has no skills at all, Preferred-only cover with
+two date-specific overrides, `<NotGroup>` pattern symbols, and DayOff, DayOn and
+ShiftOff requests but no ShiftOn; ERMGH states all of its cover over
+`<TimePeriod>` intervals rather than shifts, is the only one with `<Min>`-sense
+`<Match>` and `<Workload>` limits, and writes four ShiftOn requests as an inline
+`<ShiftGroup>` of two shifts.
 
 Run from the repository root:
     uv run examples/nurse_rostering/parse_instance.py QMC-2.ros data_qmc2.json
     uv run examples/nurse_rostering/parse_instance.py BCV-3.46.2.ros data_bcv.json
+    uv run examples/nurse_rostering/parse_instance.py ERMGH.ros data_ermgh.json
 """
 
 from __future__ import annotations
@@ -51,6 +59,7 @@ WEEKDAY_NAMES: tuple[str, ...] = (
 # A pattern symbol is one of:
 #   {"kind": "shift",    "value": "E"}   -- that day is exactly shift E
 #   {"kind": "shift",    "value": "-"}   -- that day is a day off
+#   {"kind": "worked",   "value": "$"}   -- that day is any WORKING shift
 #   {"kind": "group",    "value": "All"} -- that day is any shift in group `All`
 #   {"kind": "notshift", "value": "N"}   -- that day is anything except N,
 #                                           a day off included
@@ -58,10 +67,20 @@ WEEKDAY_NAMES: tuple[str, ...] = (
 #                                           `ON`, a day off included
 Symbol = dict[str, str]
 
-# The four request tags, as (element path, wants, carries a <ShiftTypeID>). They
-# differ only in those two flags, so one loop over this table replaces four
-# copies of the same four-line comprehension -- and adding the two corners
-# BCV-3.46.2 needs cannot leave the other two behind.
+# `<Shift>$</Shift>` is a wildcard, not a shift ID: "any working shift", a day
+# off EXCLUDED. ERMGH writes 1288 of them and neither other instance has one.
+# Its meaning is settled by the working-weekend idiom it is always used in --
+# three patterns `-$`, `$-`, `$$` summed under one `Max 1` limit. Read as "any
+# working shift" those three score exactly one hit per worked weekend and zero
+# for a free one, which is the rule. Read as "anything at all" a FREE weekend
+# matches all three and scores 3, making the rule fire hardest on the rosters it
+# exists to reward.
+WORKED_SYMBOL: str = "$"
+
+# The four request tags, as (element path, wants, names shifts). They differ only
+# in those two flags, so one loop over this table replaces four copies of the
+# same four-line comprehension -- and adding the two corners BCV-3.46.2 needs
+# cannot leave the other two behind.
 REQUEST_KINDS: tuple[tuple[str, bool, bool], ...] = (
     ("DayOffRequests/DayOff", False, False),
     ("DayOnRequests/DayOn", True, False),
@@ -140,11 +159,18 @@ class Employee:
 
 @dataclass
 class CoverBlock:
-    """One coverage requirement for one shift, on a weekday or a single date.
+    """One coverage requirement, on a weekday or a single date.
 
-    Without a skill: the total headcount on that shift must lie in [min, max],
-    preferably exactly `preferred`. With a skill: at least `min` of the staff on
-    that shift must hold it, and the block carries no max or preferred.
+    A block states its demand in one of two ways, and `shifts` is the resolution
+    of both: `<Shift>N</Shift>` names one shift type, while ERMGH's
+    `<TimePeriod>` names a clock interval and the block then counts everyone
+    whose shift is on duty for the WHOLE of it. `shifts` is `[shift]` in the
+    first case and the covering set in the second, so every consumer counts the
+    same way and only this file knows the difference.
+
+    Without a skill: the total headcount over `shifts` must lie in [min, max],
+    preferably exactly `preferred`. With a skill: at least `min` of that
+    headcount must hold it, and the block carries no max or preferred.
 
     `<DayOfWeekCover>` sets `weekday` and repeats every week; `<DateSpecificCover>`
     sets `day` and applies to that one date. Exactly one of the two is set.
@@ -161,11 +187,15 @@ class CoverBlock:
     """
 
     weekday: int | None  # 0 = Monday; None on a date-specific block
-    shift: str
+    shift: str | None  # the named shift type; None on a time-period block
+    shifts: list[str]  # every shift this block counts -- see above
     skill: str | None
     min: int | None
     max: int | None
     preferred: int | None
+    # ("15:30:00", "19:30:00") on a time-period block, None on a shift block.
+    # Kept after resolution so a verifier can re-derive `shifts` independently.
+    time_period: tuple[str, str] | None = None
     day: int | None = None  # absolute day offset; None on a weekday block
 
 
@@ -176,18 +206,22 @@ class Request:
     The four XML request tags differ only in these two fields, so they collapse
     to one record rather than four near-identical lists:
 
-        DayOff   (wants=False, shift=None)   ShiftOff (wants=False, shift="V")
-        DayOn    (wants=True,  shift=None)   ShiftOn  (wants=True,  shift="E")
+        DayOff   (wants=False, shifts=None)  ShiftOff (wants=False, shifts=["V"])
+        DayOn    (wants=True,  shifts=None)  ShiftOn  (wants=True,  shifts=["E"])
 
     QMC-2 uses only the DayOff/ShiftOn diagonal; BCV-3.46.2 uses the other three
-    corners and no ShiftOn at all.
+    corners and no ShiftOn at all; ERMGH uses three corners and has an empty
+    <DayOnRequests> element.
     """
 
     employee_id: str
     day: int
     weight: int
     wants: bool  # True: wants this assignment. False: wants to avoid it.
-    shift: str | None = None  # a specific shift, or None for "any shift at all"
+    # The shift IDs named, or None for "any shift at all". A list rather than a
+    # single ID because ERMGH writes four ShiftOn requests as an inline
+    # <ShiftGroup> of two shifts; any member satisfies the request.
+    shifts: list[str] | None = None
 
 
 @dataclass
@@ -204,6 +238,10 @@ class Instance:
     # the clock than it pays, and that gap turns a roster sitting exactly on
     # the 750 boundary into a phantom violation.
     shift_time_units: dict[str, int]
+    # Clock span per shift, read from <StartTime>/<EndTime>. Used for ONE thing:
+    # resolving a <TimePeriod> cover block to the shifts on duty throughout it.
+    # It is still never used to derive paid duration -- see shift_time_units.
+    shift_times: dict[str, tuple[str, str]]
     shift_groups: dict[str, list[str]]
     contracts: list[Contract]
     employees: list[Employee]
@@ -259,7 +297,10 @@ def _parse_pattern(node: ET.Element) -> Pattern:
         elif tag == "StartDay":
             start_weekday = WEEKDAY_NAMES.index(_text(child))
         elif tag == "Shift":
-            symbols.append({"kind": "shift", "value": _text(child)})
+            value: str = _text(child)
+            symbols.append(
+                {"kind": "worked" if value == WORKED_SYMBOL else "shift", "value": value}
+            )
         elif tag == "ShiftGroup":
             symbols.append({"kind": "group", "value": _text(child)})
         elif tag == "NotShift":
@@ -318,24 +359,100 @@ def _parse_contract(node: ET.Element, last_day: int) -> Contract:
     )
 
 
-def _parse_cover_block(cover: ET.Element, weekday: int | None, day: int | None) -> CoverBlock:
-    """Read one `<Cover>` element, under either kind of parent."""
+MINUTES_PER_DAY: int = 24 * 60
+
+
+def _clock_minutes(clock: str) -> int:
+    """ "15:30:00" -> 930. Seconds are always zero in these files."""
+    hours, minutes, _seconds = clock.split(":")
+    return int(hours) * 60 + int(minutes)
+
+
+def _shifts_covering(period: tuple[str, str], shift_times: dict[str, tuple[str, str]]) -> list[str]:
+    """The shift types on duty for the WHOLE of a `<TimePeriod>`.
+
+    ERMGH states cover over clock intervals instead of shifts, so the headcount
+    a block speaks about is "everyone whose shift spans this interval". The test
+    is containment, not overlap: a shift that covers only part of the period
+    does not staff it, and ERMGH's periods are cut exactly at shift boundaries
+    so containment is never partial by accident.
+
+    Both intervals wrap midnight -- N runs 23:30 to 07:30 and one period runs
+    with it -- so each is normalised to an arc `[start, end)` with `end` pushed
+    past 1440 when it wraps, and the period is then tried at the three offsets
+    that can bring it alongside the shift.
+    """
+    period_start: int = _clock_minutes(period[0])
+    period_end: int = _clock_minutes(period[1])
+    if period_end <= period_start:
+        period_end += MINUTES_PER_DAY
+
+    covering: list[str] = []
+    for shift_id, (start_clock, end_clock) in shift_times.items():
+        shift_start: int = _clock_minutes(start_clock)
+        shift_end: int = _clock_minutes(end_clock)
+        if shift_end <= shift_start:
+            shift_end += MINUTES_PER_DAY
+        if any(
+            shift_start <= period_start + offset and period_end + offset <= shift_end
+            for offset in (-MINUTES_PER_DAY, 0, MINUTES_PER_DAY)
+        ):
+            covering.append(shift_id)
+    return covering
+
+
+def _parse_cover_block(
+    cover: ET.Element,
+    weekday: int | None,
+    day: int | None,
+    shift_times: dict[str, tuple[str, str]],
+) -> CoverBlock:
+    """Read one `<Cover>` element, under either kind of parent.
+
+    Resolves the two ways a block names its headcount -- `<Shift>` and
+    `<TimePeriod>` -- into the single `shifts` list every consumer reads.
+    """
+    shift_node: ET.Element | None = cover.find("Shift")
+    period_node: ET.Element | None = cover.find("TimePeriod")
+    if (shift_node is None) == (period_node is None):
+        raise ValueError("a <Cover> block needs exactly one of <Shift> and <TimePeriod>")
+
+    shift: str | None = None
+    period: tuple[str, str] | None = None
+    shifts: list[str]
+    if period_node is None:
+        shift = _text(shift_node)
+        shifts = [shift]
+    else:
+        period = (_text(period_node.find("Start")), _text(period_node.find("End")))
+        shifts = _shifts_covering(period, shift_times)
+        if not shifts:
+            # Silent zero cover, not a harmless empty list: the block would then
+            # ask for staff nobody can supply and charge its Min every day.
+            raise ValueError(f"no shift type is on duty throughout the period {period}")
+
     skill_node: ET.Element | None = cover.find("Skill")
     min_node: ET.Element | None = cover.find("Min")
     max_node: ET.Element | None = cover.find("Max")
     pref_node: ET.Element | None = cover.find("Preferred")
     return CoverBlock(
         weekday=weekday,
-        shift=_text(cover.find("Shift")),
+        shift=shift,
+        shifts=shifts,
         skill=None if skill_node is None else _text(skill_node),
         min=None if min_node is None else _int(min_node),
         max=None if max_node is None else _int(max_node),
         preferred=None if pref_node is None else _int(pref_node),
+        time_period=period,
         day=day,
     )
 
 
-def _parse_cover(node: ET.Element, day_index: Callable[[str], int]) -> list[CoverBlock]:
+def _parse_cover(
+    node: ET.Element,
+    day_index: Callable[[str], int],
+    shift_times: dict[str, tuple[str, str]],
+) -> list[CoverBlock]:
     """Read both kinds of cover requirement into one list.
 
     `<DayOfWeekCover>` is expanded over every matching weekday downstream;
@@ -346,12 +463,31 @@ def _parse_cover(node: ET.Element, day_index: Callable[[str], int]) -> list[Cove
     for day_cover in node.findall("DayOfWeekCover"):
         weekday: int = WEEKDAY_NAMES.index(_text(day_cover.find("Day")))
         blocks.extend(
-            _parse_cover_block(cover, weekday, None) for cover in day_cover.findall("Cover")
+            _parse_cover_block(cover, weekday, None, shift_times)
+            for cover in day_cover.findall("Cover")
         )
     for date_cover in node.findall("DateSpecificCover"):
         day: int = day_index(_text(date_cover.find("Date")))
-        blocks.extend(_parse_cover_block(cover, None, day) for cover in date_cover.findall("Cover"))
+        blocks.extend(
+            _parse_cover_block(cover, None, day, shift_times)
+            for cover in date_cover.findall("Cover")
+        )
     return blocks
+
+
+def _request_shifts(request: ET.Element) -> list[str]:
+    """The shift IDs one Shift(On|Off) request names.
+
+    Usually a single `<ShiftTypeID>`. ERMGH also writes four ShiftOn requests as
+    an INLINE `<ShiftGroup>` listing its own `<Shift>` children -- an anonymous
+    set of shift IDs, not a reference into the top-level `<ShiftGroups>` table,
+    so it is read in place rather than resolved through it. Any member satisfies
+    the request.
+    """
+    group: ET.Element | None = request.find("ShiftGroup")
+    if group is not None:
+        return [_text(s) for s in group.findall("Shift")]
+    return [_text(request.find("ShiftTypeID"))]
 
 
 def parse_instance(xml_path: Path) -> Instance:
@@ -364,10 +500,12 @@ def parse_instance(xml_path: Path) -> Instance:
 
     shift_types: list[str] = []
     shift_time_units: dict[str, int] = {}
+    shift_times: dict[str, tuple[str, str]] = {}
     for shift in root.findall("ShiftTypes/Shift"):
         shift_id: str = shift.get("ID") or ""
         shift_types.append(shift_id)
         shift_time_units[shift_id] = _int(shift.find("TimeUnits"))
+        shift_times[shift_id] = (_text(shift.find("StartTime")), _text(shift.find("EndTime")))
 
     shift_groups: dict[str, list[str]] = {}
     for group in root.findall("ShiftGroups/ShiftGroup"):
@@ -404,9 +542,9 @@ def parse_instance(xml_path: Path) -> Instance:
             day=day_index(_text(req.find("Date"))),
             weight=int(req.get("weight") or 1),
             wants=wants,
-            shift=_text(req.find("ShiftTypeID")) if has_shift else None,
+            shifts=_request_shifts(req) if names_shifts else None,
         )
-        for path, wants, has_shift in REQUEST_KINDS
+        for path, wants, names_shifts in REQUEST_KINDS
         for req in root.findall(path)
     ]
 
@@ -427,10 +565,11 @@ def parse_instance(xml_path: Path) -> Instance:
         skills=[s.get("ID") or "" for s in root.findall("Skills/Skill")],
         shift_types=shift_types,
         shift_time_units=shift_time_units,
+        shift_times=shift_times,
         shift_groups=shift_groups,
         contracts=[_parse_contract(c, last_day) for c in root.findall("Contracts/Contract")],
         employees=employees,
-        cover=[] if cover_node is None else _parse_cover(cover_node, day_index),
+        cover=[] if cover_node is None else _parse_cover(cover_node, day_index, shift_times),
         cover_weights=cover_weights,
         requests=requests,
     )

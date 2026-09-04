@@ -110,7 +110,6 @@ class Options:
     """Everything the command line settles before any modelling happens."""
 
     instance_path: Path
-    # csv_path: Path
     time_limit: float
     workers: int
     seed: int
@@ -126,7 +125,6 @@ def read_input() -> Options:
     parser.add_argument("--time-limit", type=float, default=300.0)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
-    # parser.add_argument("--csv", default="solution_regular.csv")
     parser.add_argument(
         "--upper-bound",
         type=int,
@@ -175,7 +173,6 @@ def read_input() -> Options:
     here: Path = Path(__file__).parent
     return Options(
         instance_path=here / args.instance,
-        # csv_path=here / args.csv,
         time_limit=args.time_limit,
         workers=args.workers,
         seed=args.seed,
@@ -224,12 +221,18 @@ def symbol_letters(
 
     `notshift` and `notgroup` both include the day off. Reading either as "some
     other WORKING shift" makes BCV-3.46.2's free-weekend rules unfalsifiable,
-    since that file spells a free day as <NotGroup>ON</NotGroup>.
+    since that file spells a free day as <NotGroup>ON</NotGroup>. The `worked`
+    wildcard is the one symbol that goes the other way -- it EXCLUDES the day
+    off -- which is what makes ERMGH's working-weekend rules falsifiable.
     """
     kind: str = symbol["kind"]
     value: str = symbol["value"]
     if kind == "shift":
         return frozenset({value})
+    if kind == "worked":
+        # The `$` wildcard: every letter EXCEPT the day off. See
+        # parse_instance.WORKED_SYMBOL.
+        return frozenset(letter for letter in alphabet if letter != OFF)
     if kind == "group":
         return frozenset(shift_groups[value])
     if kind == "notshift":
@@ -411,6 +414,11 @@ class RosterModel:
             if value == OFF:
                 return self.works[employee_id, day].Not()
             return self.x[employee_id, day, value]
+        if kind == "worked":
+            # The `$` wildcard: any working shift, a day off excluded -- which
+            # is exactly what `works` already means.
+            return self.works[employee_id, day]
+
         if kind == "group":
             return self._in_group_literal(employee_id, day, value)
         if kind == "notshift":
@@ -421,14 +429,28 @@ class RosterModel:
             return self._in_group_literal(employee_id, day, value).Not()
         raise ValueError(f"unknown symbol kind {kind!r}")
 
-    def _in_group_literal(self, employee_id: str, day: int, group: str) -> cp_model_helper.Literal:
+    def _in_group_literal(self, employee_id: str, day: int, group: str) -> cp_model.IntVar:
         """A literal true exactly when that day's assignment lies in `group`."""
-        members: list[str] = self.instance.shift_groups[group]
+        return self._in_shifts_literal(employee_id, day, self.instance.shift_groups[group], group)
+
+    def _in_shifts_literal(
+        self, employee_id: str, day: int, members: list[str], name: str
+    ) -> cp_model.IntVar:
+        """A literal true exactly when that day's assignment lies in `members`.
+
+        Also reached by ERMGH's inline-<ShiftGroup> requests, which name a set of
+        shifts that is not in <ShiftGroups> at all, so this takes the members
+        rather than a group ID.
+        """
+        if len(members) == 1:
+            # One shift needs no new variable, and this is the common case: every
+            # ordinary ShiftOn/ShiftOff request lands here.
+            return self.x[employee_id, day, members[0]]
         if set(members) == set(self.instance.shift_types):
-            # The group names every shift type, so "in the group" is exactly
-            # "worked" -- true of QMC-2's `All` and BCV-3.46.2's `ON` alike.
+            # The set names every shift type, so "in it" is exactly "worked" --
+            # true of QMC-2's `All` and BCV-3.46.2's `ON` alike.
             return self.works[employee_id, day]
-        in_group: cp_model.IntVar = self.model.new_bool_var(f"g_{employee_id}_{day}_{group}")
+        in_group: cp_model.IntVar = self.model.new_bool_var(f"g_{employee_id}_{day}_{name}")
         self.model.add_max_equality(in_group, [self.x[employee_id, day, s] for s in members])
         return in_group
 
@@ -697,8 +719,8 @@ class RosterModel:
         # (day, shift) pairs spoken for by a <DateSpecificCover> block, which
         # REPLACES the weekday block there rather than adding to it. Empty for
         # QMC-2, so the loop below then reduces to the plain weekday match.
-        overridden: set[tuple[int, str]] = {
-            (block.day, block.shift) for block in instance.cover if block.day is not None
+        overridden: set[tuple[int, tuple[str, ...]]] = {
+            (block.day, tuple(block.shifts)) for block in instance.cover if block.day is not None
         }
 
         for day in range(instance.num_days):
@@ -708,31 +730,33 @@ class RosterModel:
                 if block.day is not None:
                     if block.day != day:
                         continue
-                elif block.weekday != weekday or (day, block.shift) in overridden:
+                elif block.weekday != weekday or (day, tuple(block.shifts)) in overridden:
                     continue
 
-                if block.skill is not None:
-                    # A sub-requirement of the SAME shift's headcount, not a
-                    # separate shift. A nurse holding both skills satisfies both
-                    # minima with her one assignment -- summing over holders does
-                    # that automatically, with no double-assignment.
-                    qualified = sum(
-                        self.x[employee.id, day, block.shift]
+                # A skill block is a sub-requirement of the SAME headcount, not
+                # a separate shift: it counts the holders instead of everyone,
+                # and carries the same Min/Max/Preferred vocabulary. A nurse
+                # holding both skills satisfies both minima with her one
+                # assignment -- summing over holders does that automatically.
+                # `block.shifts` is one shift in QMC-2 and BCV-3.46.2 and the
+                # set on duty throughout a <TimePeriod> in ERMGH; summing over
+                # it double-counts nobody, because a nurse works one shift a day.
+                prefix: str = "" if block.skill is None else "skill "
+                assigned: cp_model.LinearExprT
+                if block.skill is None:
+                    # The precomputed per-shift headcount, so an ordinary
+                    # one-shift block still reads a single variable.
+                    assigned = sum(self.daily[day, shift] for shift in block.shifts)
+                else:
+                    assigned = sum(
+                        self.x[employee.id, day, shift]
                         for employee in instance.employees
+                        for shift in block.shifts
                         if block.skill in employee.skills
                     )
-                    self._add_cover_penalty(
-                        "skill Min understaffing",
-                        (block.min or 0) - qualified,
-                        weights["MinUnderStaffing"],
-                        block.min or 0,
-                    )
-                    continue
-
-                assigned: cp_model.IntVar = self.daily[day, block.shift]
                 if block.min is not None:
                     self._add_cover_penalty(
-                        "Min understaffing",
+                        f"{prefix}Min understaffing",
                         block.min - assigned,
                         weights["MinUnderStaffing"],
                         block.min,
@@ -791,22 +815,31 @@ class RosterModel:
         its complement when they wanted it, so the four XML tags need no
         separate code paths:
 
-            wants=False, shift=None -> works[e, d]          (DayOff)
-            wants=True,  shift=None -> 1 - works[e, d]      (DayOn)
-            wants=True,  shift=X    -> 1 - x[e, d, X]       (ShiftOn)
-            wants=False, shift=X    -> x[e, d, X]           (ShiftOff)
+            wants=False, shifts=None -> works[e, d]          (DayOff)
+            wants=True,  shifts=None -> 1 - works[e, d]      (DayOn)
+            wants=True,  shifts=[X]  -> 1 - x[e, d, X]       (ShiftOn)
+            wants=False, shifts=[X]  -> x[e, d, X]           (ShiftOff)
+
+        A request naming several shifts -- ERMGH's four inline <ShiftGroup>
+        ShiftOn requests -- takes the same two rows through a membership
+        literal, which for a single shift is that shift's variable unchanged.
         """
         for request in self.instance.requests:
             holds: cp_model.IntVar = (
                 self.works[request.employee_id, request.day]
-                if request.shift is None
-                else self.x[request.employee_id, request.day, request.shift]
+                if request.shifts is None
+                else self._in_shifts_literal(
+                    request.employee_id,
+                    request.day,
+                    request.shifts,
+                    "".join(request.shifts),
+                )
             )
             self.penalties.append(
                 PenaltyTerm(
                     group="request",
                     key=(
-                        f"{REQUEST_NAMES[request.wants, request.shift is not None]} "
+                        f"{REQUEST_NAMES[request.wants, request.shifts is not None]} "
                         f"request (weight {request.weight})"
                     ),
                     expression=1 - holds if request.wants else holds,
@@ -934,14 +967,6 @@ def _pin_roster(builder: RosterModel, instance: Instance, path: Path) -> None:
                 )
 
 
-# def write_csv(roster: dict[str, list[str]], num_days: int, path: Path) -> None:
-#     header: str = "employee," + ",".join(f"d{day}" for day in range(num_days))
-#     rows: list[str] = [header] + [
-#         employee_id + "," + ",".join(schedule) for employee_id, schedule in sorted(roster.items())
-#     ]
-#     path.write_text("\n".join(rows) + "\n")
-
-
 def serialize_solution(solution: Solution) -> dict[str, Any]:
     return {
         "status": solution.status,
@@ -964,12 +989,9 @@ def main() -> None:
     raw: Options = read_input()
     parsed: tuple[Instance, Options] = parse_input(raw)
     solution: Solution = solve(parsed)
-    # The roster goes out on stdout with everything else. When the CSV write is
-    # restored it belongs here and must be UNCONDITIONAL: skipping it on a run
-    # that found no incumbent leaves the PREVIOUS run's roster on disk, and
-    # `scorer.py` then scores that stale file and prints a cost the reader
-    # naturally attributes to the run that just failed.
-    # write_csv(solution.roster, parsed[0].num_days, raw.csv_path)
+    # The roster goes out on stdout with everything else; this script writes no
+    # files. See model.py's main() for why the CSV write was removed rather than
+    # left disabled.
     write_output(serialize_solution(solution))
 
 

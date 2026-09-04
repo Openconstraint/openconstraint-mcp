@@ -2,25 +2,28 @@ Nurse rostering, SchedulingPeriod-3.0 XML format. Assign each employee one shift
 per day, or a day off, across the planning period, minimizing the weighted sum
 of soft-constraint violations.
 
-Two instances ship here, both from the public benchmark set at
+Three instances ship here, all from the public benchmark set at
 https://www.schedulingbenchmarks.org/nrp/, and the published roster kept
 alongside each one is PROVEN OPTIMAL -- that site marks proven optima in bold in
-its results table, and both of these are bold:
+its results table, and all three of these are bold:
 
-  QMC-2.ros        19 employees x 28 days x 3 shifts (E, L, N)   optimum   29
-  BCV-3.46.2.ros   46 employees x 26 days x 3 shifts (N, L, V)   optimum  894
+  QMC-2.ros        19 employees x 28 days x 3 shifts (E, L, N)      optimum  29
+  BCV-3.46.2.ros   46 employees x 26 days x 3 shifts (N, L, V)      optimum 894
+  ERMGH.ros        41 employees x 42 days x 4 shifts (D, DH, E, N)  optimum 779
 
-They are not two sizes of the same instance. They disagree about skills, about
-what a <Cover> block contains, about which of the four request tags exist, and
-about what a weight of 1000 means. Every "the format does X" sentence below is
-therefore scoped to the instance it was learned from; the pair exists so that no
-QMC-2 habit can silently become a format rule.
+They are not three sizes of the same instance. They disagree about skills, about
+what a <Cover> block contains, about which of the four request tags exist, about
+which pattern symbols exist, and about what a weight of 1000 means. Every "the
+format does X" sentence below is therefore scoped to the instance it was learned
+from; the set exists so that no QMC-2 habit can silently become a format rule.
+ERMGH is the newest arrival and it refuted two such habits on contact -- see its
+section.
 
-THE FORMAT HAS NO HARD CONSTRAINTS, in either instance. Every rule in the file
+THE FORMAT HAS NO HARD CONSTRAINTS, in any of the three instances. Every rule in the file
 is soft; hardness is encoded as weight magnitude, and the magnitudes are
 instance-specific. The objective is the weighted sum of all violations, so the
 objective IS the problem. Exactly one hard constraint exists and it is not
-written in either file: an employee works at most one shift per day.
+written in any of the files: an employee works at most one shift per day.
 
 ================================================================================
 QMC-2.ros
@@ -149,11 +152,98 @@ Format subtleties that decide whether a model is right:
 - <MaxConsecutiveFreeDays> appears once in BCV-3.46.2.ros and only inside an XML
   comment. It is dead and is deliberately not implemented.
 
-All four request tags parse into one `Request` record carrying `wants` and an
-optional `shift`, because the tags differ only in those two flags:
+================================================================================
+ERMGH.ros
+================================================================================
 
-    DayOff   (wants=False, shift=None)   ShiftOff (wants=False, shift="V")
-    DayOn    (wants=True,  shift=None)   ShiftOn  (wants=True,  shift="E")
+Assign each of 41 employees one shift per day (D, DH, E, N) or a day off across
+a 42-day period, 2002-06-02 to 2002-07-13. Six weeks, not four: nothing may
+assume a 28-day horizon. Every shift pays 8 <TimeUnits>, so a workload limit
+here is a pure shift COUNT -- `Min 80` over a fortnight means ten shifts.
+
+The benchmark site lists ERMGH under Emergency Room / general hospital data. Its
+published cost-779 roster is shown in bold -- proven optimal -- and is kept here
+as the scorer's golden test, the same role QMC-2's and BCV's play.
+
+ERMGH's weights, a third vocabulary again:
+
+  cover     100  (MinUnderStaffing and MaxOverStaffing)
+                 1  (PrefUnderStaffing and PrefOverStaffing)
+  requests  10 on 1243 of them, 1000 on 271
+  rules     100 on 1030 blocks, 1000 on 36
+
+Rule families:
+
+- Pattern rules (843 <Match> blocks over 41 contracts -- one contract per
+  employee, so 843 per-employee instances and not BCV's multiplication). 18 of
+  them carry a <Min> sense; no other instance has one. NOT ONE carries a
+  <Label>, so every rule penalty lands in the empty-string bucket.
+- Workload rules (227 <TimeUnits> blocks, 104 of them <Min>). Three CONSECUTIVE,
+  non-overlapping fortnights -- days 0-13, 14-27, 28-41 -- unlike QMC-2's three
+  windows sliding a week at a time.
+- Coverage (98 <Cover> blocks, 14 on each weekday, EVERY ONE skill-qualified and
+  EVERY ONE stated as a <TimePeriod> rather than a <Shift>). No
+  <DateSpecificCover> at all.
+- Requests: 1514 -- 1 DayOff, 605 ShiftOn, 908 ShiftOff, and an empty
+  <DayOnRequests> element. The published optimum satisfies every single one of
+  them, and every rule too: its whole cost of 779 is coverage.
+
+What ERMGH refutes, and each was a live assumption in this example's code
+before it arrived:
+
+- A <Cover> block does NOT have to name a <Shift>. ERMGH gives a <TimePeriod>
+  instead -- a clock interval such as 15:30-19:30 -- and the headcount it speaks
+  about is everyone whose shift is on duty for the WHOLE of it. Containment, not
+  overlap: 15:30-19:30 is staffed by DH (12:00-20:00) and E (15:30-23:30);
+  12:00-15:30 is staffed by D and DH, and not by E, which only starts as it
+  ends. One period wraps midnight (23:30-07:30, shift N) and so does N itself,
+  so the resolution is an arc comparison, not `start <= end`. parse_instance.py
+  resolves the interval to that shift set once and hands every consumer a
+  `shifts` list, which is `[shift]` for the other two instances.
+- A skill-qualified block is NOT a bare minimum. QMC-2's skill blocks all carry
+  only a <Min>, which reads like a rule about the format; ERMGH's skill-1 blocks
+  carry <Max> and <Preferred> and no <Min> at all. The Min/Max/Preferred
+  vocabulary is the same on both kinds of block -- the skill only changes WHO is
+  counted. Ignoring Max/Preferred on a skill block scores ERMGH's published
+  optimum at 0 rather than 779, and that failure is silent, because a roster
+  that violates nothing else really does total 0 under that reading.
+- <Shift>$</Shift> is a WILDCARD, not a shift ID: any working shift, a day off
+  excluded. ERMGH writes 1288 of them and neither other instance has one. Its
+  meaning is settled by the idiom it always appears in -- three patterns `-$`,
+  `$-`, `$$` summed under one `Max 1` limit, which is "at most one working
+  weekend". Read as "any working shift" those three score exactly one hit per
+  worked weekend and zero for a free one. Read as "anything at all" a FREE
+  weekend matches all three and scores 3, so the rule would fire hardest on the
+  rosters it exists to reward; that reading scores the published optimum 226079.
+  Read as a shift type literally named "$" it matches nothing, every rule scores
+  0, and the published optimum STILL totals 779 -- a silent pass, which is why
+  verify_parse.py pins the symbol census rather than trusting the total.
+- A Shift(On|Off) request may name an inline <ShiftGroup> instead of a
+  <ShiftTypeID>. ERMGH has four, each listing <Shift>E</Shift><Shift>D</Shift>
+  as an anonymous pair. It is NOT a reference into the top-level <ShiftGroups>
+  table -- that table does define `EorD` with the same members, but these blocks
+  spell the shifts out -- so a parser that resolves it by name looks up a group
+  ID that is not there. Any member satisfies the request.
+- A <ShiftGroup> ID is not a shift ID. ERMGH's group `D` holds DH alone, and its
+  group `E` holds E. Resolving a group by assuming the two namespaces coincide
+  reads `D` as {D} and gets the wrong letter set.
+- model.py's --harden is QMC-2-only and this instance shows why again. It zeroes
+  every penalty at weight >= 100; ERMGH's optimum is 779 of cover penalty at
+  weight 1 sitting alongside rules at weight 100, so hardening cuts off its own
+  optimum. model_regular.py and model_bounds.py replace it with --upper-bound N,
+  which reads only the instance's own weights and carries across all three.
+
+================================================================================
+
+All four request tags parse into one `Request` record carrying `wants` and an
+optional `shifts` list, because the tags differ only in those two flags:
+
+    DayOff   (wants=False, shifts=None)  ShiftOff (wants=False, shifts=["V"])
+    DayOn    (wants=True,  shifts=None)  ShiftOn  (wants=True,  shifts=["E"])
+
+`shifts` is a LIST rather than a single ID only because of ERMGH's four inline
+<ShiftGroup> requests; for every other request in every instance it holds one
+element and the membership test degenerates to the equality it used to be.
 
 model.py and scorer.py each build that 2x2 independently -- one out of CP-SAT
 literals, one in plain Python -- and neither imports the other's version.
@@ -161,19 +251,31 @@ literals, one in plain Python -- and neither imports the other's version.
 Files:
 
   parse_instance.py   XML -> compact JSON/objects. Discriminates the two
-                      meanings of <TimeUnits> by parent node, and both kinds of
-                      cover block.
+                      meanings of <TimeUnits> by parent node, both kinds of
+                      cover block, and both ways a cover block names its
+                      headcount (<Shift> and <TimePeriod>).
   verify_parse.py     Gate: asserts each parse reproduces every published count.
                       QMC-2 (19 employees, 121 <Match>, 235 <Pattern>, 52
-                      <Cover>, 223+155 requests, the <Weight> histogram) plus
+                      <Cover>, 223+155 requests, the <Weight> histogram),
                       BCV-3.46.2 (46 employees, 122 <Match>, 155 <Pattern>, 23
                       <Cover> of which 2 date-specific, 768 requests, the symbol
-                      census that pins <NotGroup>). 60 + 102 = 162 checks.
-  model.py            The CP-SAT model, for either instance via --instance. All
+                      census that pins <NotGroup>), and ERMGH (41 employees, 843
+                      <Match>, 1345 <Pattern>, 98 <Cover> all skill-qualified
+                      and all time-period, 1514 requests, the period-to-shift
+                      resolution re-derived by hand, and the symbol census that
+                      pins `$`). 60 + 102 + 36 = 198 checks.
+  model.py            The CP-SAT model, for any instance via --instance. All
                       rules soft at true weights by default; --harden is an
                       optional second-pass speedup whose soundness argument is
                       QMC-2-specific, and --fix-roster pins the variables to a
                       given roster.
+  model_regular.py    Same objective, pattern rules routed through a DFA where
+                      the shape allows. Its DFA reads each symbol as a LETTER
+                      SET rather than a literal, so pinning it to a published
+                      optimum re-derives the symbol semantics independently of
+                      model.py -- including `$`.
+  model_bounds.py     Same window encoding as model.py plus --upper-bound,
+                      --prove and the redundant aggregate cuts.
   scorer.py           The independent scorer. Recomputes every penalty from the
                       instance and a finished roster, and shares no penalty code
                       with model.py -- that independence is what makes agreement
@@ -186,10 +288,13 @@ Files:
   verify_model.py     The acceptance criterion, executable. Three gates per
                       instance: scorer vs. the published roster, model pinned to
                       that same roster, and model-vs-scorer agreement across
-                      several seeds. 14 gates.
-  solution.csv        The 19 x 28 roster this model produces for QMC-2 (rows
-                      A..S).
-  solution_bcv.csv    The 46 x 26 roster this model produces for BCV-3.46.2.
+                      several seeds. 20 gates.
+  solution.csv        A 19 x 28 QMC-2 roster (rows A..S) kept as a sample of
+                      the employees-x-days CSV shape scorer.py reads. The models
+                      no longer WRITE this shape -- they emit the roster on
+                      stdout with everything else -- so these two are static
+                      files, not the output of the last run.
+  solution_bcv.csv    The same, 46 x 26, for BCV-3.46.2.
 
 Reproduce:
 
@@ -197,7 +302,13 @@ Reproduce:
   uv run examples/nurse_rostering/verify_model.py
   uv run examples/nurse_rostering/model.py --time-limit 300
   uv run examples/nurse_rostering/model.py --instance BCV-3.46.2.ros --time-limit 300
-  uv run examples/nurse_rostering/scorer.py solution.csv
+  uv run examples/nurse_rostering/model.py --instance ERMGH.ros --time-limit 300
+  uv run examples/nurse_rostering/scorer.py solution.csv          # a CSV roster
   uv run examples/nurse_rostering/scorer.py QMC-2.Solution.29.roster
   uv run examples/nurse_rostering/scorer.py solution_bcv.csv BCV-3.46.2.ros
   uv run examples/nurse_rostering/scorer.py BCV-3.46.2.Solution.894.roster BCV-3.46.2.ros
+  uv run examples/nurse_rostering/scorer.py ERMGH.Solution.779.roster ERMGH.ros
+
+ERMGH is the easiest of the three for the model despite being the largest:
+model.py proves its optimum of 779 in well under 60 seconds on 8 workers, where
+BCV-3.46.2 reaches 894 in that budget without proving it.

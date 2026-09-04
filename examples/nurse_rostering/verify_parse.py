@@ -5,11 +5,14 @@ agree with each other and disagree with reality, which is the one failure mode
 no amount of solving will surface. Every expectation here comes from the
 instance's documented structure, so a mismatch means the parser is wrong.
 
-Both bundled instances are checked, and they are deliberately unalike: QMC-2
-has skills, a Min/Max/Preferred cover band, and only DayOff and ShiftOn
+All three bundled instances are checked, and they are deliberately unalike:
+QMC-2 has skills, a Min/Max/Preferred cover band, and only DayOff and ShiftOn
 requests; BCV-3.46.2 has no skills, Preferred-only cover with two date-specific
 overrides, <NotGroup> pattern symbols, and DayOff, DayOn and ShiftOff requests
-but no ShiftOn. Between them every branch of the parser is exercised.
+but no ShiftOn; ERMGH states all its cover over <TimePeriod> intervals with a
+skill on every block, is the only one with <Min>-sense limits or the `$`
+wildcard, and writes four requests as an inline <ShiftGroup>. Between them every
+branch of the parser is exercised.
 
 Run from the repository root:
     uv run examples/nurse_rostering/verify_parse.py
@@ -126,7 +129,7 @@ def _requests_of(instance: Instance, wants: bool, named: bool) -> list[Request]:
     the published structure quotes are recovered by filtering rather than by
     reading four separate fields.
     """
-    return [r for r in instance.requests if r.wants is wants and (r.shift is not None) is named]
+    return [r for r in instance.requests if r.wants is wants and (r.shifts is not None) is named]
 
 
 def _check(results: list[tuple[bool, str]], label: str, actual: object, expected: object) -> None:
@@ -547,7 +550,8 @@ def verify_bcv(instance: Instance) -> list[tuple[bool, str]]:
         dict(
             sorted(
                 collections.Counter(
-                    r.shift for r in _requests_of(instance, wants=False, named=True)
+                    ",".join(r.shifts or [])
+                    for r in _requests_of(instance, wants=False, named=True)
                 ).items()
             )
         ),
@@ -564,6 +568,230 @@ def verify_bcv(instance: Instance) -> list[tuple[bool, str]]:
         dict(sorted(BCV_EXPECTED_WEIGHT_COUNTS.items(), reverse=True)),
     )
     _check(results, "<Weight> elements total", sum(weights.values()), 127)
+
+    return results
+
+
+ERMGH_PERIODS: list[tuple[tuple[str, str], list[str]]] = [
+    # (<TimePeriod>, the shifts on duty for the WHOLE of it). Re-derived here by
+    # hand from <ShiftTypes>' clock spans -- D 07:30-15:30, DH 12:00-20:00,
+    # E 15:30-23:30, N 23:30-07:30 -- so this is an independent check of
+    # `_shifts_covering` rather than a restatement of it. Containment, not
+    # overlap: E starts at 15:30 and so does not staff 12:00-15:30.
+    (("07:30:00", "11:30:00"), ["D"]),
+    (("11:30:00", "12:00:00"), ["D"]),
+    (("12:00:00", "15:30:00"), ["D", "DH"]),
+    (("15:30:00", "19:30:00"), ["DH", "E"]),
+    (("19:30:00", "20:00:00"), ["DH", "E"]),
+    (("20:00:00", "23:30:00"), ["E"]),
+    (("23:30:00", "07:30:00"), ["N"]),
+]
+
+
+def verify_ermgh(instance: Instance) -> list[tuple[bool, str]]:
+    """The same gate for ERMGH, which breaks a habit each of the others taught."""
+    results: list[tuple[bool, str]] = []
+
+    _check(results, "employees", len(instance.employees), 41)
+    _check(results, "contracts defined", len(instance.contracts), 41)
+    # One contract per employee, unlike BCV-3.46.2's five shared ones. That is
+    # why 843 <Match> blocks produce 843 per-employee instances and not 34563.
+    _check(
+        results,
+        "every employee has her own contract",
+        sorted(collections.Counter(e.contract_id for e in instance.employees).values()),
+        [1] * 41,
+    )
+
+    _check(results, "planning period days", instance.num_days, 42)
+    _check(results, "start date", instance.start_date, "2002-06-02")
+    _check(results, "end date", instance.end_date, "2002-07-13")
+
+    _check(results, "shift types", instance.shift_types, ["D", "DH", "E", "N"])
+    # Every shift pays the same 8 units, so workload limits here are pure shift
+    # COUNTS -- `Min 80` over a fortnight is ten shifts, not eighty hours.
+    _check(
+        results,
+        "shift durations (time units)",
+        instance.shift_time_units,
+        dict.fromkeys(("D", "DH", "E", "N"), 8),
+    )
+    _check(
+        results,
+        "shift clock spans",
+        instance.shift_times,
+        {
+            "D": ("07:30:00", "15:30:00"),
+            "DH": ("12:00:00", "20:00:00"),
+            "E": ("15:30:00", "23:30:00"),
+            "N": ("23:30:00", "07:30:00"),
+        },
+    )
+    # A <ShiftGroup> ID is not a shift ID: the group called `D` holds DH alone,
+    # and nothing may resolve a group by assuming the two namespaces coincide.
+    _check(
+        results,
+        "shift groups",
+        instance.shift_groups,
+        {"EorD": ["E", "D"], "N": ["N"], "E": ["E"], "D": ["DH"]},
+    )
+
+    _check(results, "skills", instance.skills, ["1", "2", "3", "4", "5", "6", "7"])
+    _check(
+        results,
+        "employees by skill set",
+        sorted(collections.Counter(tuple(sorted(e.skills)) for e in instance.employees).items()),
+        [
+            (("1", "2"), 1),
+            (("1", "2", "3"), 6),
+            (("1", "2", "3", "4"), 7),
+            (("1", "2", "3", "4", "5"), 27),
+        ],
+    )
+
+    # Cover. Every block is skill-qualified and states its demand as a
+    # <TimePeriod>: 14 blocks on each of the 7 weekdays, 7 periods x 2 skills.
+    _check(results, "<Cover> blocks", len(instance.cover), 98)
+    _check(results, "<DateSpecificCover> blocks", sum(1 for c in instance.cover if c.day), 0)
+    _check(
+        results,
+        "<Cover> blocks naming a <Shift>",
+        sum(1 for c in instance.cover if c.shift is not None),
+        0,
+    )
+    _check(
+        results,
+        "<Cover> blocks by skill",
+        dict(sorted(collections.Counter(c.skill for c in instance.cover).items(), key=str)),
+        {"1": 49, "5": 49},
+    )
+    _check(
+        results,
+        "time periods resolved to shifts",
+        sorted({(c.time_period, tuple(c.shifts)) for c in instance.cover}),
+        sorted((period, tuple(shifts)) for period, shifts in ERMGH_PERIODS),
+    )
+    # The refutation of "a skill block is a bare minimum", which QMC-2's skill
+    # blocks all happen to be: here skill 1 carries Max and Preferred and NO
+    # Min, and skill 5 carries Min alone. Ignoring Max/Preferred on a skill
+    # block scores this instance's published optimum at 0 instead of 779.
+    _check(
+        results,
+        "(skill, min, max, preferred) bands",
+        sorted({(c.skill, c.min, c.max, c.preferred) for c in instance.cover}, key=str),
+        [("1", None, 38, 8), ("1", None, 40, 10), ("1", None, 41, 11), ("5", 1, None, None)],
+    )
+    _check(
+        results,
+        "cover weights",
+        instance.cover_weights,
+        {
+            "MinUnderStaffing": 100,
+            "MaxOverStaffing": 100,
+            "PrefOverStaffing": 1,
+            "PrefUnderStaffing": 1,
+        },
+    )
+
+    matches: list[Match] = [m for c in instance.contracts for m in c.matches]
+    _check(results, "<Match> blocks", len(matches), 843)
+    # The only instance with <Min>-sense <Match> limits. Its <Max> forms clamp
+    # at zero for exactly the same reason, so a parser that keys the clamp off
+    # the tag rather than applying it to both is caught by these 18.
+    _check(
+        results,
+        "<Match> senses",
+        dict(sorted(collections.Counter(m.limit.sense for m in matches).items())),
+        {"max": 825, "min": 18},
+    )
+    # Not one <Match> or <Workload> block carries a <Label>, so every rule
+    # penalty lands in the empty-string bucket. That is this file's structure,
+    # not a parse failure -- BCV-3.46.2 leaves 30 of 122 unlabelled, ERMGH all
+    # 1070.
+    _check(results, "labelled rules", sum(1 for m in matches if m.limit.label), 0)
+
+    workload: list[WorkloadLimit] = [w for c in instance.contracts for w in c.workload]
+    _check(results, "<Workload><TimeUnits> blocks", len(workload), 227)
+    _check(
+        results,
+        "<Workload> senses",
+        dict(sorted(collections.Counter(w.limit.sense for w in workload).items())),
+        {"max": 123, "min": 104},
+    )
+    # Three consecutive, NON-overlapping fortnights, unlike QMC-2's three
+    # windows sliding a week at a time.
+    _check(
+        results,
+        "workload regions",
+        sorted(collections.Counter((w.region_start, w.region_end) for w in workload).items()),
+        [((0, 13), 77), ((14, 27), 76), ((28, 41), 74)],
+    )
+
+    patterns: list[Pattern] = [p for m in matches for p in m.patterns]
+    _check(results, "<Pattern> blocks", len(patterns), 1345)
+    # The symbol census, and the line that pins the `$` wildcard. It parses to
+    # its own kind rather than to a shift named "$": read as a shift ID it
+    # matches nothing, every rule scores 0, and the published optimum still
+    # totals 779 because its rules are all satisfied -- a silent pass. Read as
+    # "anything at all" the same roster scores 226079.
+    _check(
+        results,
+        "pattern symbols by kind",
+        dict(sorted(collections.Counter(s["kind"] for p in patterns for s in p.symbols).items())),
+        {"group": 602, "shift": 1265, "worked": 1288},
+    )
+    _check(
+        results,
+        "symbols parsed as a shift named $",
+        sum(1 for p in patterns for s in p.symbols if s["kind"] == "shift" and s["value"] == "$"),
+        0,
+    )
+    _check(
+        results,
+        "anchors (<Start>, <StartDay>, free)",
+        (
+            sum(1 for p in patterns if p.start_day_index is not None),
+            sum(1 for p in patterns if p.start_weekday is not None),
+            sum(1 for p in patterns if p.start_day_index is None and p.start_weekday is None),
+        ),
+        (46, 862, 437),
+    )
+
+    _check(results, "requests", len(instance.requests), 1514)
+    for wants, named, name, expected in (
+        (False, False, "DayOff", 1),
+        (True, False, "DayOn", 0),
+        (True, True, "ShiftOn", 605),
+        (False, True, "ShiftOff", 908),
+    ):
+        _check(results, f"{name} requests", len(_requests_of(instance, wants, named)), expected)
+    _check(
+        results,
+        "request weights",
+        dict(sorted(collections.Counter(r.weight for r in instance.requests).items())),
+        {10: 1243, 1000: 271},
+    )
+    # The inline-<ShiftGroup> requests: four ShiftOn requests naming {E, D} as an
+    # anonymous pair rather than a <ShiftTypeID>. `EorD` is a real group ID in
+    # this file with the same members, but these blocks do not reference it --
+    # they spell the shifts out -- so a parser that only reads <ShiftTypeID>
+    # drops them and one that resolves through <ShiftGroups> reads a name that
+    # is not there.
+    _check(
+        results,
+        "requests naming several shifts",
+        sorted(
+            (r.employee_id, r.day, tuple(r.shifts or []))
+            for r in instance.requests
+            if r.shifts is not None and len(r.shifts) > 1
+        ),
+        [
+            ("700596", 32, ("E", "D")),
+            ("700619", 13, ("E", "D")),
+            ("700619", 14, ("E", "D")),
+            ("700619", 41, ("E", "D")),
+        ],
+    )
 
     return results
 
@@ -585,6 +813,7 @@ def main() -> None:
     for title, filename, verifier in (
         ("QMC-2.ros", "QMC-2.ros", verify),
         ("BCV-3.46.2.ros", "BCV-3.46.2.ros", verify_bcv),
+        ("ERMGH.ros", "ERMGH.ros", verify_ermgh),
     ):
         print(f"{title}")
         section: list[tuple[bool, str]] = verifier(parse_instance(here / filename))

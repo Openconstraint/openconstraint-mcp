@@ -18,7 +18,7 @@ two employees. Contracts, workload and requests each read a single row of the
 employees x days matrix; cover sums a column. Drop cover and the instance falls
 apart into independent single-nurse problems.
 
-Two instances ship with this example and they are not interchangeable in
+Three instances ship with this example and they are not interchangeable in
 difficulty or in convention:
 
 - QMC-2.ros -- 19 employees x 28 days x 3 shifts, 121 <Match> blocks, published
@@ -28,10 +28,21 @@ difficulty or in convention:
   times QMC-2's), published proven optimum 894. Its weights are a different
   vocabulary entirely: cover at 10000, requests at 50, rules from 1 to 1000.
   Reading 1000 as "de facto hard" here is a QMC-2 habit, not a format rule.
+- ERMGH.ros -- 41 employees x 42 days x 4 shifts, 843 <Match> blocks over 41
+  contracts (one per employee), published proven optimum 779. Every one of its
+  98 cover blocks is skill-qualified and states its demand as a <TimePeriod>
+  rather than a shift; its whole published optimum is cover cost, with every
+  rule and every one of its 1514 requests satisfied.
+
+--harden is QMC-2-only. It zeroes every penalty at weight >= 100, which is
+sound there and nowhere else: BCV-3.46.2's cover sits at 10000 and ERMGH's
+optimum is 779 of cover penalty at weight 1 alongside rules at weight 100, so
+hardening either one cuts off its own optimum.
 
 Run from the repository root:
     uv run examples/nurse_rostering/model.py --time-limit 300
     uv run examples/nurse_rostering/model.py --instance BCV-3.46.2.ros --time-limit 300
+    uv run examples/nurse_rostering/model.py --instance ERMGH.ros --time-limit 300
 """
 
 from __future__ import annotations
@@ -50,6 +61,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from parse_instance import (  # noqa: E402
     Contract,
+    Employee,
     Instance,
     Limit,
     Match,
@@ -60,7 +72,7 @@ from parse_instance import (  # noqa: E402
 
 OFF: str = "-"
 
-# The request 2x2, keyed by (wants, names a specific shift). Written out again
+# The request 2x2, keyed by (wants, names shifts). Written out again
 # here rather than imported from scorer.py on purpose: these strings are the
 # keys the model's breakdown and the scorer's are compared on, and a shared
 # table would make the two agree by construction instead of by both being right.
@@ -106,15 +118,14 @@ class Options:
     """Everything the command line settles before any modelling happens.
 
     A typed record rather than the string-keyed dict this used to be. `solve()`
-    reads five of these fields and `main()` a sixth, so a dict turned every read
-    into a place where a typo surfaces as a KeyError at solve time instead of an
-    error at the boundary -- and it left the two path fields as bare strings,
-    re-wrapped in `Path(...)` downstream. docs/cpsat-python.md asks the spine for
-    a typed record across `solve()` for exactly this reason.
+    reads every field, so a dict turned every read into a place where a typo
+    surfaces as a KeyError at solve time instead of an error at the boundary --
+    and it left the two path fields as bare strings, re-wrapped in `Path(...)`
+    downstream. docs/cpsat-python.md asks the spine for a typed record across
+    `solve()` for exactly this reason.
     """
-    
+
     instance_path: Path
-    csv_path: Path
     time_limit: float
     workers: int
     seed: int
@@ -141,7 +152,6 @@ def read_input() -> Options:
             "29; it does not carry over to another instance unaided."
         ),
     )
-    parser.add_argument("--csv", default="solution.csv")
     parser.add_argument(
         "--fix-roster",
         default=None,
@@ -158,13 +168,12 @@ def read_input() -> Options:
     here: Path = Path(__file__).parent
     return Options(
         instance_path=here / args.instance,
-        csv_path=here / args.csv,
         time_limit=args.time_limit,
         workers=args.workers,
         seed=args.seed,
         harden=args.harden,
-        # Resolved against the script directory, exactly like --instance and
-        # --csv above. Left CWD-relative it broke the invocation this file's own
+        # Resolved against the script directory, exactly like --instance
+        # above. Left CWD-relative it broke the invocation this file's own
         # docstring documents -- `uv run examples/nurse_rostering/model.py
         # --fix-roster QMC-2.Solution.29.roster` from the repository root died
         # with FileNotFoundError instead of pinning the published optimum.
@@ -239,6 +248,11 @@ class RosterModel:
                 return self.works[employee_id, day].Not()
             return self.x[employee_id, day, value]
 
+        if kind == "worked":
+            # The `$` wildcard: any working shift, a day off excluded -- which
+            # is exactly what `works` already means.
+            return self.works[employee_id, day]
+
         if kind == "group":
             return self._in_group_literal(employee_id, day, value)
 
@@ -255,21 +269,34 @@ class RosterModel:
 
         raise ValueError(f"unknown symbol kind {kind!r}")
 
-    def _in_group_literal(self, employee_id: str, day: int, group: str) -> cp_model_helper.Literal:
+    def _in_group_literal(self, employee_id: str, day: int, group: str) -> cp_model.IntVar:
         """A literal true exactly when that day's assignment lies in `group`.
 
         Shared by the `group` and `notgroup` symbol kinds, which differ only by
         a negation -- keeping the group-membership encoding in one place stops
         the two from drifting into different resolutions of the same group ID.
         """
-        members: list[str] = self.instance.shift_groups[group]
+        return self._in_shifts_literal(employee_id, day, self.instance.shift_groups[group], group)
+
+    def _in_shifts_literal(
+        self, employee_id: str, day: int, members: list[str], name: str
+    ) -> cp_model.IntVar:
+        """A literal true exactly when that day's assignment lies in `members`.
+
+        Also reached by ERMGH's inline-<ShiftGroup> requests, which name a set of
+        shifts that is not in <ShiftGroups> at all, so this takes the members
+        rather than a group ID.
+        """
+        if len(members) == 1:
+            # One shift needs no new variable, and this is the common case: every
+            # ordinary ShiftOn/ShiftOff request lands here.
+            return self.x[employee_id, day, members[0]]
         if set(members) == set(self.instance.shift_types):
-            # The group names every shift type, so "in the group" is exactly
-            # "worked" -- true of QMC-2's `All` and BCV-3.46.2's `ON` alike.
-            # Resolved through <ShiftGroups>, not assumed: another instance may
-            # define a proper subset, handled below.
+            # The set names every shift type, so "in it" is exactly "worked" --
+            # true of QMC-2's `All` and BCV-3.46.2's `ON` alike. Resolved from
+            # the members, not assumed: a proper subset is handled below.
             return self.works[employee_id, day]
-        in_group: cp_model.IntVar = self.model.new_bool_var(f"g_{employee_id}_{day}_{group}")
+        in_group: cp_model.IntVar = self.model.new_bool_var(f"g_{employee_id}_{day}_{name}")
         self.model.add_max_equality(in_group, [self.x[employee_id, day, s] for s in members])
         return in_group
 
@@ -407,12 +434,12 @@ class RosterModel:
         instance: Instance = self.instance
         weights: dict[str, int] = instance.cover_weights
         num_employees: int = len(instance.employees)
-        # (day, shift) pairs spoken for by a <DateSpecificCover> block, which
+        # (day, shifts) pairs spoken for by a <DateSpecificCover> block, which
         # REPLACES the weekday block there rather than adding to it -- see
-        # CoverBlock. Empty for QMC-2, so the loop below then reduces exactly to
-        # the plain weekday match it used to be.
-        overridden: set[tuple[int, str]] = {
-            (block.day, block.shift) for block in instance.cover if block.day is not None
+        # CoverBlock. Empty for QMC-2 and ERMGH, so the loop below then reduces
+        # exactly to the plain weekday match it used to be.
+        overridden: set[tuple[int, tuple[str, ...]]] = {
+            (block.day, tuple(block.shifts)) for block in instance.cover if block.day is not None
         }
 
         for day in range(instance.num_days):
@@ -422,40 +449,36 @@ class RosterModel:
                 if block.day is not None:
                     if block.day != day:
                         continue
-                elif block.weekday != weekday or (day, block.shift) in overridden:
+                elif block.weekday != weekday or (day, tuple(block.shifts)) in overridden:
                     continue
 
-                if block.skill is not None:
-                    # A sub-requirement of the SAME shift's headcount, not a
-                    # separate shift. A nurse holding both skills satisfies both
-                    # minima with her one assignment -- summing over holders does
-                    # that automatically, with no double-assignment.
-                    qualified = sum(
-                        self.x[employee.id, day, block.shift]
-                        for employee in instance.employees
-                        if block.skill in employee.skills
-                    )
-                    self._add_cover_penalty(
-                        "skill Min understaffing",
-                        (block.min or 0) - qualified,
-                        weights["MinUnderStaffing"],
-                        block.min or 0,
-                    )
-                    continue
-
+                # A skill block is a sub-requirement of the SAME headcount, not
+                # a separate shift: it counts the holders instead of everyone,
+                # and carries the same Min/Max/Preferred vocabulary. A nurse
+                # holding both skills satisfies both minima with her one
+                # assignment -- summing over holders does that automatically.
+                # `block.shifts` is one shift in QMC-2 and BCV-3.46.2 and the
+                # set on duty throughout a <TimePeriod> in ERMGH; summing over
+                # it double-counts nobody, because a nurse works one shift a day.
+                staff: list[Employee] = [
+                    employee
+                    for employee in instance.employees
+                    if block.skill is None or block.skill in employee.skills
+                ]
+                prefix: str = "" if block.skill is None else "skill "
                 assigned = sum(
-                    self.x[employee.id, day, block.shift] for employee in instance.employees
+                    self.x[employee.id, day, shift] for employee in staff for shift in block.shifts
                 )
                 if block.min is not None:
                     self._add_cover_penalty(
-                        "Min understaffing",
+                        f"{prefix}Min understaffing",
                         block.min - assigned,
                         weights["MinUnderStaffing"],
                         block.min,
                     )
                 if block.max is not None:
                     self._add_cover_penalty(
-                        "Max overstaffing",
+                        f"{prefix}Max overstaffing",
                         assigned - block.max,
                         weights["MaxOverStaffing"],
                         num_employees,
@@ -464,13 +487,13 @@ class RosterModel:
                     # Charged INSIDE the [Min, Max] band as well: being at Min
                     # when Preferred is 3 costs (3 - Min), it is not free.
                     self._add_cover_penalty(
-                        "Preferred understaffing",
+                        f"{prefix}Preferred understaffing",
                         block.preferred - assigned,
                         weights["PrefUnderStaffing"],
                         block.preferred,
                     )
                     self._add_cover_penalty(
-                        "Preferred overstaffing",
+                        f"{prefix}Preferred overstaffing",
                         assigned - block.preferred,
                         weights["PrefOverStaffing"],
                         num_employees,
@@ -499,32 +522,41 @@ class RosterModel:
         """Charge every unmet request, over all four corners of the 2x2.
 
         Each request reduces to one literal -- "worked at all" for a request
-        naming no shift, "on exactly this shift" for one that does. The penalty
-        is that literal when the employee wanted to AVOID the assignment, and
-        its complement when they wanted it, so the four XML tags need no
-        separate code paths:
+        naming no shift, "on one of these shifts" for one that names some. The
+        penalty is that literal when the employee wanted to AVOID the
+        assignment, and its complement when they wanted it, so the four XML tags
+        need no separate code paths:
 
-            wants=False, shift=None -> works[e, d]          (DayOff)
-            wants=True,  shift=None -> 1 - works[e, d]      (DayOn)
-            wants=True,  shift=X    -> 1 - x[e, d, X]       (ShiftOn)
-            wants=False, shift=X    -> x[e, d, X]           (ShiftOff)
+            wants=False, shifts=None -> works[e, d]          (DayOff)
+            wants=True,  shifts=None -> 1 - works[e, d]      (DayOn)
+            wants=True,  shifts=[X]  -> 1 - x[e, d, X]       (ShiftOn)
+            wants=False, shifts=[X]  -> x[e, d, X]           (ShiftOff)
+
+        A request naming several shifts -- ERMGH's four inline <ShiftGroup>
+        ShiftOn requests -- takes the same two rows through a membership
+        literal, which for a single shift is that shift's variable unchanged.
 
         scorer.py rebuilds the same table in plain Python from the roster alone.
         """
         for request in self.instance.requests:
             # Typed as the concrete IntVar both branches produce, not the wide
-            # LinearExprT alias: that alias admits a plain int, which makes the
-            # `else holds` arm of the ternary below a non-expression.
+            # Literal alias: that alias admits a negated literal, which makes the
+            # `1 - holds` arm of the ternary below a non-expression.
             holds: cp_model.IntVar = (
                 self.works[request.employee_id, request.day]
-                if request.shift is None
-                else self.x[request.employee_id, request.day, request.shift]
+                if request.shifts is None
+                else self._in_shifts_literal(
+                    request.employee_id,
+                    request.day,
+                    request.shifts,
+                    "".join(request.shifts),
+                )
             )
             self.penalties.append(
                 PenaltyTerm(
                     group="request",
                     key=(
-                        f"{REQUEST_NAMES[request.wants, request.shift is not None]} "
+                        f"{REQUEST_NAMES[request.wants, request.shifts is not None]} "
                         f"request (weight {request.weight})"
                     ),
                     expression=1 - holds if request.wants else holds,
@@ -612,14 +644,6 @@ def _pin_roster(builder: RosterModel, instance: Instance, path: Path) -> None:
                 )
 
 
-# def write_csv(roster: dict[str, list[str]], num_days: int, path: Path) -> None:
-#     header: str = "employee," + ",".join(f"d{day}" for day in range(num_days))
-#     rows: list[str] = [header] + [
-#         employee_id + "," + ",".join(schedule) for employee_id, schedule in sorted(roster.items())
-#     ]
-#     path.write_text("\n".join(rows) + "\n")
-
-
 def serialize_solution(solution: Solution) -> dict[str, Any]:
     return {
         "status": solution.status,
@@ -638,13 +662,12 @@ def main() -> None:
     raw: Options = read_input()
     parsed: tuple[Instance, Options] = parse_input(raw)
     solution: Solution = solve(parsed)
-    # Written unconditionally. Skipping the write on a run that found no
-    # incumbent left the PREVIOUS run's roster in place, and the follow-up step
-    # problem.txt documents -- `scorer.py solution.csv` -- then scored that stale
-    # roster and printed a cost the reader naturally attributes to the run that
-    # just failed. An empty roster writes the header alone, which scorer.py's
-    # reader rejects by name.
-    # write_csv(solution.roster, parsed[0].num_days, raw.csv_path)
+    # The roster goes out on stdout with everything else; this script writes no
+    # files. The CSV write that used to sit here was removed rather than left
+    # disabled: it wrote to a fixed path, so a run that found no incumbent left
+    # the PREVIOUS run's roster on disk and `scorer.py` then scored that stale
+    # file and printed a cost the reader naturally attributes to the run that
+    # just failed. `scorer.py` still READS a roster CSV, for one written by hand.
     write_output(serialize_solution(solution))
 
 

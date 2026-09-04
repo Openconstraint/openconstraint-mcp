@@ -20,16 +20,18 @@ Reaching the published cost is not itself evidence of correctness; a missing
 constraint and a compensating error can land on it by coincidence. These three
 gates are.
 
-Both instances are gated, and both published rosters are PROVEN OPTIMAL on the
-benchmark site (29 for QMC-2, 894 for BCV-3.46.2), so gates 1 and 2 are graded
-against ground truth rather than against a merely good roster.
+All three instances are gated, and all three published rosters are PROVEN
+OPTIMAL on the benchmark site (29 for QMC-2, 894 for BCV-3.46.2, 779 for ERMGH),
+so gates 1 and 2 are graded against ground truth rather than against a merely
+good roster.
 
 Note what gate 3 does and does not claim. It asserts the model and the scorer
 AGREE on whatever roster the search produced, not that the search found the
-optimum. In practice both instances do reach their published cost in these
-budgets -- QMC-2 proves 29 optimal, BCV-3.46.2 reaches 894 without proving it --
-but a seed that merely found something worse would still pass, and should: an
-agreeing pair of implementations is the property under test.
+optimum. In practice all three instances do reach their published cost in these
+budgets -- QMC-2 and ERMGH prove 29 and 779 optimal, BCV-3.46.2 reaches 894
+without proving it -- but a seed that merely found something worse would still
+pass, and should: an agreeing pair of implementations is the property under
+test.
 
 Run from the repository root:
     uv run examples/nurse_rostering/verify_model.py
@@ -55,7 +57,7 @@ class Case:
     """One instance's three gates, and the published roster they grade against.
 
     Parameterised rather than duplicated so a new rule cannot be added to the
-    model and gated on one instance only. The two differ in the budget gate 3
+    model and gated on one instance only. They differ in the budget gate 3
     gets: BCV-3.46.2 is roughly nine times QMC-2's pattern machinery (1124
     per-employee <Match> instances against 121), and gate 3 only needs an
     incumbent to score, not a good one.
@@ -103,6 +105,29 @@ CASES: tuple[Case, ...] = (
         seeds=(1, 42),
         time_limit=60.0,
     ),
+    Case(
+        name="ERMGH",
+        instance=HERE / "ERMGH.ros",
+        roster=HERE / "ERMGH.Solution.779.roster",
+        total=779,
+        # The whole optimum is cover cost, and every penny of it is charged
+        # against a SKILL-qualified headcount over a <TimePeriod>. Two things
+        # are load-bearing here. That no rule and no request appears is real,
+        # not a gap: all 843 <Match> blocks, all 227 workload limits and all
+        # 1514 requests are satisfied by this roster, so a model that silently
+        # dropped any of those three families would still pass gate 1 -- which
+        # is why verify_parse.py pins their counts and the `$` census instead.
+        # And that the two lines below say "skill": reading a skill block as a
+        # bare <Min>, which is all QMC-2's skill blocks carry, ignores the
+        # <Max>/<Preferred> that every ERMGH block carries and scores this
+        # roster 0.
+        breakdown={
+            "skill Preferred understaffing": 777,
+            "skill Preferred overstaffing": 2,
+        },
+        seeds=(1, 42),
+        time_limit=60.0,
+    ),
 )
 
 
@@ -130,7 +155,6 @@ def _report(ok: bool, message: str) -> bool:
 def _options(case: Case, seed: int, time_limit: float, fix_roster: Path | None = None) -> Options:
     return Options(
         instance_path=case.instance,
-        csv_path=HERE / "verify_scratch.csv",
         time_limit=time_limit,
         workers=8,
         seed=seed,
@@ -200,10 +224,6 @@ def main() -> None:
         if index:
             print()
         passed.extend(run_case(case))
-
-    scratch: Path = HERE / "verify_scratch.csv"
-    if scratch.exists():
-        scratch.unlink()
 
     failures: int = sum(1 for ok in passed if not ok)
     print(f"\n{len(passed) - failures}/{len(passed)} gates passed")

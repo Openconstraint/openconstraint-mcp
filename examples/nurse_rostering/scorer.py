@@ -22,6 +22,7 @@ to minus infinity.
 Run standalone (the instance defaults to QMC-2.ros):
     uv run examples/nurse_rostering/scorer.py QMC-2.Solution.29.roster
     uv run examples/nurse_rostering/scorer.py BCV-3.46.2.Solution.894.roster BCV-3.46.2.ros
+    uv run examples/nurse_rostering/scorer.py ERMGH.Solution.779.roster ERMGH.ros
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from parse_instance import (  # noqa: E402
     Contract,
+    CoverBlock,
     Instance,
     Match,
     Pattern,
@@ -45,7 +47,7 @@ from parse_instance import (  # noqa: E402
 
 OFF: str = "-"
 
-# The request 2x2, keyed by (wants, names a specific shift). Deliberately spelt
+# The request 2x2, keyed by (wants, names shifts). Deliberately spelt
 # out again here rather than imported from model.py: these strings are the keys
 # the two independent breakdowns are compared on, so a shared table would make
 # them agree by construction instead of by both being right.
@@ -93,6 +95,10 @@ def _symbol_matches(symbol: Symbol, assigned: str, shift_groups: dict[str, list[
     if kind == "shift":
         # Covers both a concrete shift ID and the day-off symbol "-".
         return assigned == value
+    if kind == "worked":
+        # The `$` wildcard: any working shift, a day off excluded. See
+        # parse_instance.WORKED_SYMBOL for why it is not "anything at all".
+        return assigned != OFF
     if kind == "group":
         # The group ID is instance-defined; `All` happens to be {E, L, N} here,
         # which excludes "-", so a group symbol never matches a day off.
@@ -208,26 +214,52 @@ def score_employee_rules(
             )
 
 
+def _cover_label(block: CoverBlock) -> str:
+    """How a violation names the block it came from.
+
+    A shift block is identified by its shift; a time-period block by the
+    interval it was written as plus the shifts that resolved out of it, because
+    "shift DH, E" alone would not distinguish 15:30-19:30 from 19:30-20:00.
+    """
+    if block.time_period is None:
+        return f"shift {block.shift}"
+    start, end = block.time_period
+    return f"{start[:5]}-{end[:5]} ({'/'.join(block.shifts)})"
+
+
 def score_cover(
     instance: Instance, roster: Roster, first_weekday: int, breakdown: Breakdown
 ) -> None:
     """Score coverage: the only place headcounts are summed across employees.
 
     Cover is specified per day of the week and expanded across the whole period.
-    A block with a <Skill> constrains how many of that shift's staff hold the
-    skill; a block without one constrains the total headcount. A nurse holding
-    both skills satisfies both skill minima with her single assignment.
+    A block with a <Skill> counts only the staff holding that skill; a block
+    without one counts them all. A nurse holding both skills satisfies both
+    skill minima with her single assignment.
+
+    The Min/Max/Preferred vocabulary is the SAME on both kinds of block. QMC-2's
+    skill blocks happen to carry only a <Min>, which reads as "a skill block is
+    a bare minimum" -- ERMGH refutes that: its skill-1 blocks carry <Max> and
+    <Preferred> and no <Min> at all, and dropping them scores its published
+    cost-779 optimum at 0 because every one of its 98 cover blocks is
+    skill-qualified.
+
+    The headcount a block speaks about is everyone assigned to any shift in
+    `block.shifts` -- one named shift in QMC-2 and BCV-3.46.2, and in ERMGH the
+    set of shifts on duty throughout the block's <TimePeriod>. Summing over the
+    set is safe because an employee works at most one shift a day, so no one is
+    counted twice inside a block.
 
     A <DateSpecificCover> block names one absolute day and REPLACES the weekday
-    block for that (day, shift) -- see `CoverBlock`. Scoring both would charge
+    block for that (day, shifts) -- see `CoverBlock`. Scoring both would charge
     the difference between them twice over.
     """
     skills_of: dict[str, set[str]] = {e.id: set(e.skills) for e in instance.employees}
     # (day, shift) pairs a date-specific block speaks for. Empty for QMC-2,
     # which has no <DateSpecificCover> at all, so the loop below then reduces
     # to the plain weekday match.
-    overridden: set[tuple[int, str]] = {
-        (block.day, block.shift) for block in instance.cover if block.day is not None
+    overridden: set[tuple[int, tuple[str, ...]]] = {
+        (block.day, tuple(block.shifts)) for block in instance.cover if block.day is not None
     }
 
     for day in range(instance.num_days):
@@ -236,43 +268,43 @@ def score_cover(
             if block.day is not None:
                 if block.day != day:
                     continue
-            elif block.weekday != weekday or (day, block.shift) in overridden:
+            elif block.weekday != weekday or (day, tuple(block.shifts)) in overridden:
                 continue
 
             on_shift: list[str] = [
                 employee_id
                 for employee_id, schedule in roster.items()
-                if schedule[day] == block.shift
+                if schedule[day] in block.shifts
             ]
+            where: str = _cover_label(block)
 
-            if block.skill is not None:
-                qualified: int = sum(1 for e in on_shift if block.skill in skills_of[e])
-                shortfall: int = max(0, (block.min or 0) - qualified)
-                penalty: int = shortfall * instance.cover_weights["MinUnderStaffing"]
-                breakdown.add(breakdown.by_cover_type, "skill Min understaffing", penalty)
-                if penalty:
-                    breakdown.violations.append(
-                        f"day {day} shift {block.shift}: {qualified} with {block.skill} "
-                        f"vs min {block.min} = {penalty}"
-                    )
-                continue
+            # A skill block counts a subset of the same headcount, not a
+            # different shift, so the two kinds differ only in who is counted
+            # and in how the penalty is labelled.
+            if block.skill is None:
+                assigned: int = len(on_shift)
+                prefix: str = ""
+                who: str = "staff"
+            else:
+                assigned = sum(1 for e in on_shift if block.skill in skills_of[e])
+                prefix = "skill "
+                who = f"staff with skill {block.skill}"
 
-            assigned: int = len(on_shift)
             if block.min is not None:
-                penalty = max(0, block.min - assigned) * instance.cover_weights["MinUnderStaffing"]
-                breakdown.add(breakdown.by_cover_type, "Min understaffing", penalty)
+                penalty: int = (
+                    max(0, block.min - assigned) * instance.cover_weights["MinUnderStaffing"]
+                )
+                breakdown.add(breakdown.by_cover_type, f"{prefix}Min understaffing", penalty)
                 if penalty:
                     breakdown.violations.append(
-                        f"day {day} shift {block.shift}: {assigned} staff "
-                        f"vs min {block.min} = {penalty}"
+                        f"day {day} {where}: {assigned} {who} vs min {block.min} = {penalty}"
                     )
             if block.max is not None:
                 penalty = max(0, assigned - block.max) * instance.cover_weights["MaxOverStaffing"]
-                breakdown.add(breakdown.by_cover_type, "Max overstaffing", penalty)
+                breakdown.add(breakdown.by_cover_type, f"{prefix}Max overstaffing", penalty)
                 if penalty:
                     breakdown.violations.append(
-                        f"day {day} shift {block.shift}: {assigned} staff "
-                        f"vs max {block.max} = {penalty}"
+                        f"day {day} {where}: {assigned} {who} vs max {block.max} = {penalty}"
                     )
             if block.preferred is not None:
                 # The Preferred penalty applies INSIDE the [Min, Max] band too:
@@ -281,44 +313,44 @@ def score_cover(
                 over: int = max(0, assigned - block.preferred)
                 breakdown.add(
                     breakdown.by_cover_type,
-                    "Preferred understaffing",
+                    f"{prefix}Preferred understaffing",
                     under * instance.cover_weights["PrefUnderStaffing"],
                 )
                 breakdown.add(
                     breakdown.by_cover_type,
-                    "Preferred overstaffing",
+                    f"{prefix}Preferred overstaffing",
                     over * instance.cover_weights["PrefOverStaffing"],
                 )
                 if under or over:
                     breakdown.violations.append(
-                        f"day {day} shift {block.shift}: {assigned} staff "
-                        f"vs preferred {block.preferred}"
+                        f"day {day} {where}: {assigned} {who} vs preferred {block.preferred}"
                     )
 
 
 def score_requests(instance: Instance, roster: Roster, breakdown: Breakdown) -> None:
     """Charge every unmet request, over all four corners of the 2x2.
 
-    A request names either a specific shift or "any shift at all", and either
+    A request names either a set of shifts or "any shift at all", and either
     wants it or wants to avoid it. Whether the day is satisfied therefore
-    reduces to one equality compared against `wants`; the four XML tags need no
-    separate code paths. model.py builds the same 2x2 out of CP-SAT literals
-    from scratch, and the two must land on the same number.
+    reduces to one membership test compared against `wants`; the four XML tags
+    need no separate code paths. model.py builds the same 2x2 out of CP-SAT
+    literals from scratch, and the two must land on the same number.
     """
     for request in instance.requests:
         assigned: str = roster[request.employee_id][request.day]
-        # "any shift at all" is `assigned != OFF`; a named shift is equality.
-        holds: bool = assigned != OFF if request.shift is None else assigned == request.shift
+        # "any shift at all" is `assigned != OFF`; named shifts are membership,
+        # which covers ERMGH's inline <ShiftGroup> requests as well as the
+        # ordinary one-shift kind.
+        holds: bool = assigned != OFF if request.shifts is None else assigned in request.shifts
         if holds == request.wants:
             continue
 
-        name: str = REQUEST_NAMES[request.wants, request.shift is not None]
+        name: str = REQUEST_NAMES[request.wants, request.shifts is not None]
         breakdown.add(
             breakdown.requests, f"{name} request (weight {request.weight})", request.weight
         )
-        wanted: str = (
-            (request.shift or "any shift") if request.wants else f"not {request.shift or 'to work'}"
-        )
+        named: str = "any shift" if request.shifts is None else " or ".join(request.shifts)
+        wanted: str = named if request.wants else f"not {named}"
         breakdown.violations.append(
             f"{request.employee_id}: wanted {wanted} on day {request.day}, "
             f"got {assigned} = {request.weight}"
