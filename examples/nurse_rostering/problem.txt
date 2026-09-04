@@ -276,6 +276,12 @@ Files:
                       model.py -- including `$`.
   model_bounds.py     Same window encoding as model.py plus --upper-bound,
                       --prove and the redundant aggregate cuts.
+  shift_literals.py   The pattern-symbol vocabulary as CP-SAT literals, shared
+                      by the three model files, which had three byte-identical
+                      copies of it. scorer.py keeps its OWN reading in plain
+                      Python, and model_regular.py keeps its own letter-set
+                      reading for the DFA; both restatements are deliberate and
+                      survive.
   scorer.py           The independent scorer. Recomputes every penalty from the
                       instance and a finished roster, and shares no penalty code
                       with model.py -- that independence is what makes agreement
@@ -308,6 +314,69 @@ Reproduce:
   uv run examples/nurse_rostering/scorer.py solution_bcv.csv BCV-3.46.2.ros
   uv run examples/nurse_rostering/scorer.py BCV-3.46.2.Solution.894.roster BCV-3.46.2.ros
   uv run examples/nurse_rostering/scorer.py ERMGH.Solution.779.roster ERMGH.ros
+
+================================================================================
+Four more instances, for the optional-element fallbacks
+================================================================================
+
+The benchmark set has 51 instances in two dialects. The 28 "Date dialect" files
+-- the ones whose requests carry an ISO <Date> -- are the ones this example
+targets, and they are exactly the 28 with a published roster, so every one of
+them arrives with its own golden test. The other 23 (Instance1..Instance24) are
+a genuinely different dialect -- day offsets instead of dates, <Duration>
+instead of <TimeUnits>, per-block cover weights written as attributes, and
+employees carrying several <ContractID> elements -- and are NOT supported.
+
+Of those 28, the parser reads 20 well enough to reproduce the published optimum
+exactly. Most of the gap to the original three was not new semantics at all but
+OPTIONAL ELEMENTS the first three instances all happened to include. Four small
+files ship here to keep each fallback honest, chosen as the smallest instance
+exercising one and having a published optimum to grade against:
+
+  BCDT-Sep.ros    39 KB   optimum  100   no <CoverWeights>; <Match> with no <Weight>
+  GPost.ros       18 KB   optimum    5   <Shift> with no <TimeUnits>
+  Millar-2Shift-DATA1.ros  6 KB  optimum 0   <Employee> with no <Name>
+  QMC-1.ros      139 KB   optimum   13   <ShiftGroupID> in a request
+
+The fallbacks, and why each is a fallback and not a rewrite:
+
+- <TimeUnits> absent -> the shift's CLOCK SPAN in minutes. Twenty-two instances
+  omit the tag. It fires only where the file is silent: QMC-2 states 75 for a
+  shift whose clock span is 90, so deriving a duration the file already gives
+  turns a roster sitting exactly on its 750 boundary into a phantom violation.
+  The fallback also changes the UNIT, to minutes; nothing may compare a duration
+  across instances, which was already true.
+- <Weight> absent on a <Max>/<Min> -> 1.
+- <CoverWeights> absent -> 10 for all four keys. BCDT-Sep is the only instance
+  that omits the element and its published cost-100 optimum pins the value: its
+  rules account for exactly 80 and its cover for two units of Min understaffing,
+  so the weight can only be 10. That is ONE data point, not a documented format
+  rule, which is why verify_parse.py gates it. A declared <CoverWeights> is never
+  topped up key by key -- BCV-3.46.2 names only the two Pref keys and that
+  absence is itself an asserted fact.
+- <Name> absent -> the employee ID. Display only; it never feeds a rule.
+- <ShiftGroupID>L</ShiftGroupID> in a request is a REFERENCE resolved through
+  <ShiftGroups>. It is NOT ERMGH's inline <ShiftGroup>, which spells its members
+  out and is read in place. Three spellings now name a request's shifts, and
+  reading any as another looks up a name that is not there.
+- <StartDate>1996-11-02</StartDate> is the <Start> anchor written as a date.
+  Implemented, but NOT validated against any published optimum: the only
+  instance using it is Ikegami-2Shift-DATA1, which does not yet reproduce.
+
+Eight of the 28 still do not reproduce, and the causes are known, not mysterious:
+
+  Ikegami x4   <Cover> qualified by a <SkillGroup> rather than a single <Skill>
+               (180-450 blocks each), read as unqualified cover and so wildly
+               overcharged. <SkillGroups> is the table that resolves them.
+  HED01, HED01b   overcharged; cause not yet isolated.
+  ORTEC01, ORTEC02   UNDERcharged, 270 scored as 60 -- the dangerous direction,
+               since an under-charge is what a missing rule family looks like.
+
+None of these is implemented, and none is claimed. <FixedAssignments>, which
+seven of them carry, is NOT the cause: it pins cells for a solver and cannot
+change the score of a finished roster.
+
+================================================================================
 
 ERMGH is the easiest of the three for the model despite being the largest:
 model.py proves its optimum of 779 in well under 60 seconds on 8 workers, where

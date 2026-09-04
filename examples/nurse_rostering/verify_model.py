@@ -25,6 +25,10 @@ OPTIMAL on the benchmark site (29 for QMC-2, 894 for BCV-3.46.2, 779 for ERMGH),
 so gates 1 and 2 are graded against ground truth rather than against a merely
 good roster.
 
+Four further instances get gate 1 alone -- see GOLDEN. They exist to keep the
+parser's optional-element fallbacks honest, and gate 1 is exactly the gate that
+catches one silently rescaling a cost.
+
 Note what gate 3 does and does not claim. It asserts the model and the scorer
 AGREE on whatever roster the search produced, not that the search found the
 optimum. In practice all three instances do reach their published cost in these
@@ -131,6 +135,35 @@ CASES: tuple[Case, ...] = (
 )
 
 
+# Instances shipped for gate 1 ALONE: the scorer must reproduce the published
+# optimum. They carry no model gate because they are here to keep the parser's
+# optional-element fallbacks honest, not to exercise the encoding -- and gate 1
+# is the gate that catches a fallback silently rescaling a cost. verify_parse.py
+# asserts WHICH element each one exercises; this asserts the number still lands.
+#
+# Each published roster is the lowest-cost one the benchmark site publishes for
+# that instance.
+GOLDEN: tuple[tuple[str, str, int], ...] = (
+    ("BCDT-Sep", "BCDT-Sep.Solution.100.roster", 100),
+    ("GPost", "GPost.Solution.5.roster", 5),
+    ("Millar-2Shift-DATA1", "Millar-2Shift-DATA1.Solution.0.roster", 0),
+    ("QMC-1", "QMC-1.Solution.13.roster", 13),
+)
+
+
+def run_golden() -> list[bool]:
+    """Gate 1 only, for the fallback instances."""
+    passed: list[bool] = []
+    print("golden: scorer vs. the published optimum, fallback instances")
+    for name, roster, published in GOLDEN:
+        instance: Instance = parse_instance(HERE / f"{name}.ros")
+        total: int = score(instance, read_roster_xml(HERE / roster, instance)).total
+        passed.append(
+            _report(total == published, f"{name:<22} scorer {total:>5}  published {published:>5}")
+        )
+    return passed
+
+
 def _flatten(breakdown: Breakdown) -> dict[str, int]:
     flat: dict[str, int] = {}
     for bucket in (breakdown.by_label, breakdown.by_cover_type, breakdown.requests):
@@ -224,6 +257,9 @@ def main() -> None:
         if index:
             print()
         passed.extend(run_case(case))
+
+    print()
+    passed.extend(run_golden())
 
     failures: int = sum(1 for ok in passed if not ok)
     print(f"\n{len(passed) - failures}/{len(passed)} gates passed")

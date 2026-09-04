@@ -27,12 +27,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from parse_instance import (  # noqa: E402
+    DEFAULT_COVER_WEIGHTS,
     CoverBlock,
     Instance,
     Match,
     Pattern,
     Request,
     WorkloadLimit,
+    _clock_minutes,
     parse_instance,
 )
 
@@ -796,6 +798,108 @@ def verify_ermgh(instance: Instance) -> list[tuple[bool, str]]:
     return results
 
 
+# The four instances that pin the OPTIONAL-ELEMENT fallbacks, and the element
+# each one is here to keep honest. All four reproduce their published optimum
+# exactly, which is what makes them evidence rather than decoration: a fallback
+# that changed a cost would move the total, and verify_model.py would say so.
+FALLBACK_CASES: tuple[tuple[str, str], ...] = (
+    ("BCDT-Sep.ros", "no <CoverWeights> element, and <Match> limits with no <Weight>"),
+    ("GPost.ros", "<Shift> with no <TimeUnits>"),
+    ("Millar-2Shift-DATA1.ros", "<Employee> with no <Name>"),
+    ("QMC-1.ros", "<ShiftGroupID> in a request"),
+)
+
+
+def verify_fallbacks(instances: dict[str, Instance]) -> list[tuple[bool, str]]:
+    """Gate the optional-element fallbacks, on the instances that need them.
+
+    Deliberately narrow. These four files are not here for a full structural
+    census the way the three above are -- each earns its place by being the
+    smallest shipped file that exercises one fallback, so this asserts the
+    fallback fired AND produced the specific value the file implies, never
+    merely that parsing succeeded.
+    """
+    results: list[tuple[bool, str]] = []
+
+    # BCDT-Sep: no <CoverWeights> at all. Its published cost-100 optimum splits
+    # 80 rules + 2 units of Min understaffing, so the default can only be 10.
+    bcdt: Instance = instances["BCDT-Sep.ros"]
+    _check(
+        results,
+        "BCDT-Sep cover weights (all defaulted)",
+        bcdt.cover_weights,
+        dict(DEFAULT_COVER_WEIGHTS),
+    )
+    _check(
+        results,
+        "BCDT-Sep <Match> limits defaulting to weight 1",
+        sum(1 for c in bcdt.contracts for m in c.matches if m.limit.weight == 1),
+        5,
+    )
+    # A declared <CoverWeights> is never topped up: BCV-3.46.2 names only the two
+    # Pref keys and must keep exactly those two.
+    _check(
+        results,
+        "a declared <CoverWeights> is left alone",
+        sorted(instances["BCV-3.46.2.ros"].cover_weights),
+        ["PrefOverStaffing", "PrefUnderStaffing"],
+    )
+
+    # GPost: no <TimeUnits> anywhere, so a duration is the clock span in minutes.
+    gpost: Instance = instances["GPost.ros"]
+    _check(
+        results,
+        "GPost durations are the clock span",
+        gpost.shift_time_units,
+        {
+            shift: (_clock_minutes(end) - _clock_minutes(start)) % 1440 or 1440
+            for shift, (start, end) in gpost.shift_times.items()
+        },
+    )
+    _check(results, "GPost D runs 08:00-17:00 = 540", gpost.shift_time_units["D"], 540)
+    # QMC-2 STATES <TimeUnits> and pays 15 minutes less than its clock span, so
+    # the fallback must not fire there: deriving would read 90 instead of 75.
+    _check(
+        results,
+        "a stated <TimeUnits> is never derived",
+        instances["QMC-2.ros"].shift_time_units["E"],
+        75,
+    )
+
+    # Millar: no <Name>. It falls back to the ID and can never feed a rule.
+    millar: Instance = instances["Millar-2Shift-DATA1.ros"]
+    _check(
+        results,
+        "Millar employee names fall back to the ID",
+        all(e.name == e.id for e in millar.employees),
+        True,
+    )
+
+    # QMC-1: <ShiftGroupID>L</ShiftGroupID> is a REFERENCE resolved through
+    # <ShiftGroups>, unlike ERMGH's inline <ShiftGroup>, which spells its members
+    # out. Reading either as the other looks up a name that is not there, or
+    # ignores members that are.
+    qmc1: Instance = instances["QMC-1.ros"]
+    grouped: list[Request] = [
+        r for r in qmc1.requests if r.shifts is not None and len(r.shifts) > 1
+    ]
+    _check(
+        results,
+        "QMC-1 requests naming a group reference",
+        len(grouped) > 0,
+        True,
+    )
+    defined: set[tuple[str, ...]] = {tuple(v) for v in qmc1.shift_groups.values()}
+    _check(
+        results,
+        "QMC-1 resolves them through <ShiftGroups>",
+        all(tuple(r.shifts or []) in defined for r in grouped),
+        True,
+    )
+
+    return results
+
+
 def _contract_of(instance: Instance, employee_id: str) -> str:
     return next(e.contract_id for e in instance.employees if e.id == employee_id)
 
@@ -821,6 +925,19 @@ def main() -> None:
             print(f"  {'ok  ' if ok else 'FAIL'}  {line}")
         print()
         results.extend(section)
+
+    print("optional-element fallbacks")
+    for filename, pins in FALLBACK_CASES:
+        print(f"  {filename} pins {pins}")
+    loaded: dict[str, Instance] = {
+        name: parse_instance(here / name)
+        for name in [f for f, _ in FALLBACK_CASES] + ["QMC-2.ros", "BCV-3.46.2.ros"]
+    }
+    fallbacks: list[tuple[bool, str]] = verify_fallbacks(loaded)
+    for ok, line in fallbacks:
+        print(f"  {'ok  ' if ok else 'FAIL'}  {line}")
+    print()
+    results.extend(fallbacks)
 
     failures: int = sum(1 for ok, _ in results if not ok)
     print(f"{len(results) - failures}/{len(results)} checks passed")

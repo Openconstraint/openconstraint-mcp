@@ -22,7 +22,7 @@ import pytest
 from examples.nurse_rostering.checker import check_payload
 from examples.nurse_rostering.model import Options, Solution, parse_instance, solve
 from examples.nurse_rostering.scorer import read_roster_xml, score
-from examples.nurse_rostering.verify_parse import verify, verify_ermgh
+from examples.nurse_rostering.verify_parse import verify, verify_ermgh, verify_fallbacks
 
 ROOT = Path(__file__).parents[2]
 EXAMPLE_DIR = ROOT / "examples" / "nurse_rostering"
@@ -184,6 +184,61 @@ def test_ermgh_model_pinned_to_the_published_roster(ermgh) -> None:
 
     assert (solution.status, solution.objective) == ("optimal", ERMGH_TOTAL)
     assert _flatten(*solution.breakdown.values()) == ERMGH_BREAKDOWN
+
+
+# -- optional-element fallbacks ------------------------------------------------
+#
+# Four further instances ship purely to keep the parser's fallbacks honest. Each
+# is the smallest benchmark file exercising one optional element, and each has a
+# published optimum, so a fallback that silently rescaled a cost moves a number
+# here rather than passing quietly.
+
+FALLBACK_GOLDEN = (
+    ("BCDT-Sep", "BCDT-Sep.Solution.100.roster", 100),
+    ("GPost", "GPost.Solution.5.roster", 5),
+    ("Millar-2Shift-DATA1", "Millar-2Shift-DATA1.Solution.0.roster", 0),
+    ("QMC-1", "QMC-1.Solution.13.roster", 13),
+)
+
+
+@pytest.fixture(scope="module")
+def fallback_instances():
+    names = [f"{n}.ros" for n, _, _ in FALLBACK_GOLDEN] + ["QMC-2.ros", "BCV-3.46.2.ros"]
+    return {name: parse_instance(EXAMPLE_DIR / name) for name in names}
+
+
+def test_optional_element_fallbacks(fallback_instances) -> None:
+    failures = [line for ok, line in verify_fallbacks(fallback_instances) if not ok]
+
+    assert failures == []
+
+
+@pytest.mark.parametrize(("name", "roster", "published"), FALLBACK_GOLDEN)
+def test_fallback_instance_reproduces_its_published_optimum(name, roster, published) -> None:
+    """The gate that makes the fallbacks evidence rather than decoration: each
+    default was chosen because it is the value this roster's published cost
+    implies, so a changed default moves the total."""
+    instance = parse_instance(EXAMPLE_DIR / f"{name}.ros")
+
+    total = score(instance, read_roster_xml(EXAMPLE_DIR / roster, instance)).total
+
+    assert total == published
+
+
+def test_a_stated_time_units_is_never_derived_from_the_clock(fallback_instances) -> None:
+    """QMC-2 pays 15 minutes less than every shift's clock span, so deriving a
+    duration it already states reads 90 where the file says 75 -- and a roster
+    sitting exactly on its 750 boundary becomes a phantom violation."""
+    assert fallback_instances["QMC-2.ros"].shift_time_units == {"E": 75, "L": 75, "N": 100}
+
+
+def test_a_declared_cover_weights_block_is_not_topped_up(fallback_instances) -> None:
+    """BCV-3.46.2 declares only the two Pref keys, and that absence is itself an
+    asserted fact. Only a wholly missing element falls back."""
+    assert sorted(fallback_instances["BCV-3.46.2.ros"].cover_weights) == [
+        "PrefOverStaffing",
+        "PrefUnderStaffing",
+    ]
 
 
 # -- <Min>-sense <Match> limits ------------------------------------------------

@@ -69,6 +69,7 @@ from parse_instance import (  # noqa: E402
     Symbol,
     parse_instance,
 )
+from shift_literals import ShiftLiterals  # noqa: E402
 
 OFF: str = "-"
 
@@ -351,6 +352,12 @@ class RosterModel:
         self.daily: dict[tuple[int, str], cp_model.IntVar] = {}
 
         self._build_assignment_variables()
+        # Composed, not inherited: the symbol vocabulary needs only the model and
+        # the two variable tables, and all three model files encoded it
+        # identically. See shift_literals.py for what is deliberately NOT shared.
+        self.literals: ShiftLiterals = ShiftLiterals(
+            self.model, self.x, self.works, instance.shift_types, instance.shift_groups
+        )
         self._build_employee_rules()
         self._build_cover()
         self._build_requests()
@@ -397,62 +404,6 @@ class RosterModel:
         """True when one violation at this weight already costs more than a
         roster we know exists, so no optimal roster can afford it."""
         return self.upper_bound is not None and weight > self.upper_bound
-
-    def _symbol_literal(
-        self, employee_id: str, day: int, symbol: Symbol
-    ) -> cp_model_helper.Literal:
-        """Map one pattern symbol on one day to a single boolean literal.
-
-        Only the window encoding needs this; the DFA path reads letter sets
-        instead. Every symbol reduces to a literal, which is what keeps a
-        window a plain conjunction.
-        """
-        kind: str = symbol["kind"]
-        value: str = symbol["value"]
-
-        if kind == "shift":
-            if value == OFF:
-                return self.works[employee_id, day].Not()
-            return self.x[employee_id, day, value]
-        if kind == "worked":
-            # The `$` wildcard: any working shift, a day off excluded -- which
-            # is exactly what `works` already means.
-            return self.works[employee_id, day]
-
-        if kind == "group":
-            return self._in_group_literal(employee_id, day, value)
-        if kind == "notshift":
-            # "anything except N", a day off included -- the negation of the
-            # single shift literal, NOT "some other working shift".
-            return self.x[employee_id, day, value].Not()
-        if kind == "notgroup":
-            return self._in_group_literal(employee_id, day, value).Not()
-        raise ValueError(f"unknown symbol kind {kind!r}")
-
-    def _in_group_literal(self, employee_id: str, day: int, group: str) -> cp_model.IntVar:
-        """A literal true exactly when that day's assignment lies in `group`."""
-        return self._in_shifts_literal(employee_id, day, self.instance.shift_groups[group], group)
-
-    def _in_shifts_literal(
-        self, employee_id: str, day: int, members: list[str], name: str
-    ) -> cp_model.IntVar:
-        """A literal true exactly when that day's assignment lies in `members`.
-
-        Also reached by ERMGH's inline-<ShiftGroup> requests, which name a set of
-        shifts that is not in <ShiftGroups> at all, so this takes the members
-        rather than a group ID.
-        """
-        if len(members) == 1:
-            # One shift needs no new variable, and this is the common case: every
-            # ordinary ShiftOn/ShiftOff request lands here.
-            return self.x[employee_id, day, members[0]]
-        if set(members) == set(self.instance.shift_types):
-            # The set names every shift type, so "in it" is exactly "worked" --
-            # true of QMC-2's `All` and BCV-3.46.2's `ON` alike.
-            return self.works[employee_id, day]
-        in_group: cp_model.IntVar = self.model.new_bool_var(f"g_{employee_id}_{day}_{name}")
-        self.model.add_max_equality(in_group, [self.x[employee_id, day, s] for s in members])
-        return in_group
 
     def _candidate_starts(self, pattern: Pattern, match: Match) -> list[int]:
         """Days where this pattern may begin, after anchor AND region filtering.
@@ -621,7 +572,8 @@ class RosterModel:
             for pattern in single:
                 starts: list[int] = self._candidate_starts(pattern, match)
                 observed.extend(
-                    self._symbol_literal(employee_id, start, pattern.symbols[0]) for start in starts
+                    self.literals.symbol_literal(employee_id, start, pattern.symbols[0])
+                    for start in starts
                 )
                 observed_upper += len(starts)
                 self.stats["single_symbol_patterns"] += 1
@@ -629,7 +581,7 @@ class RosterModel:
             for pattern in windowed:
                 for start in self._candidate_starts(pattern, match):
                     literals: list[cp_model_helper.Literal] = [
-                        self._symbol_literal(employee_id, start + offset, symbol)
+                        self.literals.symbol_literal(employee_id, start + offset, symbol)
                         for offset, symbol in enumerate(pattern.symbols)
                     ]
                     observed.append(self._hit_variable(employee_id, literals))
@@ -828,7 +780,7 @@ class RosterModel:
             holds: cp_model.IntVar = (
                 self.works[request.employee_id, request.day]
                 if request.shifts is None
-                else self._in_shifts_literal(
+                else self.literals.in_shifts_literal(
                     request.employee_id,
                     request.day,
                     request.shifts,
