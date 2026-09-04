@@ -46,9 +46,9 @@ format:
     uv run ruff check --fix .
     uv run ruff format .
 
-# Type-check the package source.
+# Type-check the package source and the example scripts.
 typecheck:
-    uv run mypy src
+    uv run mypy src examples
 
 # Full local gate: lint + typecheck + test.
 check: lint typecheck test

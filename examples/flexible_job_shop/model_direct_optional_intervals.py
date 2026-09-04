@@ -61,32 +61,34 @@ import json
 import os
 import sys
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
 from ortools.sat.python import cp_model
+from pydantic import BaseModel, ConfigDict, Field
 
 
-@dataclass(frozen=True)
-class Alternative:
+class FrozenModel(BaseModel):
+    """Base for the immutable records passed across this script's function boundary."""
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+
+class Alternative(FrozenModel):
     machine: int
     duration: int
 
 
-@dataclass(frozen=True)
-class TaskSpec:
+class TaskSpec(FrozenModel):
     alternatives: list[Alternative]
 
 
-@dataclass(frozen=True)
-class ProblemInstance:
+class ProblemInstance(FrozenModel):
     jobs: list[list[TaskSpec]]
     num_machines: int
 
 
-@dataclass(frozen=True)
-class ScheduleEntry:
+class ScheduleEntry(FrozenModel):
     job: int
     task: int
     machine: int
@@ -95,14 +97,13 @@ class ScheduleEntry:
     end: int
 
 
-@dataclass(frozen=True)
-class Solution:
+class Solution(FrozenModel):
     status: str
     schedule: list[ScheduleEntry] | None = None
     objective: int | None = None
     best_objective_bound: float | None = None
     instance_name: str = ""
-    stats: dict[str, object] = field(default_factory=dict)
+    stats: dict[str, object] = Field(default_factory=dict)
 
 
 def _data_path() -> Path:
@@ -346,17 +347,7 @@ def serialize_solution(solution: Solution) -> dict[str, Any]:
     if solution.schedule is not None:
         payload_solution = {
             "makespan": solution.objective,
-            "schedule": [
-                {
-                    "job": entry.job,
-                    "task": entry.task,
-                    "machine": entry.machine,
-                    "start": entry.start,
-                    "duration": entry.duration,
-                    "end": entry.end,
-                }
-                for entry in solution.schedule
-            ],
+            "schedule": [entry.model_dump() for entry in solution.schedule],
             "instance": solution.instance_name,
             "num_tasks": len(solution.schedule),
         }

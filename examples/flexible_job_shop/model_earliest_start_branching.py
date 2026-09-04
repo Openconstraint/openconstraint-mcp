@@ -104,31 +104,34 @@ import json
 import os
 import sys
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ortools.sat.python import cp_model
+from pydantic import BaseModel, ConfigDict, Field
 
 
-@dataclass(frozen=True)
-class Alternative:
+class FrozenModel(BaseModel):
+    """Base for the immutable records passed across this script's function boundary."""
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+
+class Alternative(FrozenModel):
     machine: int
     duration: int
 
 
-@dataclass(frozen=True)
-class TaskSpec:
+class TaskSpec(FrozenModel):
     alternatives: list[Alternative]
 
 
-@dataclass(frozen=True)
-class ProblemInstance:
+class ProblemInstance(FrozenModel):
     jobs: list[list[TaskSpec]]
     num_machines: int
 
 
-@dataclass(frozen=True)
-class ScheduleEntry:
+class ScheduleEntry(FrozenModel):
     job: int
     task: int
     machine: int
@@ -137,14 +140,13 @@ class ScheduleEntry:
     end: int
 
 
-@dataclass(frozen=True)
-class Solution:
+class Solution(FrozenModel):
     status: str
     schedule: list[ScheduleEntry] | None = None
     objective: int | None = None
     best_objective_bound: float | None = None
     instance_name: str = ""
-    stats: dict[str, object] = field(default_factory=dict)
+    stats: dict[str, object] = Field(default_factory=dict)
 
 
 def _data_path() -> Path:
@@ -165,11 +167,12 @@ def _results_dir() -> Path | None:
     return (Path(__file__).parent / sys.argv[3]) if len(sys.argv) > 3 else None
 
 
-def read_input(data_path: Path) -> dict:
-    return json.loads(data_path.read_text())
+def read_input(data_path: Path) -> dict[str, Any]:
+    raw: dict[str, Any] = json.loads(data_path.read_text())
+    return raw
 
 
-def parse_input(raw: dict) -> ProblemInstance:
+def parse_input(raw: dict[str, Any]) -> ProblemInstance:
     jobs = [
         [
             TaskSpec(
@@ -198,9 +201,9 @@ def solve(instance: ProblemInstance, time_limit_seconds: float, instance_name: s
 
     Task = collections.namedtuple("Task", "start end")
     tasks: dict[tuple[int, int], Task] = {}
-    machine_to_intervals: dict[int, list] = collections.defaultdict(list)
-    presences: dict[tuple[int, int], list] = {}
-    machine_load_terms: dict[int, list] = collections.defaultdict(list)
+    machine_to_intervals: dict[int, list[cp_model.IntervalVar]] = collections.defaultdict(list)
+    presences: dict[tuple[int, int], list[cp_model.IntVar]] = {}
+    machine_load_terms: dict[int, list[cp_model.LinearExprT]] = collections.defaultdict(list)
 
     # NOTE: this loop's variable-creation order is load-bearing. The two
     # `add_decision_strategy` calls below read variable-creation order, not just
@@ -394,7 +397,7 @@ def solve(instance: ProblemInstance, time_limit_seconds: float, instance_name: s
     )
 
 
-def serialize_solution(solution: Solution) -> dict:
+def serialize_solution(solution: Solution) -> dict[str, Any]:
     # The printed `solution` must CONTAIN the schedule, not describe it: the
     # checked MCP tools build the checker's payload from this stdout object, so a
     # summary that merely points at a saved file leaves the checker with nothing
@@ -404,21 +407,11 @@ def serialize_solution(solution: Solution) -> dict:
     # either: the name is derivable from the formulation and instance already in
     # `stats`, and an absolute path would bake this machine's filesystem into
     # every committed artifact under results/.
-    payload_solution: dict = {}
+    payload_solution: dict[str, Any] = {}
     if solution.schedule is not None:
         payload_solution = {
             "makespan": solution.objective,
-            "schedule": [
-                {
-                    "job": entry.job,
-                    "task": entry.task,
-                    "machine": entry.machine,
-                    "start": entry.start,
-                    "duration": entry.duration,
-                    "end": entry.end,
-                }
-                for entry in solution.schedule
-            ],
+            "schedule": [entry.model_dump() for entry in solution.schedule],
             "instance": solution.instance_name,
             "num_tasks": len(solution.schedule),
         }
@@ -432,7 +425,7 @@ def serialize_solution(solution: Solution) -> dict:
 
 
 def write_output(
-    payload: dict,
+    payload: dict[str, Any],
     results_dir: Path | None,
     data_path: Path,
     formulation: str = "earliest_start_branching",

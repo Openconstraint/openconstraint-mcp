@@ -79,9 +79,10 @@ If `just` is unavailable in your environment, fall back to the underlying `uv ru
 ## Code Style
 
 - **Target Python 3.12** (development happens on 3.14). Avoid 3.13+ syntax and stdlib.
-- **Type hints everywhere.** Public functions get full annotations. `mypy src` must pass.
+- **Type hints everywhere.** Public functions get full annotations. `mypy src examples` must pass — `just typecheck` gates the example scripts alongside the package, so a bare `dict` or `list` annotation in `examples/` fails the build the same way it does in `src/`.
 - **Annotate local-name bindings.** Give every variable declared with a simple name assignment an explicit type. Assignments to existing attributes or container elements rely on the owning object's annotation; Python cannot annotate `for`/comprehension targets or subscript assignments.
 - **Pydantic v2 models** for any structured input or output (MCP tool results, CLI structured output, config). Plain dicts are for ephemeral internal use only.
+- **Pydantic everywhere, dataclasses nowhere.** This extends past the server package to `examples/` and to the worked snippet in `protocol_text/prompts.py`: the typed records a script passes across its `read_input`/`parse_input`/`solve`/`serialize_solution` boundary are Pydantic models deriving from a small local `FrozenModel` base with `model_config = ConfigDict(frozen=True, strict=True)`. `strict=True` is deliberate — it reproduces a dataclass's no-coercion behavior instead of silently widening a `float` into a `Decimal` field. One model kind repo-wide beats a per-file judgment call about whether a record is "complex enough" to deserve validation.
 - **`pathlib.Path`** for filesystem work; do not pass raw strings around as paths.
 - **One responsibility per file.** Files that change together live; split by responsibility, not by technical layer.
 - **Keep functions testable.** Inject dependencies (paths, subprocess runners, clocks) where it makes a function meaningfully easier to mock. Avoid global state.

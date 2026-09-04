@@ -86,6 +86,10 @@ strict = true
 # module-level `x = None` with no annotation.
 disallow_untyped_globals = true
 ignore_missing_imports = true
+# `examples/` holds standalone scripts, not a package, so several basenames repeat
+# across its directories (three `checker.py`, three `model.py`). Without this mypy
+# aborts on "Duplicate module named"; with it each file is keyed by its full path.
+explicit_package_bases = true
 # Off by default in mypy; without it a typeshed `@deprecated` overload (e.g. the
 # `@contextmanager` + `-> Iterator[T]` form) is silently accepted.
 enable_error_code = ["deprecated"]

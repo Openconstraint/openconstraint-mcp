@@ -10,21 +10,26 @@ from __future__ import annotations
 import json
 import math
 import sys
-from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, TypeGuard
 
+from pydantic import BaseModel, ConfigDict
 
-@dataclass(frozen=True)
-class MachineSpec:
+
+class FrozenModel(BaseModel):
+    """Base for the immutable records passed across this checker's function boundary."""
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+
+class MachineSpec(FrozenModel):
     outages: tuple[tuple[int, int], ...]
     first_setups: dict[str, int]
     transitions: dict[str, dict[str, int]]
 
 
-@dataclass(frozen=True)
-class OperationSpec:
+class OperationSpec(FrozenModel):
     job: str
     successors: tuple[str, ...]
     machine_options: dict[str, int]
@@ -33,14 +38,12 @@ class OperationSpec:
     fixed: tuple[str, int] | None
 
 
-@dataclass(frozen=True)
-class Instance:
+class Instance(FrozenModel):
     machines: dict[str, MachineSpec]
     operations: dict[str, OperationSpec]
 
 
-@dataclass(frozen=True)
-class ScheduleEntry:
+class ScheduleEntry(FrozenModel):
     operation: str
     job: str
     machine: str
@@ -53,8 +56,7 @@ class ScheduleEntry:
     end: int
 
 
-@dataclass(frozen=True)
-class SolutionClaim:
+class SolutionClaim(FrozenModel):
     makespan: int
     schedule: list[ScheduleEntry]
 
@@ -154,7 +156,9 @@ def _parse_instance(raw: dict[str, Any]) -> tuple[Instance | None, str | None]:
                 return None, error
             assert targets is not None
             transitions[predecessor] = targets
-        machines[machine_id] = MachineSpec(tuple(outages), first, transitions)
+        machines[machine_id] = MachineSpec(
+            outages=tuple(outages), first_setups=first, transitions=transitions
+        )
 
     raw_operations = raw.get("operations")
     if not isinstance(raw_operations, dict) or not raw_operations:
@@ -224,12 +228,12 @@ def _parse_instance(raw: dict[str, Any]) -> tuple[Instance | None, str | None]:
             fixed = (fixed_machine, fixed_start)
 
         operations[operation_id] = OperationSpec(
-            job,
-            tuple(raw_successors),
-            options,
-            release_time,
-            theta,
-            fixed,
+            job=job,
+            successors=tuple(raw_successors),
+            machine_options=options,
+            release_time=release_time,
+            theta=theta,
+            fixed=fixed,
         )
 
     operation_ids = set(operations)
@@ -279,7 +283,7 @@ def _parse_instance(raw: dict[str, Any]) -> tuple[Instance | None, str | None]:
             if set(targets) != eligible - {source}:
                 return None, f"machine {machine_id!r} has an incomplete setup transition row"
 
-    return Instance(machines, operations), None
+    return Instance(machines=machines, operations=operations), None
 
 
 def _load_solution(value: object) -> tuple[SolutionClaim | None, list[str]]:
@@ -332,7 +336,7 @@ def _load_solution(value: object) -> tuple[SolutionClaim | None, list[str]]:
                 end=raw_entry["end"],
             )
         )
-    return (None, errors) if errors else (SolutionClaim(makespan, schedule), [])
+    return (None, errors) if errors else (SolutionClaim(makespan=makespan, schedule=schedule), [])
 
 
 def _advance_active(start: int, duration: int, outages: tuple[tuple[int, int], ...]) -> int:

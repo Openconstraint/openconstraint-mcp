@@ -901,7 +901,8 @@ def verify_fallbacks(instances: dict[str, Instance]) -> list[tuple[bool, str]]:
 
 
 def _contract_of(instance: Instance, employee_id: str) -> str:
-    return next(e.contract_id for e in instance.employees if e.id == employee_id)
+    contract_id: str = next(e.contract_id for e in instance.employees if e.id == employee_id)
+    return contract_id
 
 
 def main() -> None:

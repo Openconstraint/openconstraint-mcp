@@ -513,27 +513,28 @@ User problem:
      ```
      import json
      import os
-     from dataclasses import dataclass
 
      from ortools.sat.python import cp_model
+     from pydantic import BaseModel, ConfigDict
 
 
-     @dataclass(frozen=True)
-     class Item:
+     class FrozenModel(BaseModel):
+         model_config = ConfigDict(frozen=True, strict=True)
+
+
+     class Item(FrozenModel):
          name: str
          weight: int
          value: int
 
 
-     @dataclass(frozen=True)
-     class ProblemInstance:
+     class ProblemInstance(FrozenModel):
          items: list[Item]
          capacity: int
          min_items: int
 
 
-     @dataclass(frozen=True)
-     class Solution:
+     class Solution(FrozenModel):
          status: str
          selected: list[str] | None = None
          objective: float | None = None
@@ -555,7 +556,11 @@ User problem:
 
      def parse_input(raw: dict) -> ProblemInstance:
          items = [
-             Item(str(row["name"]), int(row["weight"]), int(row["value"]))
+             Item(
+                 name=str(row["name"]),
+                 weight=int(row["weight"]),
+                 value=int(row["value"]),
+             )
              for row in raw["items"]
          ]
          if not items:
@@ -563,7 +568,9 @@ User problem:
          min_items = int(raw["min_items"])
          if not 0 <= min_items <= len(items):
              raise ValueError("min_items is outside the available item count")
-         return ProblemInstance(items, int(raw["capacity"]), min_items)
+         return ProblemInstance(
+             items=items, capacity=int(raw["capacity"]), min_items=min_items
+         )
 
 
      def _solver_config() -> dict:
