@@ -250,10 +250,23 @@ literals, one in plain Python -- and neither imports the other's version.
 
 Files:
 
-  parse_instance.py   XML -> compact JSON/objects. Discriminates the two
-                      meanings of <TimeUnits> by parent node, both kinds of
-                      cover block, and both ways a cover block names its
+  instance.py         The 9 Pydantic records -- Instance, Contract, Match,
+                      Limit, Pattern, WorkloadLimit, Employee, CoverBlock,
+                      Request -- plus load_instance(json_path). Imports no
+                      XML; every runtime script reads an instance through
+                      this file, never parse_instance.py.
+  roster.py           Roster = dict[str, list[str]]; load_roster(path)
+                      loads it. No record class: there is no invariant
+                      beyond "dict of lists of strings" for one to enforce.
+  parse_instance.py   XML -> the instance.py records, written out as
+                      compact JSON. Discriminates the two meanings of
+                      <TimeUnits> by parent node, both kinds of cover
+                      block, and both ways a cover block names its
                       headcount (<Shift> and <TimePeriod>).
+  parse_roster.py     .roster XML -> roster JSON. Houses read_roster_xml,
+                      moved out of scorer.py so scorer.py, checker.py,
+                      verify_model.py and every model's --fix-roster take
+                      roster input from JSON only, never XML.
   verify_parse.py     Gate: asserts each parse reproduces every published count.
                       QMC-2 (19 employees, 121 <Match>, 235 <Pattern>, 52
                       <Cover>, 223+155 requests, the <Weight> histogram),
@@ -286,7 +299,7 @@ Files:
                       instance and a finished roster, and shares no penalty code
                       with model.py -- that independence is what makes agreement
                       between the two mean anything. Takes the instance as an
-                      optional second argument, defaulting to QMC-2.ros.
+                      optional second argument, defaulting to QMC-2.json.
   checker.py          scorer.py wrapped in the MCP checker protocol: rejects
                       unless the model's objective equals the recomputed total.
                       Needs no per-instance code -- it grades whatever `problem`
@@ -301,19 +314,27 @@ Files:
                       stdout with everything else -- so these two are static
                       files, not the output of the last run.
   solution_bcv.csv    The same, 46 x 26, for BCV-3.46.2.
+  *.json              14 committed artifacts: <name>.json for each of the 7
+                      instances (parse_instance.py) and
+                      <name>.Solution.<n>.json for each of the 7 published
+                      rosters (parse_roster.py). Regenerating either must
+                      reproduce the committed bytes -- gated in
+                      tests/examples/test_nurse_rostering.py -- so these
+                      cannot silently drift from the converters that
+                      produced them.
 
 Reproduce:
 
   uv run examples/nurse_rostering/verify_parse.py
   uv run examples/nurse_rostering/verify_model.py
   uv run examples/nurse_rostering/model.py --time-limit 300
-  uv run examples/nurse_rostering/model.py --instance BCV-3.46.2.ros --time-limit 300
-  uv run examples/nurse_rostering/model.py --instance ERMGH.ros --time-limit 300
+  uv run examples/nurse_rostering/model.py --instance BCV-3.46.2.json --time-limit 300
+  uv run examples/nurse_rostering/model.py --instance ERMGH.json --time-limit 300
   uv run examples/nurse_rostering/scorer.py solution.csv          # a CSV roster
-  uv run examples/nurse_rostering/scorer.py QMC-2.Solution.29.roster
-  uv run examples/nurse_rostering/scorer.py solution_bcv.csv BCV-3.46.2.ros
-  uv run examples/nurse_rostering/scorer.py BCV-3.46.2.Solution.894.roster BCV-3.46.2.ros
-  uv run examples/nurse_rostering/scorer.py ERMGH.Solution.779.roster ERMGH.ros
+  uv run examples/nurse_rostering/scorer.py QMC-2.Solution.29.json
+  uv run examples/nurse_rostering/scorer.py solution_bcv.csv BCV-3.46.2.json
+  uv run examples/nurse_rostering/scorer.py BCV-3.46.2.Solution.894.json BCV-3.46.2.json
+  uv run examples/nurse_rostering/scorer.py ERMGH.Solution.779.json ERMGH.json
 
 ================================================================================
 Four more instances, for the optional-element fallbacks

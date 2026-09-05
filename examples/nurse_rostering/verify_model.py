@@ -49,9 +49,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from instance import Instance, load_instance  # noqa: E402
 from model import Options, Solution, solve  # noqa: E402
-from parse_instance import Instance, parse_instance  # noqa: E402
-from scorer import Breakdown, read_roster_xml, score  # noqa: E402
+from roster import load_roster  # noqa: E402
+from scorer import Breakdown, score  # noqa: E402
 
 HERE: Path = Path(__file__).parent
 
@@ -79,8 +80,8 @@ class Case:
 CASES: tuple[Case, ...] = (
     Case(
         name="QMC-2",
-        instance=HERE / "QMC-2.ros",
-        roster=HERE / "QMC-2.Solution.29.roster",
+        instance=HERE / "QMC-2.json",
+        roster=HERE / "QMC-2.Solution.29.json",
         total=29,
         breakdown={
             "ShiftOn request (weight 1)": 24,
@@ -93,8 +94,8 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="BCV-3.46.2",
-        instance=HERE / "BCV-3.46.2.ros",
-        roster=HERE / "BCV-3.46.2.Solution.894.roster",
+        instance=HERE / "BCV-3.46.2.json",
+        roster=HERE / "BCV-3.46.2.Solution.894.json",
         total=894,
         # Every cover block scores zero, which is the load-bearing detail: at
         # PrefUnder/PrefOverStaffing = 10000 a single unit of deviation would
@@ -111,8 +112,8 @@ CASES: tuple[Case, ...] = (
     ),
     Case(
         name="ERMGH",
-        instance=HERE / "ERMGH.ros",
-        roster=HERE / "ERMGH.Solution.779.roster",
+        instance=HERE / "ERMGH.json",
+        roster=HERE / "ERMGH.Solution.779.json",
         total=779,
         # The whole optimum is cover cost, and every penny of it is charged
         # against a SKILL-qualified headcount over a <TimePeriod>. Two things
@@ -144,10 +145,10 @@ CASES: tuple[Case, ...] = (
 # Each published roster is the lowest-cost one the benchmark site publishes for
 # that instance.
 GOLDEN: tuple[tuple[str, str, int], ...] = (
-    ("BCDT-Sep", "BCDT-Sep.Solution.100.roster", 100),
-    ("GPost", "GPost.Solution.5.roster", 5),
-    ("Millar-2Shift-DATA1", "Millar-2Shift-DATA1.Solution.0.roster", 0),
-    ("QMC-1", "QMC-1.Solution.13.roster", 13),
+    ("BCDT-Sep", "BCDT-Sep.Solution.100.json", 100),
+    ("GPost", "GPost.Solution.5.json", 5),
+    ("Millar-2Shift-DATA1", "Millar-2Shift-DATA1.Solution.0.json", 0),
+    ("QMC-1", "QMC-1.Solution.13.json", 13),
 )
 
 
@@ -156,8 +157,8 @@ def run_golden() -> list[bool]:
     passed: list[bool] = []
     print("golden: scorer vs. the published optimum, fallback instances")
     for name, roster, published in GOLDEN:
-        instance: Instance = parse_instance(HERE / f"{name}.ros")
-        total: int = score(instance, read_roster_xml(HERE / roster, instance)).total
+        instance: Instance = load_instance(HERE / f"{name}.json")
+        total: int = score(instance, load_roster(HERE / roster)).total
         passed.append(
             _report(total == published, f"{name:<22} scorer {total:>5}  published {published:>5}")
         )
@@ -198,11 +199,11 @@ def _options(case: Case, seed: int, time_limit: float, fix_roster: Path | None =
 
 def run_case(case: Case) -> list[bool]:
     """Run all three gates for one instance and report each line."""
-    instance: Instance = parse_instance(case.instance)
+    instance: Instance = load_instance(case.instance)
     passed: list[bool] = []
 
     print(f"{case.name} -- gate 1: scorer vs. the published cost-{case.total} roster")
-    golden: Breakdown = score(instance, read_roster_xml(case.roster, instance))
+    golden: Breakdown = score(instance, load_roster(case.roster))
     passed.append(
         _report(
             golden.total == case.total, f"scorer total = {golden.total} (expected {case.total})"

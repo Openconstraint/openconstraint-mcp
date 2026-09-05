@@ -24,8 +24,8 @@ both of the deliberate restatements standing.
 
 from __future__ import annotations
 
+from instance import Symbol
 from ortools.sat.python import cp_model, cp_model_helper
-from parse_instance import Symbol
 
 OFF: str = "-"
 

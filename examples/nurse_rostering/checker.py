@@ -15,8 +15,9 @@ Checker protocol:
 - Payload keys: problem (str|null), solution (dict), objective (float|null),
   solver_status (str). Admits solver_status in {"optimal", "feasible",
   "timeout"} and treats every other value as ungradeable. A null `problem`
-  selects the bundled QMC-2.ros; a non-null one must be a path to a `.ros` file,
-  because grading against a substituted default is worse than not grading.
+  selects the bundled QMC-2.json; a non-null one must be a path to a `.json`
+  instance file, because grading against a substituted default is worse than
+  not grading.
 - Prints exactly one JSON object as its final stdout line:
   {"status": "accepted"|"rejected"|"error", "errors": [...], "details": {}}
 
@@ -39,11 +40,11 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from parse_instance import Instance, parse_instance  # noqa: E402
+from instance import Instance, load_instance  # noqa: E402
 from scorer import OFF, Breakdown, score  # noqa: E402
 
 ACCEPT_STATUSES: frozenset[str] = frozenset({"optimal", "feasible", "timeout"})
-DEFAULT_INSTANCE: Path = Path(__file__).parent / "QMC-2.ros"
+DEFAULT_INSTANCE: Path = Path(__file__).parent / "QMC-2.json"
 
 
 def _verdict(status: str, errors: list[str], details: dict[str, Any]) -> dict[str, Any]:
@@ -54,13 +55,13 @@ def _parse_at(path: Path) -> tuple[Instance | None, str | None]:
     if not path.is_file():
         return None, f"instance file not found: {path}"
     try:
-        return parse_instance(path), None
+        return load_instance(path), None
     except Exception as exc:  # noqa: BLE001 -- any parse failure is ungradeable
         return None, f"could not parse instance {path}: {exc}"
 
 
 def _load_instance(problem: object) -> tuple[Instance | None, str | None]:
-    """Resolve the instance: a `.ros` path in `problem`, else the sibling QMC-2.ros.
+    """Resolve the instance: a `.json` path in `problem`, else the sibling QMC-2.json.
 
     An ABSENT `problem` means "grade against the bundled QMC-2", which is what a
     `run_cpsat_python_file_checked` call on this example sends. A `problem` that
@@ -74,19 +75,19 @@ def _load_instance(problem: object) -> tuple[Instance | None, str | None]:
         return _parse_at(DEFAULT_INSTANCE)
     if not isinstance(problem, str):
         return None, (
-            f"payload.problem must be a path to a .ros file or null, got {type(problem).__name__}"
+            f"payload.problem must be a path to a .json file or null, got {type(problem).__name__}"
         )
 
     text: str = problem.strip()
     if not text:
         return _parse_at(DEFAULT_INSTANCE)
-    if not text.endswith(".ros"):
-        # Truncated: `problem` may carry a whole XML document, and a checker
-        # error message is not the place to echo 119 KB of it back.
+    if not text.endswith(".json"):
+        # Truncated: `problem` may carry a whole document, and a checker
+        # error message is not the place to echo it back in full.
         shown: str = text if len(text) <= 80 else f"{text[:77]}..."
         return None, (
-            f"payload.problem must be a path to a SchedulingPeriod .ros file "
-            f"(or null for the bundled {DEFAULT_INSTANCE.name}), got {shown!r}"
+            f"payload.problem must be a path to a nurse-rostering instance .json "
+            f"file (or null for the bundled {DEFAULT_INSTANCE.name}), got {shown!r}"
         )
 
     candidate: Path = Path(text)

@@ -62,9 +62,10 @@ of the shipped `examples/` directories follow it internally: `examples/job_shop/
 `examples/flexible_job_shop/` (with the six self-contained `model*.py`
 formulations described below), `examples/online_printing_shop/` (whose
 `models.py` also owns its typed OPS data contract), and
-`examples/nurse_rostering/` (which parses its instance from XML into
-dataclasses and pairs that record with a frozen `Options` record across
-`solve()`). They follow the same
+`examples/nurse_rostering/` (which loads its instance from JSON into frozen
+Pydantic records and pairs that record with a frozen `Options` record across
+`solve()`; a separate offline converter turns the benchmark's XML into that
+JSON, so the runtime path itself never touches XML). They follow the same
 `read_input`/`parse_input`/`solve`/`serialize_solution`/`write_output` spine,
 but `read_input()` resolves its instance from `sys.argv` (the ARGV or
 RELATIVE-FILE input mode `CPSAT_SCRIPT_INPUT_GUIDANCE` documents) rather than

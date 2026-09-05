@@ -42,7 +42,7 @@ that optimum exactly, and its breakdown must match scorer.py's.
 
 Run from the repository root:
     uv run examples/nurse_rostering/model_regular.py \
-        --instance BCV-3.46.2.ros --upper-bound 894 --time-limit 600
+        --instance BCV-3.46.2.json --upper-bound 894 --time-limit 600
 """
 
 from __future__ import annotations
@@ -60,14 +60,14 @@ from ortools.sat.python import cp_model, cp_model_helper
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from parse_instance import (  # noqa: E402
+from instance import (  # noqa: E402
     Contract,
     Instance,
     Limit,
     Match,
     Pattern,
     Symbol,
-    parse_instance,
+    load_instance,
 )
 from shift_literals import ShiftLiterals  # noqa: E402
 
@@ -122,7 +122,7 @@ class Options:
 
 def read_input() -> Options:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--instance", default="QMC-2.ros")
+    parser.add_argument("--instance", default="QMC-2.json")
     parser.add_argument("--time-limit", type=float, default=300.0)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--seed", type=int, default=42)
@@ -185,7 +185,7 @@ def read_input() -> Options:
 
 
 def parse_input(raw: Options) -> tuple[Instance, Options]:
-    return parse_instance(raw.instance_path), raw
+    return load_instance(raw.instance_path), raw
 
 
 # -- the regular layer -----------------------------------------------------
@@ -901,14 +901,18 @@ def solve(parsed: tuple[Instance, Options]) -> Solution:
 def _pin_roster(builder: RosterModel, instance: Instance, path: Path) -> None:
     """Freeze every assignment to a given roster.
 
-    Only the roster READER is borrowed from scorer.py -- reading a file is not
+    Only the roster READERS are borrowed from scorer.py and roster.py -- reading a file is not
     scoring, and the penalty logic on both sides stays independent, which is the
     whole reason the cross-check means anything.
     """
-    from scorer import read_roster_csv, read_roster_xml
+    from roster import load_roster
+    from scorer import read_roster_csv
 
-    reader = read_roster_csv if path.suffix == ".csv" else read_roster_xml
-    roster: dict[str, list[str]] = reader(path, instance)
+    roster: dict[str, list[str]]
+    if path.suffix == ".csv":
+        roster = read_roster_csv(path, instance)
+    else:
+        roster = load_roster(path)
 
     for employee in instance.employees:
         for day in range(instance.num_days):

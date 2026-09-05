@@ -9,25 +9,43 @@ four-seed agreement gate stays in `verify_model.py`.
 
 Every import routes through the example's own modules on purpose. Those modules
 put their own directory on `sys.path` and import each other flatly (`from
-parse_instance import ...`), so `examples.nurse_rostering.model.parse_instance`
-and a direct `examples.nurse_rostering.parse_instance` import resolve to two
-distinct module objects with two distinct sets of dataclasses. Taking
-`parse_instance` from `model` keeps this file on the same copy the example uses.
+instance import ...`), so `examples.nurse_rostering.model.load_instance` and a
+direct `examples.nurse_rostering.instance` import resolve to two distinct
+module objects with two distinct `Instance` classes. Taking `load_instance`
+from `model` keeps this file on the same copy the example uses. `parse_instance`
+(the XML function, for the parser-fidelity tests below) is taken the same way,
+from `verify_parse`, which imports it flatly too. `Roster` is a plain dict, not
+a class, so `load_roster` carries no such hazard and is imported directly.
+
+Model/scorer/checker tests read the committed JSON (`load_instance`,
+`load_roster`); parser-fidelity tests keep parsing the `.ros`/`.roster` XML
+directly (`parse_instance`, `read_roster_xml`), since they exist to catch a
+misreading of the XML format, not a JSON round-trip.
 """
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
 
 from examples.nurse_rostering.checker import check_payload
-from examples.nurse_rostering.model import Options, Solution, parse_instance, solve
-from examples.nurse_rostering.scorer import read_roster_xml, score
-from examples.nurse_rostering.verify_parse import verify, verify_ermgh, verify_fallbacks
+from examples.nurse_rostering.model import Options, Solution, load_instance, solve
+from examples.nurse_rostering.parse_roster import read_roster_xml
+from examples.nurse_rostering.roster import load_roster
+from examples.nurse_rostering.scorer import score
+from examples.nurse_rostering.verify_parse import (
+    parse_instance,
+    verify,
+    verify_ermgh,
+    verify_fallbacks,
+)
 
 ROOT = Path(__file__).parents[2]
 EXAMPLE_DIR = ROOT / "examples" / "nurse_rostering"
-INSTANCE_PATH = EXAMPLE_DIR / "QMC-2.ros"
-PUBLISHED_ROSTER = EXAMPLE_DIR / "QMC-2.Solution.29.roster"
+INSTANCE_XML_PATH = EXAMPLE_DIR / "QMC-2.ros"
+INSTANCE_PATH = EXAMPLE_DIR / "QMC-2.json"
+PUBLISHED_ROSTER = EXAMPLE_DIR / "QMC-2.Solution.29.json"
 
 PUBLISHED_TOTAL = 29
 PUBLISHED_BREAKDOWN = {
@@ -40,8 +58,9 @@ PUBLISHED_BREAKDOWN = {
 # ERMGH, the third instance, carries the format corners QMC-2 has none of:
 # <TimePeriod> cover, skill blocks with <Max>/<Preferred>, the `$` wildcard and
 # inline-<ShiftGroup> requests. Its published cost-779 roster is proven optimal.
-ERMGH_PATH = EXAMPLE_DIR / "ERMGH.ros"
-ERMGH_ROSTER = EXAMPLE_DIR / "ERMGH.Solution.779.roster"
+ERMGH_XML_PATH = EXAMPLE_DIR / "ERMGH.ros"
+ERMGH_PATH = EXAMPLE_DIR / "ERMGH.json"
+ERMGH_ROSTER = EXAMPLE_DIR / "ERMGH.Solution.779.json"
 ERMGH_TOTAL = 779
 ERMGH_BREAKDOWN = {
     "skill Preferred understaffing": 777,
@@ -50,13 +69,19 @@ ERMGH_BREAKDOWN = {
 
 
 @pytest.fixture(scope="module")
-def instance():
-    return parse_instance(INSTANCE_PATH)
+def xml_instance():
+    """The XML-parsed instance, for tests exercising the converter itself."""
+    return parse_instance(INSTANCE_XML_PATH)
 
 
 @pytest.fixture(scope="module")
-def published_roster(instance):
-    return read_roster_xml(PUBLISHED_ROSTER, instance)
+def instance():
+    return load_instance(INSTANCE_PATH)
+
+
+@pytest.fixture(scope="module")
+def published_roster():
+    return load_roster(PUBLISHED_ROSTER)
 
 
 def _options(instance_path: Path, fix_roster: Path | None = None) -> Options:
@@ -78,8 +103,8 @@ def _flatten(*buckets: dict[str, int]) -> dict[str, int]:
     return flat
 
 
-def test_parse_reproduces_every_published_count(instance) -> None:
-    failures = [line for ok, line in verify(instance) if not ok]
+def test_parse_reproduces_every_published_count(xml_instance) -> None:
+    failures = [line for ok, line in verify(xml_instance) if not ok]
 
     assert failures == []
 
@@ -122,25 +147,31 @@ def test_model_pinned_breakdown_matches_the_scorer_label_for_label(instance) -> 
 
 
 @pytest.fixture(scope="module")
-def ermgh():
-    return parse_instance(ERMGH_PATH)
+def ermgh_xml():
+    """The XML-parsed instance, for tests exercising the converter itself."""
+    return parse_instance(ERMGH_XML_PATH)
 
 
 @pytest.fixture(scope="module")
-def ermgh_roster(ermgh):
-    return read_roster_xml(ERMGH_ROSTER, ermgh)
+def ermgh():
+    return load_instance(ERMGH_PATH)
 
 
-def test_ermgh_parse_reproduces_every_published_count(ermgh) -> None:
-    failures = [line for ok, line in verify_ermgh(ermgh) if not ok]
+@pytest.fixture(scope="module")
+def ermgh_roster():
+    return load_roster(ERMGH_ROSTER)
+
+
+def test_ermgh_parse_reproduces_every_published_count(ermgh_xml) -> None:
+    failures = [line for ok, line in verify_ermgh(ermgh_xml) if not ok]
 
     assert failures == []
 
 
-def test_ermgh_time_period_cover_resolves_to_the_shifts_on_duty_throughout(ermgh) -> None:
+def test_ermgh_time_period_cover_resolves_to_the_shifts_on_duty_throughout(ermgh_xml) -> None:
     """Containment, not overlap. E starts at 15:30 and so does not staff
     12:00-15:30; DH runs 12:00-20:00 and does staff 15:30-19:30."""
-    resolved = {block.time_period: tuple(block.shifts) for block in ermgh.cover}
+    resolved = {block.time_period: tuple(block.shifts) for block in ermgh_xml.cover}
 
     assert resolved == {
         ("07:30:00", "11:30:00"): ("D",),
@@ -153,11 +184,13 @@ def test_ermgh_time_period_cover_resolves_to_the_shifts_on_duty_throughout(ermgh
     }
 
 
-def test_ermgh_dollar_is_a_wildcard_and_not_a_shift_named_dollar(ermgh) -> None:
+def test_ermgh_dollar_is_a_wildcard_and_not_a_shift_named_dollar(ermgh_xml) -> None:
     """`<Shift>$</Shift>` must parse to its own kind. As a shift ID it matches
     nothing, every rule scores 0, and the published optimum STILL totals 779 --
     so only the symbol census catches it, never the total."""
-    symbols = [s for c in ermgh.contracts for m in c.matches for p in m.patterns for s in p.symbols]
+    symbols = [
+        s for c in ermgh_xml.contracts for m in c.matches for p in m.patterns for s in p.symbols
+    ]
 
     assert sum(1 for s in symbols if s["kind"] == "worked") == 1288
     assert [s for s in symbols if s["kind"] == "shift" and s["value"] == "$"] == []
@@ -255,7 +288,7 @@ def test_a_declared_cover_weights_block_is_not_topped_up(fallback_instances) -> 
 
 def _with_min_sense_match(tmp_path: Path, region: str, count: int) -> Path:
     """QMC-2 with contract A's first `No N-E` <Max> block swapped for a <Min> one."""
-    xml = INSTANCE_PATH.read_text()
+    xml = INSTANCE_XML_PATH.read_text()
     mark = xml.index("No N-E")
     lo = xml.rindex("<Match>", 0, mark)
     hi = xml.index("</Match>", mark) + len("</Match>")
@@ -332,13 +365,13 @@ def test_checker_rejects_an_objective_the_roster_does_not_support(
     assert result["status"] == "rejected"
 
 
-def test_checker_resolves_a_ros_path_in_problem(published_roster) -> None:
-    result = check_payload(_payload(published_roster, PUBLISHED_TOTAL, problem="QMC-2.ros"))
+def test_checker_resolves_a_json_path_in_problem(published_roster) -> None:
+    result = check_payload(_payload(published_roster, PUBLISHED_TOTAL, problem="QMC-2.json"))
 
     assert result["status"] == "accepted", result["errors"]
 
 
-def test_checker_errors_when_problem_is_not_a_ros_path(published_roster) -> None:
+def test_checker_errors_when_problem_is_not_a_json_path(published_roster) -> None:
     """Falling back to the bundled instance would grade a payload that names a
     different problem against QMC-2's rules and return a confident verdict."""
     result = check_payload(
@@ -346,3 +379,113 @@ def test_checker_errors_when_problem_is_not_a_ros_path(published_roster) -> None
     )
 
     assert result["status"] == "error"
+
+
+# -- regeneration ---------------------------------------------------------
+#
+# Re-parsing every .ros/.roster file must reproduce the committed JSON
+# byte-for-byte, so the committed instance/roster files -- the ones every
+# runtime script actually reads -- cannot silently drift from the converters
+# that produced them.
+
+ALL_INSTANCE_NAMES = (
+    "BCDT-Sep",
+    "BCV-3.46.2",
+    "ERMGH",
+    "GPost",
+    "Millar-2Shift-DATA1",
+    "QMC-1",
+    "QMC-2",
+)
+
+ALL_ROSTERS = (
+    ("BCDT-Sep", "BCDT-Sep.Solution.100.roster"),
+    ("BCV-3.46.2", "BCV-3.46.2.Solution.894.roster"),
+    ("ERMGH", "ERMGH.Solution.779.roster"),
+    ("GPost", "GPost.Solution.5.roster"),
+    ("Millar-2Shift-DATA1", "Millar-2Shift-DATA1.Solution.0.roster"),
+    ("QMC-1", "QMC-1.Solution.13.roster"),
+    ("QMC-2", "QMC-2.Solution.29.roster"),
+)
+
+
+@pytest.mark.parametrize("name", ALL_INSTANCE_NAMES)
+def test_instance_json_matches_a_fresh_parse(name) -> None:
+    fresh = parse_instance(EXAMPLE_DIR / f"{name}.ros").model_dump_json() + "\n"
+    committed = (EXAMPLE_DIR / f"{name}.json").read_text()
+
+    assert fresh == committed
+
+
+@pytest.mark.parametrize(("name", "roster_file"), ALL_ROSTERS)
+def test_roster_json_matches_a_fresh_parse(name, roster_file) -> None:
+    inst = parse_instance(EXAMPLE_DIR / f"{name}.ros")
+    fresh = json.dumps(read_roster_xml(EXAMPLE_DIR / roster_file, inst)) + "\n"
+    committed = (EXAMPLE_DIR / roster_file).with_suffix(".json").read_text()
+
+    assert fresh == committed
+
+
+# -- pre-migration baseline ----------------------------------------------------
+#
+# The regeneration tests above compare the POST-migration parser to JSON the
+# POST-migration parser produced -- exactly the circular check the plan's task 0
+# exists to prevent: a dropped field or a changed default would appear
+# identically on both sides and still pass. These digests are the other half:
+# they were captured from the PRE-migration parser at BASE_SHA
+# (a45afb5945ca1a009c37b6578b83f55484e26014), over the dataclass-based Instance
+# and the roster dict that code produced, so a genuine before/after comparison
+# survives here even though the record classes were rebuilt as Pydantic models.
+#
+# The digest is over the CANONICAL form, not the committed bytes: committed
+# instance/roster files are `model_dump_json()` / `json.dumps()` output in
+# declaration/insertion order, while the baseline was hashed as
+# `json.dumps(payload, sort_keys=True, ensure_ascii=False) + "\n"`. Each test
+# below re-canonicalizes the committed artifact the same way before hashing, so
+# a real content change still fails it even though key order differs.
+#
+# Regenerate (read-only, run at BASE_SHA with a clean tree):
+#   sys.path.insert(0, ".../examples/nurse_rostering")
+#   from parse_instance import parse_instance; from scorer import read_roster_xml
+#   canonical(dataclasses.asdict(parse_instance(f"{name}.ros")))  # instances
+#   canonical(read_roster_xml(roster_file, instance))             # rosters
+
+BASELINE_INSTANCE_SHA256 = {
+    "BCDT-Sep": "19963d6d36d7ed7b9b253b5bedf5a4912f827218828e32d6d3b3dff8b7d4ad80",
+    "BCV-3.46.2": "5305f93e14c97b4f8fa97942a268311c2999a26d7a8b692505acb5670a30b72d",
+    "ERMGH": "88f4aa27aed563f257520a115eb5e8b8f13e9d822c6223ea29bc04ece0e2d22b",
+    "GPost": "48bd6a35bbbfa29eb237159554c0cc14c5265a024ca187e069ed5392f5e5649f",
+    "Millar-2Shift-DATA1": "59435d0429cf77121456e1d730c7de8b4625297b21231c8cc82aa185f3d6fe28",
+    "QMC-1": "91479a2db386ec8acb4ed0275a7f383a4f1d89ed24ec8d8b408130efc9dcafca",
+    "QMC-2": "fc0dd09f91277617f671eca1ce1232e60b95b9cf860670b82a4a78bcc44def40",
+}
+
+BASELINE_ROSTER_SHA256 = {
+    "BCDT-Sep": "1f26324cbbef7e44962f00abb22bf5ea5551dea6d3e3c9bc2d37a6275fbfda71",
+    "BCV-3.46.2": "78f24927f48f63f0db67c42ee515e27b597c593ffbfdc028a3294c718e6ea556",
+    "ERMGH": "cdd86e63a7cfdf3531a61aabe81698b0c336a4078ef06467810c2cf78e1c845f",
+    "GPost": "acb28390d655c8f76b224a2a6216e14580c29fd804251d462fe025b3e0704abb",
+    "Millar-2Shift-DATA1": "392b65837dc3250bd93635108350d3d26e2e6acd24779d7f2a5a32ee25861451",
+    "QMC-1": "3a3bdc6f727814b47bb80fa86e7d5745413228b016bedc5d16cab31e80113751",
+    "QMC-2": "cb00102199595fcbabc35916180ddf2e86e02abca83036251df5fe82a3851e0a",
+}
+
+
+def _canonical_sha256(payload: object) -> str:
+    text = json.dumps(payload, sort_keys=True, ensure_ascii=False) + "\n"
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+@pytest.mark.parametrize("name", ALL_INSTANCE_NAMES)
+def test_committed_instance_matches_the_pre_migration_baseline(name) -> None:
+    payload = json.loads((EXAMPLE_DIR / f"{name}.json").read_text())
+
+    assert _canonical_sha256(payload) == BASELINE_INSTANCE_SHA256[name]
+
+
+@pytest.mark.parametrize(("name", "roster_file"), ALL_ROSTERS)
+def test_committed_roster_matches_the_pre_migration_baseline(name, roster_file) -> None:
+    committed_path = (EXAMPLE_DIR / roster_file).with_suffix(".json")
+    payload = json.loads(committed_path.read_text())
+
+    assert _canonical_sha256(payload) == BASELINE_ROSTER_SHA256[name]

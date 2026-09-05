@@ -19,10 +19,10 @@ tag was written; it only denies credit for over-satisfying a rule. Dropping it
 lets an over-satisfied rule score a negative penalty and the objective runs off
 to minus infinity.
 
-Run standalone (the instance defaults to QMC-2.ros):
-    uv run examples/nurse_rostering/scorer.py QMC-2.Solution.29.roster
-    uv run examples/nurse_rostering/scorer.py BCV-3.46.2.Solution.894.roster BCV-3.46.2.ros
-    uv run examples/nurse_rostering/scorer.py ERMGH.Solution.779.roster ERMGH.ros
+Run standalone (the instance defaults to QMC-2.json):
+    uv run examples/nurse_rostering/scorer.py QMC-2.Solution.29.json
+    uv run examples/nurse_rostering/scorer.py BCV-3.46.2.Solution.894.json BCV-3.46.2.json
+    uv run examples/nurse_rostering/scorer.py ERMGH.Solution.779.json ERMGH.json
 """
 
 from __future__ import annotations
@@ -31,19 +31,19 @@ import collections
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from parse_instance import (  # noqa: E402
+from instance import (  # noqa: E402
     Contract,
     CoverBlock,
     Instance,
     Match,
     Pattern,
     Symbol,
-    parse_instance,
+    load_instance,
 )
+from roster import Roster, load_roster  # noqa: E402
 
 OFF: str = "-"
 
@@ -57,8 +57,6 @@ REQUEST_NAMES: dict[tuple[bool, bool], str] = {
     (True, True): "ShiftOn",
     (False, True): "ShiftOff",
 }
-
-Roster = dict[str, list[str]]
 
 
 @dataclass
@@ -397,20 +395,6 @@ def score(instance: Instance, roster: Roster) -> Breakdown:
     return breakdown
 
 
-def read_roster_xml(path: Path, instance: Instance) -> Roster:
-    """Read a published `.roster` solution file into the grid form."""
-    root: ET.Element = ET.parse(path).getroot()
-    roster: Roster = {e.id: [OFF] * instance.num_days for e in instance.employees}
-    for employee in root.findall("Employee"):
-        employee_id: str = employee.get("ID") or ""
-        for assign in employee.findall("Assign"):
-            day: int = int((assign.findtext("Day") or "").strip())
-            shift: str = (assign.findtext("Shift") or "").strip()
-            if shift and shift != OFF:
-                roster[employee_id][day] = shift
-    return roster
-
-
 def read_roster_csv(path: Path, instance: Instance) -> Roster:
     """Read the employees x days CSV this example emits (header, ID column first).
 
@@ -472,18 +456,22 @@ def format_report(breakdown: Breakdown, instance: Instance) -> str:
 
 def main() -> None:
     here: Path = Path(__file__).parent
-    roster_arg: str = sys.argv[1] if len(sys.argv) > 1 else "QMC-2.Solution.29.roster"
+    roster_arg: str = sys.argv[1] if len(sys.argv) > 1 else "QMC-2.Solution.29.json"
     roster_path: Path = Path(roster_arg)
     if not roster_path.exists():
         roster_path = here / roster_arg
 
+    instance: Instance = load_instance(here / (sys.argv[2] if len(sys.argv) > 2 else "QMC-2.json"))
     # A roster only means something against the instance it was built for, and
-    # there are now two. Scoring BCV's roster against QMC-2 would not fail
-    # loudly -- read_roster_xml keys off the employee list, so it would return
-    # 46 empty rows and report a confident number computed from nothing.
-    instance: Instance = parse_instance(here / (sys.argv[2] if len(sys.argv) > 2 else "QMC-2.ros"))
-    reader = read_roster_csv if roster_path.suffix == ".csv" else read_roster_xml
-    roster: Roster = reader(roster_path, instance)
+    # there are now two. read_roster_csv guards against this by validating the
+    # roster's employee set is exactly the instance's; load_roster carries no
+    # such guard, so a JSON roster for the wrong instance can silently pass a
+    # confident-looking roster to score() if the employee ids happen to overlap.
+    roster: Roster
+    if roster_path.suffix == ".csv":
+        roster = read_roster_csv(roster_path, instance)
+    else:
+        roster = load_roster(roster_path)
 
     breakdown: Breakdown = score(instance, roster)
     print(f"roster: {roster_path.name}\n")
