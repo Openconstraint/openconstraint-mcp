@@ -38,6 +38,7 @@ from mcp_types import CallToolResult
 from openconstraint_mcp.server import create_mcp_server
 
 _EXAMPLE_DIR = Path(__file__).parent.parent / "examples" / "job_shop"
+_DATA_DIR = _EXAMPLE_DIR / "data"
 
 # problem.txt's documented optimum for the 6x6 Fisher & Thompson benchmark.
 # Every parametrized script here reaches it in well under a second
@@ -64,7 +65,7 @@ async def test_ft06_model_and_checker_reach_an_accepted_verdict_through_the_mcp_
 
     # job_shop's checker needs the LITERAL instance JSON text, not a bare
     # filename -- its `_parse_instance` calls `json.loads(problem)` directly.
-    problem_text = (_EXAMPLE_DIR / "data_ft06.json").read_text(encoding="utf-8")
+    problem_text = (_DATA_DIR / "data_ft06.json").read_text(encoding="utf-8")
 
     call_result = await mcp.call_tool(
         "run_cpsat_python_file_checked",

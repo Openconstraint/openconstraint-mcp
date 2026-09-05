@@ -73,14 +73,15 @@ def _resolve_problem(problem: object) -> tuple[dict[str, Any] | None, str, str |
     """Turn payload["problem"] into an instance dict.
 
     Returns (instance, source_label, error). Inline JSON is used directly; any
-    other string is treated as a data filename resolved next to this checker.
-    A filename containing a path separator is rejected rather than followed --
-    the payload names one of this directory's data files, not an arbitrary path.
+    other string is treated as a data filename resolved against this
+    directory's `data/` subfolder. A filename containing a path separator is
+    rejected rather than followed -- the payload names one of this directory's
+    data files, not an arbitrary path.
 
-    Resolving next to `__file__` only reaches the data files when this checker
-    runs IN PLACE (`checker_path`); an inline-checker tool copies the source to
-    a temp directory, where the lookup necessarily fails. That is the likeliest
-    cause of a not-found error, so the message names it.
+    Resolving against `data/` next to `__file__` only reaches the data files
+    when this checker runs IN PLACE (`checker_path`); an inline-checker tool
+    copies the source to a temp directory, where the lookup necessarily fails.
+    That is the likeliest cause of a not-found error, so the message names it.
     """
     if not isinstance(problem, str):
         return None, "", "payload.problem is missing or not a string"
@@ -101,7 +102,7 @@ def _resolve_problem(problem: object) -> tuple[dict[str, Any] | None, str, str |
     if "/" in text or "\\" in text or text in {".", ".."}:
         return None, "", f"payload.problem filename {text!r} must be a bare filename"
 
-    path = Path(__file__).parent / text
+    path = Path(__file__).parent / "data" / text
     if not path.is_file():
         return (
             None,

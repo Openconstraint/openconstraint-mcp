@@ -94,9 +94,9 @@ def _resolve_problem(problem: object) -> tuple[dict[str, Any] | None, str, str |
     else:
         if "/" in text or "\\" in text or text in {".", ".."}:
             return None, "", f"payload.problem filename {text!r} must be a bare filename"
-        path = Path(__file__).parent / text
+        path = Path(__file__).parent / "data" / text
         if not path.is_file():
-            return None, "", f"payload.problem names no sibling file {text!r}"
+            return None, "", f"payload.problem names no data file {text!r}"
         try:
             instance = json.loads(path.read_text(encoding="utf-8"), parse_float=Decimal)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError, InvalidOperation) as exc:

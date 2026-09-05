@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 _CHECKER_PATH = Path(__file__).parent.parent / "examples" / "flexible_job_shop" / "checker.py"
-_DATA_DIR = Path(__file__).parent.parent / "examples" / "flexible_job_shop"
+_DATA_DIR = Path(__file__).parent.parent / "examples" / "flexible_job_shop" / "data"
 
 
 def _load_checker() -> Any:

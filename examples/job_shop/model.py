@@ -50,7 +50,8 @@ class Solution(FrozenModel):
 
 
 def read_input() -> dict[str, Any]:
-    data_path = Path(__file__).parent / (sys.argv[1] if len(sys.argv) > 1 else "data_ft06.json")
+    filename: str = sys.argv[1] if len(sys.argv) > 1 else "data_ft06.json"
+    data_path = Path(__file__).parent / "data" / filename
     raw: dict[str, Any] = json.loads(data_path.read_text())
     return raw
 

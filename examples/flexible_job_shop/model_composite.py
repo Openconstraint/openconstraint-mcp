@@ -105,7 +105,7 @@ class Solution(FrozenModel):
 
 
 def _data_path() -> Path:
-    return Path(__file__).parent / (sys.argv[1] if len(sys.argv) > 1 else "data_mk01.json")
+    return Path(__file__).parent / "data" / (sys.argv[1] if len(sys.argv) > 1 else "data_mk01.json")
 
 
 def _time_limit_seconds() -> float:
