@@ -26,7 +26,8 @@ from openconstraint_mcp.server import create_mcp_server
 
 ROOT = Path(__file__).parents[2]
 EXAMPLE_DIR = ROOT / "examples" / "online_printing_shop"
-INSTANCE_PATH = EXAMPLE_DIR / "data_sops1.json"
+DATA_DIR = EXAMPLE_DIR / "data"
+INSTANCE_PATH = DATA_DIR / "data_sops1.json"
 
 
 def load_instance() -> dict[str, Any]:

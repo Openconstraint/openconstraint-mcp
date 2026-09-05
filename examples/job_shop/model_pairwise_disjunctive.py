@@ -22,26 +22,30 @@ import itertools
 import json
 import os
 import sys
-from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from ortools.sat.python import cp_model
+from pydantic import BaseModel, ConfigDict
 
 
-@dataclass(frozen=True)
-class TaskSpec:
+class FrozenModel(BaseModel):
+    """Base for the immutable records passed across this script's function boundary."""
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+
+class TaskSpec(FrozenModel):
     machine: int
     duration: int
 
 
-@dataclass(frozen=True)
-class ProblemInstance:
+class ProblemInstance(FrozenModel):
     jobs: list[list[TaskSpec]]
     num_machines: int
 
 
-@dataclass(frozen=True)
-class ScheduleEntry:
+class ScheduleEntry(FrozenModel):
     job: int
     task: int
     machine: int
@@ -50,20 +54,21 @@ class ScheduleEntry:
     end: int
 
 
-@dataclass(frozen=True)
-class Solution:
+class Solution(FrozenModel):
     status: str
     schedule: list[ScheduleEntry] | None = None
     objective: int | None = None
     best_objective_bound: float | None = None
 
 
-def read_input() -> dict:
-    data_path = Path(__file__).parent / (sys.argv[1] if len(sys.argv) > 1 else "data_ft06.json")
-    return json.loads(data_path.read_text())
+def read_input() -> dict[str, Any]:
+    filename: str = sys.argv[1] if len(sys.argv) > 1 else "data_ft06.json"
+    data_path = Path(__file__).parent / "data" / filename
+    raw: dict[str, Any] = json.loads(data_path.read_text())
+    return raw
 
 
-def parse_input(raw: dict) -> ProblemInstance:
+def parse_input(raw: dict[str, Any]) -> ProblemInstance:
     jobs = [
         [TaskSpec(machine=machine, duration=duration) for machine, duration in job]
         for job in raw["jobs"]
@@ -188,22 +193,12 @@ def solve(instance: ProblemInstance) -> Solution:
     )
 
 
-def serialize_solution(solution: Solution) -> dict:
-    payload_solution: dict = {}
+def serialize_solution(solution: Solution) -> dict[str, Any]:
+    payload_solution: dict[str, Any] = {}
     if solution.schedule is not None:
         payload_solution = {
             "makespan": solution.objective,
-            "schedule": [
-                {
-                    "job": entry.job,
-                    "task": entry.task,
-                    "machine": entry.machine,
-                    "start": entry.start,
-                    "duration": entry.duration,
-                    "end": entry.end,
-                }
-                for entry in solution.schedule
-            ],
+            "schedule": [entry.model_dump() for entry in solution.schedule],
         }
     return {
         "status": solution.status,
@@ -213,7 +208,7 @@ def serialize_solution(solution: Solution) -> dict:
     }
 
 
-def write_output(payload: dict) -> None:
+def write_output(payload: dict[str, Any]) -> None:
     print(json.dumps(payload))
 
 

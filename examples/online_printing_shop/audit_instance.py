@@ -10,7 +10,7 @@ Run from the repository root with:
 For sops1:
     uv run python -m examples.online_printing_shop.audit_instance \
         /tmp/online-printing-shop-upstream/instances/small/sops1.json \
-        examples/online_printing_shop/data_sops1.json
+        examples/online_printing_shop/data/data_sops1.json
 
 ## How a new chat should use the audit tool
 

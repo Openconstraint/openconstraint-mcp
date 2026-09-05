@@ -8,11 +8,12 @@ pinned OR-Tools dependency — no subprocess, no network, no managed runtime.
 from __future__ import annotations
 
 import contextlib
-import dataclasses
 import io
 import json
 import os
+import sys
 import textwrap
+import types
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -61,21 +62,45 @@ def _rendered_code_fences() -> list[str]:
     return fences
 
 
+@contextlib.contextmanager
+def _example_module(name: str) -> Generator[types.ModuleType]:
+    """Register a REAL module under ``name`` for the fence to be exec'd into.
+
+    Pydantic resolves a model's annotations through ``sys.modules[__module__]``,
+    so a bare-dict exec leaves ``ProblemInstance`` unable to see ``Item`` and
+    raises "is not fully defined". A script run as a file has a real module and
+    never hits this; the module here restores what it displaced on exit.
+    """
+    module = types.ModuleType(name)
+    displaced = sys.modules.get(name)
+    sys.modules[name] = module
+    try:
+        yield module
+    finally:
+        if displaced is None:
+            del sys.modules[name]
+        else:
+            sys.modules[name] = displaced
+
+
 def _run_capturing_stdout(source: str) -> list[str]:
     out = io.StringIO()
-    with _isolated_replay_env(), contextlib.redirect_stdout(out):
-        # The example guards its main() call on __name__, which an exec
-        # against bare globals resolves through builtins to "builtins" —
-        # so without this injection nothing runs and stdout stays empty.
-        exec(compile(source, "<prompt-example>", "exec"), {"__name__": "__main__"})
+    # The example guards its main() call on __name__, so the module it runs in
+    # must BE "__main__" — otherwise nothing runs and stdout stays empty.
+    with (
+        _isolated_replay_env(),
+        contextlib.redirect_stdout(out),
+        _example_module("__main__") as module,
+    ):
+        exec(compile(source, "<prompt-example>", "exec"), module.__dict__)
     return [line for line in out.getvalue().strip().splitlines() if line]
 
 
 def _define_example(source: str) -> dict[str, Any]:
-    """Exec a fence WITHOUT ``__name__``, so it defines names and runs no main()."""
-    namespace: dict[str, Any] = {}
-    exec(compile(source, "<prompt-example>", "exec"), namespace)
-    return namespace
+    """Exec a fence outside ``__main__``, so it defines names and runs no main()."""
+    with _example_module("_prompt_example") as module:
+        exec(compile(source, "<prompt-example>", "exec"), module.__dict__)
+        return dict(module.__dict__)
 
 
 def _infeasible_record() -> tuple[dict[str, Any], Any]:
@@ -90,7 +115,7 @@ def _infeasible_record() -> tuple[dict[str, Any], Any]:
     instance = namespace["parse_input"](namespace["read_input"]())
     # Requiring every item exceeds the capacity, so the coverage constraint
     # makes the instance genuinely infeasible.
-    infeasible = dataclasses.replace(instance, min_items=len(instance.items))
+    infeasible = instance.model_copy(update={"min_items": len(instance.items)})
     with _isolated_replay_env():
         return namespace, namespace["solve"](infeasible)
 
@@ -271,10 +296,10 @@ def test_cpsat_prompt_callback_example_still_streams_under_a_configured_search_l
     monkeypatch.setenv("OPENCONSTRAINT_MCP_CPSAT_CONFIG", str(config_path))
 
     out = io.StringIO()
-    with contextlib.redirect_stdout(out):
+    with contextlib.redirect_stdout(out), _example_module("__main__") as module:
         exec(  # noqa: S102 - the prompt's own example, executed to prove it works
             compile(_composed_callback_script(), "<prompt-example>", "exec"),
-            {"__name__": "__main__"},
+            module.__dict__,
         )
     lines = [line for line in out.getvalue().strip().splitlines() if line]
 

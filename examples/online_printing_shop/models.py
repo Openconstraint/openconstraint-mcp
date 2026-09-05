@@ -268,7 +268,7 @@ def parse_input(raw: dict[str, Any]) -> OPSInstance:
 
 def _data_path() -> Path:
     filename: str = sys.argv[1] if len(sys.argv) > 1 else "data_sops1.json"
-    return Path(__file__).parent / filename
+    return Path(__file__).parent / "data" / filename
 
 
 def _solver_config() -> dict[str, Any]:

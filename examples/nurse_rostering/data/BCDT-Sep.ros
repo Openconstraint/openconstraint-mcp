@@ -1,0 +1,1197 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<SchedulingPeriod xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="SchedulingPeriod-3.0.xsd">
+    <StartDate>2004-09-01</StartDate>
+    <EndDate>2004-09-30</EndDate>
+    <ShiftTypes>
+        <Shift ID="4">
+            <StartTime>00:00:00</StartTime>
+            <EndTime>00:00:00</EndTime>
+            <Name>Vacation</Name>
+            <Label>V</Label>
+            <Color>#9F5000</Color>
+            <TimeUnits>0</TimeUnits>
+            <AutoAllocate>false</AutoAllocate>
+        </Shift>
+        <Shift ID="1">
+            <StartTime>07:00:00</StartTime>
+            <EndTime>15:00:00</EndTime>
+            <Name>Morning</Name>
+            <Label>M</Label>
+            <Color>#EBEBEB</Color>
+            <TimeUnits>8</TimeUnits>
+        </Shift>
+        <Shift ID="2">
+            <StartTime>15:00:00</StartTime>
+            <EndTime>23:00:00</EndTime>
+            <Name>Afternoon</Name>
+            <Label>A</Label>
+            <Color>#6C686C</Color>
+            <TimeUnits>8</TimeUnits>
+        </Shift>
+        <Shift ID="3">
+            <StartTime>23:00:00</StartTime>
+            <EndTime>07:00:00</EndTime>
+            <Name>Night</Name>
+            <Label>N</Label>
+            <Color>#FFD015</Color>
+            <TimeUnits>8</TimeUnits>
+        </Shift>
+    </ShiftTypes>
+    <ShiftGroups>
+        <ShiftGroup ID="0">
+            <Shift>1</Shift>
+            <Shift>2</Shift>
+            <Shift>3</Shift>
+        </ShiftGroup>
+        <ShiftGroup ID="1">
+            <Shift>4</Shift>
+            <Shift>1</Shift>
+        </ShiftGroup>
+        <ShiftGroup ID="2">
+            <Shift>4</Shift>
+            <Shift>3</Shift>
+        </ShiftGroup>
+        <ShiftGroup ID="3">
+            <Shift>1</Shift>
+            <Shift>2</Shift>
+        </ShiftGroup>
+    </ShiftGroups>
+    <Contracts>
+        <Contract ID="All">
+            <Label>All</Label>
+            <Patterns>
+                <Match>
+                    <Max>
+                        <Count>0</Count>
+                        <Label>Max five consecutive working days</Label>
+                    </Max>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <ShiftGroup>0</ShiftGroup>
+                        <ShiftGroup>0</ShiftGroup>
+                        <ShiftGroup>0</ShiftGroup>
+                        <ShiftGroup>0</ShiftGroup>
+                        <ShiftGroup>0</ShiftGroup>
+                        <ShiftGroup>0</ShiftGroup>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Max>
+                        <Count>0</Count>
+                        <Label>Min two consecutive night shifts</Label>
+                    </Max>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <NotShift>3</NotShift>
+                        <Shift>3</Shift>
+                        <NotShift>3</NotShift>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Max>
+                        <Count>0</Count>
+                        <Label>Max four consecutive night shifts</Label>
+                    </Max>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Max>
+                        <Count>0</Count>
+                        <Label>At least two days off after night shift</Label>
+                    </Max>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <Shift>3</Shift>
+                        <NotGroup>0</NotGroup>
+                        <ShiftGroup>0</ShiftGroup>
+                    </Pattern>
+                    <Pattern>
+                        <Shift>3</Shift>
+                        <ShiftGroup>3</ShiftGroup>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Max>
+                        <Count>0</Count>
+                        <Label>At least six days between two sets of night shifts</Label>
+                    </Max>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <Shift>3</Shift>
+                        <NotShift>3</NotShift>
+                        <NotShift>3</NotShift>
+                        <Shift>3</Shift>
+                    </Pattern>
+                    <Pattern>
+                        <Shift>3</Shift>
+                        <NotShift>3</NotShift>
+                        <NotShift>3</NotShift>
+                        <NotShift>3</NotShift>
+                        <Shift>3</Shift>
+                    </Pattern>
+                    <Pattern>
+                        <Shift>3</Shift>
+                        <NotShift>3</NotShift>
+                        <NotShift>3</NotShift>
+                        <NotShift>3</NotShift>
+                        <NotShift>3</NotShift>
+                        <Shift>3</Shift>
+                    </Pattern>
+                    <Pattern>
+                        <Shift>3</Shift>
+                        <NotShift>3</NotShift>
+                        <NotShift>3</NotShift>
+                        <NotShift>3</NotShift>
+                        <NotShift>3</NotShift>
+                        <NotShift>3</NotShift>
+                        <Shift>3</Shift>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Max>
+                        <Count>0</Count>
+                        <Weight>10</Weight>
+                        <Label>Avoid A followed by M</Label>
+                    </Max>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <Shift>2</Shift>
+                        <Shift>1</Shift>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Max>
+                        <Count>0</Count>
+                        <Weight>10</Weight>
+                        <Label>Prefer morning shifts before a vacation period and a night shift afterwards</Label>
+                    </Max>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <NotGroup>1</NotGroup>
+                        <Shift>4</Shift>
+                    </Pattern>
+                    <Pattern>
+                        <Shift>4</Shift>
+                        <NotGroup>2</NotGroup>
+                    </Pattern>
+                    <Pattern>
+                        <NotGroup>1</NotGroup>
+                        <Shift>1</Shift>
+                        <Shift>4</Shift>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Max>
+                        <Count>0</Count>
+                        <Weight>10</Weight>
+                        <Label>Try to assign two days off after five consecutive shifts</Label>
+                    </Max>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <ShiftGroup>0</ShiftGroup>
+                        <ShiftGroup>0</ShiftGroup>
+                        <ShiftGroup>0</ShiftGroup>
+                        <ShiftGroup>0</ShiftGroup>
+                        <ShiftGroup>0</ShiftGroup>
+                        <NotGroup>0</NotGroup>
+                        <ShiftGroup>0</ShiftGroup>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Max>
+                        <Count>0</Count>
+                        <Weight>10</Weight>
+                        <Label>Avoid nights before requested days off</Label>
+                    </Max>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <Shift>3</Shift>
+                        <Shift>4</Shift>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Max>
+                        <Count>0</Count>
+                        <Weight>10</Weight>
+                        <Label>Try to assign nights in blocks of three (although a four block is allowed if otherwise there is a night before a free saturday)</Label>
+                    </Max>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <NotShift>3</NotShift>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                        <NotShift>3</NotShift>
+                    </Pattern>
+                    <Pattern>
+                        <StartDay>Monday</StartDay>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                    </Pattern>
+                    <Pattern>
+                        <StartDay>Tuesday</StartDay>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                    </Pattern>
+                    <Pattern>
+                        <StartDay>Thursday</StartDay>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                    </Pattern>
+                    <Pattern>
+                        <StartDay>Friday</StartDay>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                    </Pattern>
+                    <Pattern>
+                        <StartDay>Saturday</StartDay>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                    </Pattern>
+                    <Pattern>
+                        <StartDay>Sunday</StartDay>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                        <Shift>3</Shift>
+                    </Pattern>
+                    <Pattern>
+                        <StartDay>Friday</StartDay>
+                        <Shift>3</Shift>
+                        <NotGroup>0</NotGroup>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Max>
+                        <Count>0</Count>
+                        <Weight>10</Weight>
+                        <Label>Try to allocate days shifts in sets of three consecutive shifts</Label>
+                    </Max>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <NotGroup>3</NotGroup>
+                        <ShiftGroup>3</ShiftGroup>
+                        <NotGroup>3</NotGroup>
+                    </Pattern>
+                    <Pattern>
+                        <ShiftGroup>3</ShiftGroup>
+                        <ShiftGroup>3</ShiftGroup>
+                        <ShiftGroup>3</ShiftGroup>
+                        <ShiftGroup>3</ShiftGroup>
+                    </Pattern>
+                    <Pattern>
+                        <NotGroup>3</NotGroup>
+                        <ShiftGroup>3</ShiftGroup>
+                        <ShiftGroup>3</ShiftGroup>
+                        <NotGroup>3</NotGroup>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Min>
+                        <Count>4</Count>
+                        <Weight>10</Weight>
+                        <Label>At least four Saturdays and/or Sundays</Label>
+                    </Min>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <StartDay>Saturday</StartDay>
+                        <ShiftGroup>0</ShiftGroup>
+                    </Pattern>
+                    <Pattern>
+                        <StartDay>Sunday</StartDay>
+                        <ShiftGroup>0</ShiftGroup>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Max>
+                        <Count>7</Count>
+                        <Weight>10</Weight>
+                        <Label>Max 7 Nights</Label>
+                    </Max>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <Shift>3</Shift>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Min>
+                        <Count>5</Count>
+                        <Weight>10</Weight>
+                        <Label>Min 5 Nights</Label>
+                    </Min>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <Shift>3</Shift>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Min>
+                        <Count>5</Count>
+                        <Weight>10</Weight>
+                        <Label>Min 5 Afternoon shifts</Label>
+                    </Min>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <Shift>2</Shift>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Max>
+                        <Count>7</Count>
+                        <Weight>10</Weight>
+                        <Label>Max 7 Afternoon shifts</Label>
+                    </Max>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <Shift>2</Shift>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Min>
+                        <Count>6</Count>
+                        <Weight>10</Weight>
+                        <Label>Min 6 Morning shifts</Label>
+                    </Min>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <Shift>1</Shift>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Max>
+                        <Count>8</Count>
+                        <Weight>10</Weight>
+                        <Label>Max 8 Morning shifts</Label>
+                    </Max>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <Shift>1</Shift>
+                    </Pattern>
+                </Match>
+                <Match>
+                    <Min>
+                        <Count>10</Count>
+                        <Weight>250</Weight>
+                        <Label>At least 10 days off</Label>
+                    </Min>
+                    <RegionStart>0</RegionStart>
+                    <RegionEnd>29</RegionEnd>
+                    <Pattern>
+                        <NotGroup>0</NotGroup>
+                    </Pattern>
+                </Match>
+            </Patterns>
+        </Contract>
+    </Contracts>
+    <Employees>
+        <Employee ID="1">
+            <ContractID>All</ContractID>
+            <Name>A</Name>
+        </Employee>
+        <Employee ID="2">
+            <ContractID>All</ContractID>
+            <Name>B</Name>
+        </Employee>
+        <Employee ID="3">
+            <ContractID>All</ContractID>
+            <Name>C</Name>
+        </Employee>
+        <Employee ID="4">
+            <ContractID>All</ContractID>
+            <Name>D</Name>
+        </Employee>
+        <Employee ID="5">
+            <ContractID>All</ContractID>
+            <Name>E</Name>
+        </Employee>
+        <Employee ID="6">
+            <ContractID>All</ContractID>
+            <Name>F</Name>
+        </Employee>
+        <Employee ID="7">
+            <ContractID>All</ContractID>
+            <Name>G</Name>
+        </Employee>
+        <Employee ID="8">
+            <ContractID>All</ContractID>
+            <Name>H</Name>
+        </Employee>
+        <Employee ID="9">
+            <ContractID>All</ContractID>
+            <Name>I</Name>
+        </Employee>
+        <Employee ID="10">
+            <ContractID>All</ContractID>
+            <Name>J</Name>
+        </Employee>
+        <Employee ID="11">
+            <ContractID>All</ContractID>
+            <Name>K</Name>
+        </Employee>
+        <Employee ID="12">
+            <ContractID>All</ContractID>
+            <Name>L</Name>
+        </Employee>
+        <Employee ID="13">
+            <ContractID>All</ContractID>
+            <Name>M</Name>
+        </Employee>
+        <Employee ID="14">
+            <ContractID>All</ContractID>
+            <Name>N</Name>
+        </Employee>
+        <Employee ID="15">
+            <ContractID>All</ContractID>
+            <Name>O</Name>
+        </Employee>
+        <Employee ID="16">
+            <ContractID>All</ContractID>
+            <Name>P</Name>
+        </Employee>
+        <Employee ID="17">
+            <ContractID>All</ContractID>
+            <Name>Q</Name>
+        </Employee>
+        <Employee ID="18">
+            <ContractID>All</ContractID>
+            <Name>R</Name>
+        </Employee>
+        <Employee ID="19">
+            <ContractID>All</ContractID>
+            <Name>S</Name>
+        </Employee>
+        <Employee ID="20">
+            <ContractID>All</ContractID>
+            <Name>T</Name>
+        </Employee>
+    </Employees>
+    <CoverRequirements>
+        <DayOfWeekCover>
+            <Day>Monday</Day>
+            <Cover>
+                <Shift>3</Shift>
+                <Min function="Constraint">3</Min>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Max function="Constraint">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Min weight="10">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Max weight="10">4</Max>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Min function="Constraint">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Max function="Constraint">6</Max>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Min weight="100">5</Min>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Max weight="100">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Min function="Constraint">3</Min>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Max function="Constraint">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Min weight="100">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Max weight="100">4</Max>
+            </Cover>
+        </DayOfWeekCover>
+        <DayOfWeekCover>
+            <Day>Tuesday</Day>
+            <Cover>
+                <Shift>3</Shift>
+                <Min function="Constraint">3</Min>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Max function="Constraint">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Min weight="10">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Max weight="10">4</Max>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Min function="Constraint">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Max function="Constraint">6</Max>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Min weight="100">5</Min>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Max weight="100">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Min function="Constraint">3</Min>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Max function="Constraint">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Min weight="100">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Max weight="100">4</Max>
+            </Cover>
+        </DayOfWeekCover>
+        <DayOfWeekCover>
+            <Day>Wednesday</Day>
+            <Cover>
+                <Shift>3</Shift>
+                <Min function="Constraint">3</Min>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Max function="Constraint">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Min weight="10">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Max weight="10">4</Max>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Min function="Constraint">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Max function="Constraint">6</Max>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Min weight="100">5</Min>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Max weight="100">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Min function="Constraint">3</Min>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Max function="Constraint">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Min weight="100">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Max weight="100">4</Max>
+            </Cover>
+        </DayOfWeekCover>
+        <DayOfWeekCover>
+            <Day>Thursday</Day>
+            <Cover>
+                <Shift>3</Shift>
+                <Min function="Constraint">3</Min>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Max function="Constraint">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Min weight="10">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Max weight="10">4</Max>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Min function="Constraint">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Max function="Constraint">6</Max>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Min weight="100">5</Min>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Max weight="100">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Min function="Constraint">3</Min>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Max function="Constraint">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Min weight="100">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Max weight="100">4</Max>
+            </Cover>
+        </DayOfWeekCover>
+        <DayOfWeekCover>
+            <Day>Friday</Day>
+            <Cover>
+                <Shift>3</Shift>
+                <Min function="Constraint">3</Min>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Max function="Constraint">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Min weight="10">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Max weight="10">4</Max>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Min function="Constraint">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Max function="Constraint">6</Max>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Min weight="100">5</Min>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Max weight="100">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Min function="Constraint">3</Min>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Max function="Constraint">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Min weight="100">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Max weight="100">4</Max>
+            </Cover>
+        </DayOfWeekCover>
+        <DayOfWeekCover>
+            <Day>Saturday</Day>
+            <Cover>
+                <Shift>3</Shift>
+                <Min function="Constraint">3</Min>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Max function="Constraint">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Min weight="10">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Max weight="10">4</Max>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Min function="Constraint">3</Min>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Max function="Constraint">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Min weight="100">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Max weight="100">4</Max>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Min function="Constraint">3</Min>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Max function="Constraint">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Min weight="100">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Max weight="100">4</Max>
+            </Cover>
+        </DayOfWeekCover>
+        <DayOfWeekCover>
+            <Day>Sunday</Day>
+            <Cover>
+                <Shift>3</Shift>
+                <Min function="Constraint">3</Min>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Max function="Constraint">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Min weight="10">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>3</Shift>
+                <Max weight="10">4</Max>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Min function="Constraint">3</Min>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Max function="Constraint">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Min weight="100">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>1</Shift>
+                <Max weight="100">4</Max>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Min function="Constraint">3</Min>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Max function="Constraint">5</Max>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Min weight="100">4</Min>
+            </Cover>
+            <Cover>
+                <Shift>2</Shift>
+                <Max weight="100">4</Max>
+            </Cover>
+        </DayOfWeekCover>
+    </CoverRequirements>
+    <DayOffRequests>
+        <DayOff weight="10">
+            <EmployeeID>9</EmployeeID>
+            <Date>2004-09-18</Date>
+        </DayOff>
+        <DayOff weight="10">
+            <EmployeeID>9</EmployeeID>
+            <Date>2004-09-19</Date>
+        </DayOff>
+        <DayOff weight="10">
+            <EmployeeID>14</EmployeeID>
+            <Date>2004-09-08</Date>
+        </DayOff>
+        <DayOff weight="10">
+            <EmployeeID>14</EmployeeID>
+            <Date>2004-09-09</Date>
+        </DayOff>
+        <DayOff weight="10">
+            <EmployeeID>15</EmployeeID>
+            <Date>2004-09-08</Date>
+        </DayOff>
+        <DayOff weight="10">
+            <EmployeeID>15</EmployeeID>
+            <Date>2004-09-09</Date>
+        </DayOff>
+        <DayOff weight="10">
+            <EmployeeID>16</EmployeeID>
+            <Date>2004-09-24</Date>
+        </DayOff>
+        <DayOff weight="10">
+            <EmployeeID>16</EmployeeID>
+            <Date>2004-09-25</Date>
+        </DayOff>
+        <DayOff weight="10">
+            <EmployeeID>16</EmployeeID>
+            <Date>2004-09-26</Date>
+        </DayOff>
+    </DayOffRequests>
+    <ShiftOffRequests>
+        <ShiftOff weight="10">
+            <ShiftTypeID>3</ShiftTypeID>
+            <EmployeeID>2</EmployeeID>
+            <Date>2004-09-30</Date>
+        </ShiftOff>
+        <ShiftOff weight="10">
+            <ShiftTypeID>3</ShiftTypeID>
+            <EmployeeID>2</EmployeeID>
+            <Date>2004-09-29</Date>
+        </ShiftOff>
+        <ShiftOff weight="10">
+            <ShiftTypeID>3</ShiftTypeID>
+            <EmployeeID>2</EmployeeID>
+            <Date>2004-09-28</Date>
+        </ShiftOff>
+        <ShiftOff weight="10">
+            <ShiftTypeID>3</ShiftTypeID>
+            <EmployeeID>2</EmployeeID>
+            <Date>2004-09-27</Date>
+        </ShiftOff>
+        <ShiftOff weight="10">
+            <ShiftTypeID>3</ShiftTypeID>
+            <EmployeeID>3</EmployeeID>
+            <Date>2004-09-30</Date>
+        </ShiftOff>
+        <ShiftOff weight="10">
+            <ShiftTypeID>3</ShiftTypeID>
+            <EmployeeID>3</EmployeeID>
+            <Date>2004-09-29</Date>
+        </ShiftOff>
+        <ShiftOff weight="10">
+            <ShiftTypeID>3</ShiftTypeID>
+            <EmployeeID>3</EmployeeID>
+            <Date>2004-09-28</Date>
+        </ShiftOff>
+        <ShiftOff weight="10">
+            <ShiftTypeID>3</ShiftTypeID>
+            <EmployeeID>3</EmployeeID>
+            <Date>2004-09-27</Date>
+        </ShiftOff>
+        <ShiftOff weight="10">
+            <ShiftTypeID>2</ShiftTypeID>
+            <EmployeeID>5</EmployeeID>
+            <Date>2004-09-20</Date>
+        </ShiftOff>
+        <ShiftOff weight="10">
+            <ShiftTypeID>3</ShiftTypeID>
+            <EmployeeID>5</EmployeeID>
+            <Date>2004-09-20</Date>
+        </ShiftOff>
+        <ShiftOff weight="10">
+            <ShiftTypeID>2</ShiftTypeID>
+            <EmployeeID>5</EmployeeID>
+            <Date>2004-09-19</Date>
+        </ShiftOff>
+        <ShiftOff weight="10">
+            <ShiftTypeID>3</ShiftTypeID>
+            <EmployeeID>5</EmployeeID>
+            <Date>2004-09-19</Date>
+        </ShiftOff>
+        <ShiftOff weight="10">
+            <ShiftTypeID>2</ShiftTypeID>
+            <EmployeeID>5</EmployeeID>
+            <Date>2004-09-18</Date>
+        </ShiftOff>
+        <ShiftOff weight="10">
+            <ShiftTypeID>3</ShiftTypeID>
+            <EmployeeID>5</EmployeeID>
+            <Date>2004-09-18</Date>
+        </ShiftOff>
+        <ShiftOff weight="10">
+            <ShiftTypeID>2</ShiftTypeID>
+            <EmployeeID>5</EmployeeID>
+            <Date>2004-09-17</Date>
+        </ShiftOff>
+        <ShiftOff weight="10">
+            <ShiftTypeID>3</ShiftTypeID>
+            <EmployeeID>5</EmployeeID>
+            <Date>2004-09-17</Date>
+        </ShiftOff>
+    </ShiftOffRequests>
+    <ShiftOnRequests>
+        <ShiftOn weight="10000">
+            <ShiftTypeID>2</ShiftTypeID>
+            <EmployeeID>3</EmployeeID>
+            <Date>2004-09-16</Date>
+        </ShiftOn>
+        <ShiftOn weight="10000">
+            <ShiftTypeID>2</ShiftTypeID>
+            <EmployeeID>3</EmployeeID>
+            <Date>2004-09-15</Date>
+        </ShiftOn>
+        <ShiftOn weight="10000">
+            <ShiftTypeID>2</ShiftTypeID>
+            <EmployeeID>3</EmployeeID>
+            <Date>2004-09-17</Date>
+        </ShiftOn>
+        <ShiftOn weight="10">
+            <ShiftTypeID>2</ShiftTypeID>
+            <EmployeeID>4</EmployeeID>
+            <Date>2004-09-08</Date>
+        </ShiftOn>
+        <ShiftOn weight="10">
+            <ShiftTypeID>2</ShiftTypeID>
+            <EmployeeID>4</EmployeeID>
+            <Date>2004-09-07</Date>
+        </ShiftOn>
+        <ShiftOn weight="10">
+            <ShiftTypeID>2</ShiftTypeID>
+            <EmployeeID>4</EmployeeID>
+            <Date>2004-09-06</Date>
+        </ShiftOn>
+        <ShiftOn weight="10">
+            <ShiftTypeID>1</ShiftTypeID>
+            <EmployeeID>20</EmployeeID>
+            <Date>2004-09-14</Date>
+        </ShiftOn>
+        <ShiftOn weight="10">
+            <ShiftTypeID>1</ShiftTypeID>
+            <EmployeeID>20</EmployeeID>
+            <Date>2004-09-13</Date>
+        </ShiftOn>
+        <ShiftOn weight="10">
+            <ShiftTypeID>1</ShiftTypeID>
+            <EmployeeID>20</EmployeeID>
+            <Date>2004-09-15</Date>
+        </ShiftOn>
+    </ShiftOnRequests>
+    <FixedAssignments>
+        <Employee>
+            <EmployeeID>1</EmployeeID>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-13</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-14</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-15</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-16</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-17</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-18</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-19</Date>
+            </Assign>
+        </Employee>
+        <Employee>
+            <EmployeeID>3</EmployeeID>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-03</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-04</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-05</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-06</Date>
+            </Assign>
+        </Employee>
+        <Employee>
+            <EmployeeID>6</EmployeeID>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-18</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-19</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-20</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-21</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-22</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-23</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-24</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-25</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-26</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-27</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-28</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-29</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-30</Date>
+            </Assign>
+        </Employee>
+        <Employee>
+            <EmployeeID>8</EmployeeID>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-01</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-02</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-03</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-04</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-05</Date>
+            </Assign>
+        </Employee>
+        <Employee>
+            <EmployeeID>11</EmployeeID>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-04</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-05</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-06</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-07</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-08</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-09</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-10</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-11</Date>
+            </Assign>
+            <Assign>
+                <Shift>4</Shift>
+                <Date>2004-09-12</Date>
+            </Assign>
+        </Employee>
+    </FixedAssignments>
+</SchedulingPeriod>

@@ -39,10 +39,12 @@ import json
 import sys
 from typing import Any
 
+from typing_extensions import TypeIs
+
 Jobs = list[list[tuple[int, int]]]
 
 
-def _is_int(value: object) -> bool:
+def _is_int(value: object) -> TypeIs[int]:
     """True only for a genuine int. `bool` is an `int` subclass in Python, so a JSON
     `true`/`false` left unguarded would sail through every downstream check as 1/0:
     it indexes, compares, and adds identically. This guard is the only place such a
