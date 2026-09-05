@@ -493,8 +493,8 @@ def parse_instance(xml_path: Path) -> Instance:
 
 def main() -> None:
     here: Path = Path(__file__).parent
-    xml_path: Path = here / (sys.argv[1] if len(sys.argv) > 1 else "QMC-2.ros")
-    out_path: Path = here / f"{xml_path.stem}.json"
+    xml_path: Path = here / "data" / (sys.argv[1] if len(sys.argv) > 1 else "QMC-2.ros")
+    out_path: Path = here / "parsed" / f"{xml_path.stem}.json"
 
     instance: Instance = parse_instance(xml_path)
     out_path.write_text(instance.model_dump_json() + "\n")

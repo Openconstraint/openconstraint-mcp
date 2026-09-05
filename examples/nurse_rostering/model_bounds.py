@@ -78,6 +78,7 @@ from instance import (  # noqa: E402
     Pattern,
     load_instance,
 )
+from roster import resolve_roster_path  # noqa: E402
 from shift_literals import ShiftLiterals  # noqa: E402
 
 OFF: str = "-"
@@ -180,7 +181,7 @@ def read_input() -> Options:
     )
     args = parser.parse_args()
 
-    here: Path = Path(__file__).parent
+    here: Path = Path(__file__).parent / "parsed"
     return Options(
         instance_path=here / args.instance,
         time_limit=args.time_limit,
@@ -189,7 +190,7 @@ def read_input() -> Options:
         upper_bound=args.upper_bound,
         prove=args.prove,
         redundant=args.redundant,
-        fix_roster=None if args.fix_roster is None else here / args.fix_roster,
+        fix_roster=None if args.fix_roster is None else resolve_roster_path(args.fix_roster),
     )
 
 

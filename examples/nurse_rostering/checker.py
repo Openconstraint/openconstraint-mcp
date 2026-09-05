@@ -44,7 +44,7 @@ from instance import Instance, load_instance  # noqa: E402
 from scorer import OFF, Breakdown, score  # noqa: E402
 
 ACCEPT_STATUSES: frozenset[str] = frozenset({"optimal", "feasible", "timeout"})
-DEFAULT_INSTANCE: Path = Path(__file__).parent / "QMC-2.json"
+DEFAULT_INSTANCE: Path = Path(__file__).parent / "parsed" / "QMC-2.json"
 
 
 def _verdict(status: str, errors: list[str], details: dict[str, Any]) -> dict[str, Any]:

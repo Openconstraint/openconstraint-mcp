@@ -25,6 +25,8 @@ misreading of the XML format, not a JSON round-trip.
 
 import hashlib
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -43,9 +45,11 @@ from examples.nurse_rostering.verify_parse import (
 
 ROOT = Path(__file__).parents[2]
 EXAMPLE_DIR = ROOT / "examples" / "nurse_rostering"
-INSTANCE_XML_PATH = EXAMPLE_DIR / "QMC-2.ros"
-INSTANCE_PATH = EXAMPLE_DIR / "QMC-2.json"
-PUBLISHED_ROSTER = EXAMPLE_DIR / "QMC-2.Solution.29.json"
+DATA_DIR = EXAMPLE_DIR / "data"
+PARSED_DIR = EXAMPLE_DIR / "parsed"
+INSTANCE_XML_PATH = DATA_DIR / "QMC-2.ros"
+INSTANCE_PATH = PARSED_DIR / "QMC-2.json"
+PUBLISHED_ROSTER = PARSED_DIR / "QMC-2.Solution.29.json"
 
 PUBLISHED_TOTAL = 29
 PUBLISHED_BREAKDOWN = {
@@ -58,9 +62,9 @@ PUBLISHED_BREAKDOWN = {
 # ERMGH, the third instance, carries the format corners QMC-2 has none of:
 # <TimePeriod> cover, skill blocks with <Max>/<Preferred>, the `$` wildcard and
 # inline-<ShiftGroup> requests. Its published cost-779 roster is proven optimal.
-ERMGH_XML_PATH = EXAMPLE_DIR / "ERMGH.ros"
-ERMGH_PATH = EXAMPLE_DIR / "ERMGH.json"
-ERMGH_ROSTER = EXAMPLE_DIR / "ERMGH.Solution.779.json"
+ERMGH_XML_PATH = DATA_DIR / "ERMGH.ros"
+ERMGH_PATH = PARSED_DIR / "ERMGH.json"
+ERMGH_ROSTER = PARSED_DIR / "ERMGH.Solution.779.json"
 ERMGH_TOTAL = 779
 ERMGH_BREAKDOWN = {
     "skill Preferred understaffing": 777,
@@ -237,7 +241,7 @@ FALLBACK_GOLDEN = (
 @pytest.fixture(scope="module")
 def fallback_instances():
     names = [f"{n}.ros" for n, _, _ in FALLBACK_GOLDEN] + ["QMC-2.ros", "BCV-3.46.2.ros"]
-    return {name: parse_instance(EXAMPLE_DIR / name) for name in names}
+    return {name: parse_instance(DATA_DIR / name) for name in names}
 
 
 def test_optional_element_fallbacks(fallback_instances) -> None:
@@ -251,9 +255,9 @@ def test_fallback_instance_reproduces_its_published_optimum(name, roster, publis
     """The gate that makes the fallbacks evidence rather than decoration: each
     default was chosen because it is the value this roster's published cost
     implies, so a changed default moves the total."""
-    instance = parse_instance(EXAMPLE_DIR / f"{name}.ros")
+    instance = parse_instance(DATA_DIR / f"{name}.ros")
 
-    total = score(instance, read_roster_xml(EXAMPLE_DIR / roster, instance)).total
+    total = score(instance, read_roster_xml(DATA_DIR / roster, instance)).total
 
     assert total == published
 
@@ -411,17 +415,17 @@ ALL_ROSTERS = (
 
 @pytest.mark.parametrize("name", ALL_INSTANCE_NAMES)
 def test_instance_json_matches_a_fresh_parse(name) -> None:
-    fresh = parse_instance(EXAMPLE_DIR / f"{name}.ros").model_dump_json() + "\n"
-    committed = (EXAMPLE_DIR / f"{name}.json").read_text()
+    fresh = parse_instance(DATA_DIR / f"{name}.ros").model_dump_json() + "\n"
+    committed = (PARSED_DIR / f"{name}.json").read_text()
 
     assert fresh == committed
 
 
 @pytest.mark.parametrize(("name", "roster_file"), ALL_ROSTERS)
 def test_roster_json_matches_a_fresh_parse(name, roster_file) -> None:
-    inst = parse_instance(EXAMPLE_DIR / f"{name}.ros")
-    fresh = json.dumps(read_roster_xml(EXAMPLE_DIR / roster_file, inst)) + "\n"
-    committed = (EXAMPLE_DIR / roster_file).with_suffix(".json").read_text()
+    inst = parse_instance(DATA_DIR / f"{name}.ros")
+    fresh = json.dumps(read_roster_xml(DATA_DIR / roster_file, inst)) + "\n"
+    committed = (PARSED_DIR / roster_file).with_suffix(".json").read_text()
 
     assert fresh == committed
 
@@ -478,14 +482,81 @@ def _canonical_sha256(payload: object) -> str:
 
 @pytest.mark.parametrize("name", ALL_INSTANCE_NAMES)
 def test_committed_instance_matches_the_pre_migration_baseline(name) -> None:
-    payload = json.loads((EXAMPLE_DIR / f"{name}.json").read_text())
+    payload = json.loads((PARSED_DIR / f"{name}.json").read_text())
 
     assert _canonical_sha256(payload) == BASELINE_INSTANCE_SHA256[name]
 
 
 @pytest.mark.parametrize(("name", "roster_file"), ALL_ROSTERS)
 def test_committed_roster_matches_the_pre_migration_baseline(name, roster_file) -> None:
-    committed_path = (EXAMPLE_DIR / roster_file).with_suffix(".json")
+    committed_path = (PARSED_DIR / roster_file).with_suffix(".json")
     payload = json.loads(committed_path.read_text())
 
     assert _canonical_sha256(payload) == BASELINE_ROSTER_SHA256[name]
+
+
+# -- CLI smoke ------------------------------------------------------------
+#
+# Every test above imports the example's functions and calls them directly, so
+# nothing here exercised argparse, the --instance/--fix-roster defaults, or the
+# path resolution that turns a bare filename into a file on disk. That gap let
+# a real break ship: after the data split into data/ and parsed/, every
+# relative argument resolved against parsed/ alone, so the three CSV
+# invocations problem.txt documents died with FileNotFoundError from the
+# repository root while working from inside the example directory. These run
+# the scripts as scripts, from the repository root, the way problem.txt says to.
+
+DOCUMENTED_SCORER_COMMANDS: tuple[tuple[str, ...], ...] = (
+    ("scorer.py", "solution.csv"),
+    ("scorer.py", "QMC-2.Solution.29.json"),
+    ("scorer.py", "solution_bcv.csv", "BCV-3.46.2.json"),
+    ("scorer.py", "BCV-3.46.2.Solution.894.json", "BCV-3.46.2.json"),
+    ("scorer.py", "ERMGH.Solution.779.json", "ERMGH.json"),
+)
+
+
+def _run_from_root(*args: str) -> subprocess.CompletedProcess[str]:
+    """Invoke an example script the way problem.txt documents: from the root."""
+    return subprocess.run(
+        [sys.executable, str(EXAMPLE_DIR / args[0]), *args[1:]],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+
+
+@pytest.mark.parametrize(
+    "command", DOCUMENTED_SCORER_COMMANDS, ids=[" ".join(c) for c in DOCUMENTED_SCORER_COMMANDS]
+)
+def test_documented_scorer_command_runs_from_the_repository_root(command) -> None:
+    result = _run_from_root(*command)
+
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("script", ["model.py", "model_bounds.py", "model_regular.py"])
+def test_model_cli_pins_a_csv_roster_from_the_repository_root(script) -> None:
+    """The CSV branch of --fix-roster, which is where the resolution broke.
+
+    Pinned rather than free-searching so this stays a CLI test, not a solve:
+    every assignment is fixed, so the run is deterministic and near-instant.
+    """
+    result = _run_from_root(script, "--fix-roster", "solution.csv", "--time-limit", "5")
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_model_cli_pinned_to_the_published_roster_reports_its_cost() -> None:
+    result = _run_from_root(
+        "model.py", "--fix-roster", "QMC-2.Solution.29.json", "--time-limit", "5"
+    )
+
+    assert json.loads(result.stdout)["objective"] == PUBLISHED_TOTAL
+
+
+@pytest.mark.parametrize("script", ["parse_instance.py", "parse_roster.py"])
+def test_converter_cli_runs_from_the_repository_root(script) -> None:
+    result = _run_from_root(script)
+
+    assert result.returncode == 0, result.stderr

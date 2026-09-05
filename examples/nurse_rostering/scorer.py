@@ -43,7 +43,7 @@ from instance import (  # noqa: E402
     Symbol,
     load_instance,
 )
-from roster import Roster, load_roster  # noqa: E402
+from roster import Roster, load_roster, resolve_roster_path  # noqa: E402
 
 OFF: str = "-"
 
@@ -455,11 +455,9 @@ def format_report(breakdown: Breakdown, instance: Instance) -> str:
 
 
 def main() -> None:
-    here: Path = Path(__file__).parent
+    here: Path = Path(__file__).parent / "parsed"
     roster_arg: str = sys.argv[1] if len(sys.argv) > 1 else "QMC-2.Solution.29.json"
-    roster_path: Path = Path(roster_arg)
-    if not roster_path.exists():
-        roster_path = here / roster_arg
+    roster_path: Path = resolve_roster_path(roster_arg)
 
     instance: Instance = load_instance(here / (sys.argv[2] if len(sys.argv) > 2 else "QMC-2.json"))
     # A roster only means something against the instance it was built for, and

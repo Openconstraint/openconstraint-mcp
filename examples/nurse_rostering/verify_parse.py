@@ -912,7 +912,7 @@ def main() -> None:
     of one specific file, so pointing one at the other file would report dozens
     of failures that say nothing about the parser.
     """
-    here: Path = Path(__file__).parent
+    here: Path = Path(__file__).parent / "data"
     results: list[tuple[bool, str]] = []
 
     for title, filename, verifier in (

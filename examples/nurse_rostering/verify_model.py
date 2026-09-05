@@ -54,7 +54,7 @@ from model import Options, Solution, solve  # noqa: E402
 from roster import load_roster  # noqa: E402
 from scorer import Breakdown, score  # noqa: E402
 
-HERE: Path = Path(__file__).parent
+HERE: Path = Path(__file__).parent / "parsed"
 
 
 @dataclass(frozen=True)

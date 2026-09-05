@@ -44,12 +44,12 @@ def read_roster_xml(path: Path, instance: Instance) -> Roster:
 def main() -> None:
     here: Path = Path(__file__).parent
     roster_arg: str = sys.argv[1] if len(sys.argv) > 1 else "QMC-2.Solution.29.roster"
-    roster_path: Path = here / roster_arg
+    roster_path: Path = here / "data" / roster_arg
     instance_arg: str = sys.argv[2] if len(sys.argv) > 2 else "QMC-2.ros"
-    instance: Instance = parse_instance(here / instance_arg)
+    instance: Instance = parse_instance(here / "data" / instance_arg)
 
     roster: Roster = read_roster_xml(roster_path, instance)
-    out_path: Path = roster_path.with_suffix(".json")
+    out_path: Path = (here / "parsed" / roster_path.name).with_suffix(".json")
     # Compact, matching parse_instance.py's model_dump_json(): the plan commits
     # to the JSON staying smaller than the XML beside it, and indent would
     # break that for ERMGH (a 410 KB instance).

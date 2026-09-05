@@ -68,6 +68,7 @@ from instance import (  # noqa: E402
     Pattern,
     load_instance,
 )
+from roster import resolve_roster_path  # noqa: E402
 from shift_literals import ShiftLiterals  # noqa: E402
 
 OFF: str = "-"
@@ -165,19 +166,20 @@ def read_input() -> Options:
     )
     args = parser.parse_args()
 
-    here: Path = Path(__file__).parent
+    here: Path = Path(__file__).parent / "parsed"
     return Options(
         instance_path=here / args.instance,
         time_limit=args.time_limit,
         workers=args.workers,
         seed=args.seed,
         harden=args.harden,
-        # Resolved against the script directory, exactly like --instance
-        # above. Left CWD-relative it broke the invocation this file's own
-        # docstring documents -- `uv run examples/nurse_rostering/model.py
-        # --fix-roster QMC-2.Solution.29.json` from the repository root died
-        # with FileNotFoundError instead of pinning the published optimum.
-        fix_roster=None if args.fix_roster is None else here / args.fix_roster,
+        # Resolved through roster.py rather than against `here`: a JSON roster
+        # lives in parsed/ but the sample CSV rosters sit at the example root,
+        # so pinning `--fix-roster solution.csv` from the repository root needs
+        # both roots tried. Left CWD-relative, or resolved against parsed/
+        # alone, the invocations this file's docstring documents die with
+        # FileNotFoundError instead of pinning a roster.
+        fix_roster=None if args.fix_roster is None else resolve_roster_path(args.fix_roster),
     )
 
 
