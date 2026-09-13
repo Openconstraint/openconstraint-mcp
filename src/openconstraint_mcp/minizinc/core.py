@@ -888,7 +888,7 @@ def prepare_solve_args(solver: str, controls: SolveControls) -> tuple[str, ...]:
     raises before any subprocess), THEN the lazy capability resolution (one
     ``--solvers-json`` only when a gated control is requested).
     """
-    extra_args = build_solve_extra_args(solver, controls)
+    extra_args: tuple[str, ...] = build_solve_extra_args(solver, controls)
     enforce_solver_capabilities(solver, controls)
     return extra_args
 
@@ -1113,12 +1113,12 @@ def _validate_portfolio_result_consistency(
             "supplied data: the portfolio_result was attached to a different "
             "data instance"
         )
-    race_controls = portfolio_result.solve_controls
+    race_controls: PortfolioSolveControls = portfolio_result.solve_controls
     # Declared field order (free_search, parallel, all_solutions, num_solutions)
     # fixes which mismatch is reported first.
     for name in PortfolioSolveControls.model_fields:
-        race_value = getattr(race_controls, name)
-        save_value = getattr(controls, name)
+        race_value: bool | int | None = getattr(race_controls, name)
+        save_value: bool | int | None = getattr(controls, name)
         if race_value != save_value:
             raise ValueError(
                 f"portfolio_result.solve_controls.{name} ({race_value!r}) does not "

@@ -373,7 +373,7 @@ def test_submit_many_rejects_whole_batch_when_over_capacity(
         registry.shutdown()
 
 
-def test_submit_many_validates_every_model_before_admitting(
+def test_submit_many_validates_every_request_before_admitting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Requests arrive with their argv prepared, but submit_many still rejects a bad

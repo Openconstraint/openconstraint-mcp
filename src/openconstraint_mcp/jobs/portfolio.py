@@ -46,7 +46,8 @@ from ..schemas.portfolio import (
 from ..shared.save_target import text_sha256
 
 # portfolio consumes the registry (provider) plus core's capability
-# resolver/validator; these package-internal helpers keep plan-time enforcement
+# resolver/validator, model/timeout validator, and solve-argv builder; these
+# package-internal helpers keep plan-time enforcement and per-attempt argv
 # identical to the single solve.
 from .registry import JobRegistry, SolveRequest
 
@@ -146,7 +147,9 @@ def _admit_portfolio(
         # Per attempt, model/timeout is checked before the controls are built, so a
         # plan with several problems reports the same first error as before.
         validate_model_and_timeout(models[m_idx], per_attempt_timeout_ms)
-        attempt_controls = SolveControls(**solve_controls.model_dump(), random_seed=seed)
+        attempt_controls: SolveControls = SolveControls(
+            **solve_controls.model_dump(), random_seed=seed
+        )
         requests.append(
             SolveRequest(
                 model=models[m_idx],
@@ -325,7 +328,9 @@ def _validate_plan_capabilities(
     ):
         return
     capability_map = resolve_capability_map()
-    plan_controls = SolveControls(**controls.model_dump(), random_seed=1 if seed_used else None)
+    plan_controls: SolveControls = SolveControls(
+        **controls.model_dump(), random_seed=1 if seed_used else None
+    )
     for solver in solvers:
         capabilities = capability_map.get(solver)
         if capabilities is None:
