@@ -694,7 +694,10 @@ GET_PORTFOLIO_JOB_DESCRIPTION = (
     "`succeeded` job, present "
     "`result` like a single `solve_minizinc_model`: lead with the winner's "
     "model/solver/seed/status, then the winning solve (solution + the COMPLETE "
-    "`Statistics:` section) and the per-attempt table. The winning FORMULATION "
+    "`Statistics:` section) and the per-attempt table. That table is a snapshot "
+    "from when the race settled: `succeeded` arrives as soon as one attempt is "
+    "decisive, so a loser still being cancelled then shows `running`/`submitted`. "
+    "The winning FORMULATION "
     "is `models[attempts[winner_index].model_index]`. " + _UNKNOWN_JOB_ID_ERROR
 )
 
@@ -703,9 +706,8 @@ CANCEL_PORTFOLIO_JOB_DESCRIPTION = (
     "AND every still-running attempt (each attempt's managed MiniZinc process tree is "
     "terminated). "
     + _cancellation_idempotent_note("`succeeded`/`failed`/`cancelled`")
-    + "Returns the PortfolioJobStatus; the job reaches "
-    "`cancelled` (with `result is None`) once the race observes the request — poll "
-    "`get_portfolio_job` to confirm the terminal state. " + _UNKNOWN_JOB_ID_ERROR
+    + "Returns the PortfolioJobStatus, already `cancelled` (with `result is None`) "
+    "for a race that was still running. " + _UNKNOWN_JOB_ID_ERROR
 )
 
 LIST_PORTFOLIO_JOBS_DESCRIPTION = (

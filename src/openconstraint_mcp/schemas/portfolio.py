@@ -9,11 +9,12 @@ from .job_state import JobState
 from .minizinc import CheckerStatus, SolveResult, SolveStatus
 
 # One portfolio attempt's lifecycle as the portfolio observed it. `submitted`/
-# `running` are non-terminal (the poll budget can return while an attempt is still
-# running); `succeeded`/`timeout`/`failed`/`cancelled` mirror the registry's
-# terminal `JobState`; `rejected` marks an attempt that was never admitted (the
-# atomic `submit_many` makes the happy path admit all or none, so `rejected` is a
-# defensive vocabulary entry, not produced on a returned result).
+# `running` are non-terminal (a race settles on its first decisive attempt without
+# waiting for the losers, so a loser can still be running); `succeeded`/`timeout`/
+# `failed`/`cancelled` mirror the registry's terminal `JobState`; `rejected` marks
+# an attempt that was never admitted (the atomic `submit_many` makes the happy path
+# admit all or none, so `rejected` is a defensive vocabulary entry, not produced on a
+# returned result).
 PortfolioAttemptState = Literal[
     "submitted",
     "running",
@@ -99,7 +100,8 @@ class PortfolioSolveResult(BaseModel):
     no attempt produced a usable result. The invariant ``winner present ⇔
     winner_index present ⇔ status == "winner"`` is enforced, so a client can branch
     on `status` and trust the winner fields. `attempts` records every attempt's
-    final state (the winner plus the cancelled/terminal losers) so the loser fates
+    state as of when the race settled: the winner, the losers that had finished,
+    and any loser still being cancelled (``running``/``submitted``), so loser fates
     are visible without polling child jobs. `selection_policy` documents how the
     winner was chosen (e.g. ``"first-decisive-result"``).
 

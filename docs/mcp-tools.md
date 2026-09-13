@@ -598,8 +598,9 @@ generic `solver_options`, `extra_args`, or raw MiniZinc flag passthrough.
 - **Result.** A `PortfolioSolveResult`: `status` (`"winner"`/`"no_winner"`),
   `winner_index`, the winning `SolveResult` in `winner` (its own `status` tells
   you whether the win was decisive), `attempts` (every attempt's `model_index`,
-  solver, seed, final state, result status, objective, `checker_status`, and
-  message — including the cancelled losers, so you need not poll child jobs),
+  solver, seed, state, result status, objective, `checker_status`, and message as
+  of when the race settled — a loser still being cancelled at that moment shows
+  `"running"` or `"submitted"`),
   `elapsed_ms`, and `selection_policy`. The winning formulation is
   `models[attempts[winner_index].model_index]`. Present it like a single
   `solve_minizinc_model`: lead with the winner's model/solver/seed/status and then
@@ -626,10 +627,11 @@ request timeout.
 There is no extra worker pool. The attempts are admitted as ordinary jobs on
 the **same** solve registry as `submit_solve_job` (so they count against its
 capacity and also show up in `list_solve_jobs`), and the race **settles on its
-own**: each attempt reports to the portfolio when it finishes, the first
-decisive attempt cancels the still-running losers immediately, and the job
-finalizes once every attempt is terminal. That keeps submit non-blocking
-without cloning the job machinery.
+own**: each attempt reports to the portfolio when it finishes. The job
+finalizes `"succeeded"` as soon as one attempt is decisive, and the losers
+still running are cancelled right after; with no decisive attempt it finalizes
+once every attempt is terminal. That keeps submit non-blocking without cloning
+the job machinery.
 
 - **`submit_portfolio_job`** — admit a portfolio race as a background job. Takes
   `models`, `solvers`, optional shared `data`/`checker`, `seed_count`, `seeds`,
@@ -649,12 +651,14 @@ without cloning the job machinery.
   is `"succeeded"`. A race with no decisive winner is still `"succeeded"` (carrying a
   `"no_winner"` `PortfolioSolveResult`); a per-attempt failure is recorded in that
   result's attempts table, not as a failed job. `"failed"` means the server could
-  not build the race result once every attempt finished (`message` says why, with
-  a `job_failed` diagnostic). Pace polling against
+  not build the race result (`message` says why, with a `job_failed` diagnostic).
+  Pace polling against
   `per_attempt_timeout_ms` rather than a fixed `sleep`.
 - **`cancel_portfolio_job`** — stop a running race and **every** still-running
   attempt (each attempt's managed process tree is terminated). Best-effort and
-  idempotent; the job reaches `"cancelled"` (with `result is None`).
+  idempotent: a running race is already `"cancelled"` (with `result is None`)
+  when the call returns; a settled race, including one that has its winner, is
+  returned unchanged.
 - **`list_portfolio_jobs`** — list the retained portfolio jobs, one
   `PortfolioJobStatus` each. Finished jobs are retained only up to a cap.
 

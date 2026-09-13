@@ -178,7 +178,14 @@ def test_portfolio_returns_decisive_winner_and_cancels_loser(
         assert result.winner.status == "optimal"
         assert result.attempts[0].state == "succeeded"
         assert result.attempts[0].result_status == "optimal"
-        assert result.attempts[1].state == "cancelled"
+        # The race settles on the decisive attempt and cancels the loser right after,
+        # so the loser's end state is read from its solve job, not the settle snapshot.
+        loser_job_id: str | None = result.attempts[1].job_id
+        assert loser_job_id is not None
+        deadline: float = time.monotonic() + 3.0
+        while registry.get(loser_job_id).state == "running" and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert registry.get(loser_job_id).state == "cancelled"
         assert result.selection_policy == "first-decisive-result"
         assert result.models_sha256 == [text_sha256(model_text)]
         assert result.data_sha256 == text_sha256(data_text)

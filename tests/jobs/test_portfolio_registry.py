@@ -413,7 +413,8 @@ def test_race_settles_and_cancels_losers_without_client_selection(
 ) -> None:
     # cp-sat turns decisive only once the gecode loser is running, so the loser's
     # cancel must terminate a live handle. The race settles on attempt events; the
-    # deadline wait below only reads (get() has no side effects).
+    # deadline wait below only reads (get() has no side effects). The loser is
+    # cancelled after the job settles, so its termination is awaited, not assumed.
     loser_started = threading.Event()
     release = threading.Event()
     terminated: list[Any] = []
@@ -429,7 +430,7 @@ def test_race_settles_and_cancels_losers_without_client_selection(
 
     def _fake_terminate(proc: Any, **kwargs: Any) -> None:
         terminated.append(proc)
-        release.set()
+        release.set()  # the loser's worker finishes only once its tree is signalled
 
     _patch_solve(monkeypatch, _fake_solve)
     monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
@@ -442,6 +443,8 @@ def test_race_settles_and_cancels_losers_without_client_selection(
         )
         final = _poll(portfolios, job_id)
         assert final.state == "succeeded"
+        loser_id: str = portfolios._records[job_id].attempt_job_ids[1]
+        assert _wait_solve_terminal(job_registry, loser_id) == "cancelled"
         assert len(terminated) == 1  # the loser's process tree was signalled
     finally:
         release.set()
@@ -703,4 +706,240 @@ def test_cancel_tolerates_an_evicted_terminal_attempt(monkeypatch: pytest.Monkey
         assert len(terminated) == 1  # the still-running loser was stopped
     finally:
         release.set()
+        job_registry.shutdown()
+
+
+def _patch_decisive_winner_over_running_loser(
+    monkeypatch: pytest.MonkeyPatch, loser_release: threading.Event
+) -> None:
+    """cp-sat turns decisive once the gecode loser runs; the loser runs until released."""
+    loser_started: threading.Event = threading.Event()
+
+    def _fake_solve(model: str, *, solver: str, on_start: Any, **kw: Any) -> SolveResult:
+        on_start(_FakeProc())
+        if solver == "cp-sat":
+            loser_started.wait(timeout=5)
+            return _solve_result("optimal", solver=solver)
+        loser_started.set()
+        loser_release.wait(timeout=10)
+        return _solve_result("satisfied", solver=solver)
+
+    _patch_solve(monkeypatch, _fake_solve)
+
+
+def test_decisive_winner_is_reported_while_a_loser_is_still_being_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Termination is the autouse no-op, so the loser outlives the decisive result the way
+    # a slow-dying process tree would. The winner must be reported without waiting for it.
+    loser_release: threading.Event = threading.Event()
+    _patch_decisive_winner_over_running_loser(monkeypatch, loser_release)
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=4)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+    try:
+        job_id: str = portfolios.submit(
+            models=["solve satisfy;"], solvers=["cp-sat", "org.gecode.gecode"]
+        )
+        final: PortfolioJobStatus = _poll(portfolios, job_id, timeout=2.0)
+
+        assert final.result is not None
+        assert final.result.winner_index == 0
+    finally:
+        loser_release.set()
+        job_registry.shutdown()
+
+
+def test_settled_race_reports_a_loser_still_being_cancelled_as_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The attempts table is a snapshot taken when the race settled: a loser that has not
+    # stopped yet must not be reported with a fate it has not reached.
+    loser_release: threading.Event = threading.Event()
+    _patch_decisive_winner_over_running_loser(monkeypatch, loser_release)
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=4)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+    try:
+        job_id: str = portfolios.submit(
+            models=["solve satisfy;"], solvers=["cp-sat", "org.gecode.gecode"]
+        )
+        final: PortfolioJobStatus = _poll(portfolios, job_id, timeout=2.0)
+
+        assert final.result is not None
+        assert final.result.attempts[1].state == "running"
+    finally:
+        loser_release.set()
+        job_registry.shutdown()
+
+
+def test_cancel_after_a_decisive_winner_keeps_the_winning_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Once the loser's teardown has begun the race has a winner; a client cancel that
+    # arrives then must not discard it.
+    loser_release: threading.Event = threading.Event()
+    loser_teardown: threading.Event = threading.Event()
+    _patch_decisive_winner_over_running_loser(monkeypatch, loser_release)
+    monkeypatch.setattr(
+        "openconstraint_mcp.jobs.registry._terminate_process_tree",
+        lambda proc, **kwargs: loser_teardown.set(),
+    )
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=4)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+    try:
+        job_id: str = portfolios.submit(
+            models=["solve satisfy;"], solvers=["cp-sat", "org.gecode.gecode"]
+        )
+        assert loser_teardown.wait(timeout=3)
+
+        cancelled: PortfolioJobStatus = portfolios.cancel(job_id)
+
+        assert cancelled.state == "succeeded"
+    finally:
+        loser_release.set()
+        job_registry.shutdown()
+
+
+def test_loser_teardown_does_not_occupy_the_winners_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Tearing down a loser's process tree can take seconds, and admission already counts
+    # the winner's slot free. On a 2-worker pool with the loser still running, an
+    # unrelated job admitted as `running` can only actually run on the winner's worker.
+    loser_release: threading.Event = threading.Event()
+    teardown_started: threading.Event = threading.Event()
+    teardown_may_finish: threading.Event = threading.Event()
+
+    def _slow_terminate(proc: Any, **kwargs: Any) -> None:
+        teardown_started.set()
+        teardown_may_finish.wait(timeout=10)
+
+    _patch_decisive_winner_over_running_loser(monkeypatch, loser_release)
+    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _slow_terminate)
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=2)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+    try:
+        portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat", "org.gecode.gecode"])
+        assert teardown_started.wait(timeout=3)
+
+        unrelated_id: str = job_registry.submit(model="solve satisfy;", solver="cp-sat")
+
+        assert _wait_solve_terminal(job_registry, unrelated_id, timeout=2.0) == "succeeded"
+    finally:
+        teardown_may_finish.set()
+        loser_release.set()
+        job_registry.shutdown()
+
+
+def test_cancel_still_stops_later_attempts_when_one_teardown_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A teardown error on one attempt (an OSError from the platform kill) must not leave
+    # the remaining attempts running.
+    started: dict[str, threading.Event] = {
+        "cp-sat": threading.Event(),
+        "org.gecode.gecode": threading.Event(),
+    }
+    release: threading.Event = threading.Event()
+    teardown_calls: list[Any] = []
+
+    def _blocking_solve(model: str, *, solver: str, on_start: Any, **kw: Any) -> SolveResult:
+        on_start(_FakeProc())
+        started[solver].set()
+        release.wait(timeout=10)
+        return _solve_result("satisfied", solver=solver)
+
+    def _first_teardown_raises(proc: Any, **kwargs: Any) -> None:
+        teardown_calls.append(proc)
+        if len(teardown_calls) == 1:
+            raise OSError("teardown failed")
+
+    _patch_solve(monkeypatch, _blocking_solve)
+    monkeypatch.setattr(
+        "openconstraint_mcp.jobs.registry._terminate_process_tree", _first_teardown_raises
+    )
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=4)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+    try:
+        job_id: str = portfolios.submit(
+            models=["solve satisfy;"], solvers=["cp-sat", "org.gecode.gecode"]
+        )
+        assert all(event.wait(timeout=3) for event in started.values())
+
+        portfolios.cancel(job_id)
+
+        assert len(teardown_calls) == 2
+    finally:
+        release.set()
+        job_registry.shutdown()
+
+
+def test_finished_portfolio_releases_its_attempt_statuses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A cached attempt status carries its full solver output (up to the 1 MiB cap). Once
+    # the result is built they are dead weight on every retained record.
+    def _fake_solve(model: str, *, solver: str, on_start: Any, **kw: Any) -> SolveResult:
+        on_start(_FakeProc())
+        return _solve_result("optimal", solver=solver)
+
+    _patch_solve(monkeypatch, _fake_solve)
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=4)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+    try:
+        job_id: str = portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
+        _poll(portfolios, job_id)
+
+        assert portfolios._records[job_id].statuses == []
+    finally:
+        job_registry.shutdown()
+
+
+def test_decisive_race_waits_for_an_evicted_attempts_own_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With solve retention 1, the decisive attempt's own finalize evicts an attempt that
+    # already finished but whose terminal event has not landed yet. That status cannot be
+    # read back, so the race must settle when the event arrives, not fail the job.
+    first_event_arrived: threading.Event = threading.Event()
+    decisive_event_handled: threading.Event = threading.Event()
+    original_listener = PortfolioJobRegistry._on_attempt_terminal
+
+    def _deliver_first_event_last(
+        self: PortfolioJobRegistry, record: Any, index: int, status: Any
+    ) -> None:
+        if index == 0:
+            first_event_arrived.set()
+            decisive_event_handled.wait(timeout=5)
+            original_listener(self, record, index, status)
+            return
+        original_listener(self, record, index, status)
+        decisive_event_handled.set()
+
+    class _ExitedProc(_FakeProc):
+        # Retention eviction reaps an evicted record's handle via poll().
+        def poll(self) -> int:
+            return 0
+
+    def _fake_solve(model: str, *, solver: str, on_start: Any, **kw: Any) -> SolveResult:
+        on_start(_ExitedProc())
+        if solver == "cp-sat":
+            return _solve_result("unknown", solver=solver)
+        first_event_arrived.wait(timeout=5)
+        return _solve_result("optimal", solver=solver)
+
+    monkeypatch.setattr(PortfolioJobRegistry, "_on_attempt_terminal", _deliver_first_event_last)
+    _patch_solve(monkeypatch, _fake_solve)
+    job_registry: JobRegistry = JobRegistry(
+        max_running_jobs=2, max_queued_jobs=4, max_retained_terminal=1
+    )
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+    try:
+        job_id: str = portfolios.submit(
+            models=["solve satisfy;"], solvers=["cp-sat", "org.gecode.gecode"]
+        )
+        final: PortfolioJobStatus = _poll(portfolios, job_id)
+
+        assert final.result is not None
+        assert final.result.winner_index == 1
+    finally:
         job_registry.shutdown()

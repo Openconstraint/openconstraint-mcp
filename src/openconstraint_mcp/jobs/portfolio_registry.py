@@ -6,22 +6,27 @@ synchronously (failing fast on a bad plan or a full queue, exactly like
 ``submit_solve_job``) and hands the client a ``portfolio_job_id`` to poll. The
 attempts ARE ordinary jobs in the shared ``JobRegistry``; the only thing this
 registry adds is winner-selection, driven by that registry's terminal listener.
-Each time an attempt finishes, ``_on_attempt_terminal`` caches its status; the first
-decisive attempt cancels the still-pending losers at once, and when every attempt is
-terminal the aggregate ``PortfolioSolveResult`` is built and the job finalizes
-``succeeded`` (or ``failed``, if the aggregate cannot be built).
+Each time an attempt finishes, ``_on_attempt_terminal`` caches its status. The race
+settles on the first event that leaves a decisive attempt cached: attempts still
+running are snapshotted as they are, the aggregate ``PortfolioSolveResult`` is built,
+the job finalizes ``succeeded`` at once, and those losers are cancelled afterwards.
+With no decisive attempt it settles once every attempt is terminal (``succeeded``
+with the best-available result, or ``failed`` if the aggregate cannot be built).
 ``get``/``list`` only read, so a never-polled race still finishes.
 
 The listener runs on the finishing attempt's worker thread (or synchronously inside
-the ``JobRegistry.cancel``/``shutdown`` that finalized a queued attempt) — there is
-no worker thread or executor of its own. Lock order is ``record.lock``, then this
-registry's ``_lock``. While holding ``record.lock`` the portfolio never calls a
-``JobRegistry`` method that can run a listener on the calling thread (``cancel``,
-``shutdown``); ``submit_many`` is safe there because it never runs a listener itself.
+the ``JobRegistry.cancel``/``shutdown`` that finalized a queued attempt). Losers are
+cancelled on a short-lived thread instead: a process-tree teardown can take seconds,
+and the finishing worker's slot is already counted free by admission. Lock order is
+``record.lock``, then this registry's ``_lock`` or the ``JobRegistry`` lock. While
+holding ``record.lock`` the portfolio never calls a ``JobRegistry`` method that can
+run a listener on the calling thread (``cancel``, ``shutdown``); ``submit_many`` and
+``get`` are safe there because they never run a listener.
 
 One ``PortfolioJobRegistry`` is created per server in ``create_mcp_server``. It owns
-no threads or processes (the attempts live in the ``JobRegistry``, torn down by that
-registry's shutdown), so it needs no shutdown of its own.
+no worker pool or processes (the attempts live in the ``JobRegistry``, torn down by
+that registry's shutdown, which also stops any loser a cancel thread has not reached
+yet), so it needs no shutdown of its own.
 
 Layering: a server-layer module that imports ``portfolio`` (admission + result
 building), ``registry`` (the attempt registry it drives), and ``schemas``; it never
@@ -30,6 +35,7 @@ imports ``server``.
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -37,6 +43,7 @@ from uuid import uuid4
 
 from ..minizinc.core import DEFAULT_SOLVE_TIMEOUT_MS
 from ..schemas.diagnostics import wrapper_job_diagnostic
+from ..schemas.job_state import TERMINAL_STATES
 from ..schemas.minizinc import SolveJobStatus
 from ..schemas.portfolio import (
     PortfolioJobState,
@@ -58,6 +65,8 @@ from .portfolio import (
 )
 from .registry import JobRegistry
 
+_logger: logging.Logger = logging.getLogger(__name__)
+
 
 @dataclass
 class _PortfolioRecord:
@@ -69,8 +78,9 @@ class _PortfolioRecord:
     ``checker_sha256``/``solve_controls`` provenance ``_admit_portfolio`` captured, and
     one ``statuses`` slot per plan index. An attempt event that arrives before
     admission returns waits on ``lock`` until they are set. ``statuses`` caches each
-    attempt's terminal snapshot, ``decided`` marks that the losers were already
-    cancelled, and — once terminal — ``result``/``message`` are cached.
+    attempt's terminal snapshot while the race runs and is emptied when it finalizes
+    (only the built ``result`` is kept); once terminal, ``result``/``message`` are
+    cached.
     """
 
     job_id: str
@@ -85,7 +95,6 @@ class _PortfolioRecord:
     data_sha256: str | None = None
     checker_sha256: str | None = None
     statuses: list[SolveJobStatus | None] = field(default_factory=list)
-    decided: bool = False
     state: PortfolioJobState = "running"
     finished_at_ms: int | None = None
     elapsed_ms: int | None = None
@@ -251,9 +260,10 @@ class PortfolioJobRegistry:
         with record.lock:
             if record.state != "running":
                 return _to_status(record)
+            # Read before _finalize, which drops the cached statuses.
+            pending: list[str] = _pending_attempt_ids(record)
             self._finalize(record, "cancelled", None, "Cancelled by client")
             status: PortfolioJobStatus = _to_status(record)
-            pending: list[str] = _pending_attempt_ids(record)
         self._cancel_attempts(pending)
         return status
 
@@ -285,27 +295,58 @@ class PortfolioJobRegistry:
         self, record: _PortfolioRecord, index: int, status: SolveJobStatus
     ) -> None:
         # The JobRegistry terminal listener for one attempt (never called under that
-        # registry's lock). Losers are cancelled after record.lock is released,
-        # because cancelling a queued loser re-enters this listener synchronously.
+        # registry's lock).
         losers: list[str] = []
         with record.lock:
             if record.state != "running":
                 return
             record.statuses[index] = status
-            if not record.decided and _is_decisive(status):
-                record.decided = True
-                losers = _pending_attempt_ids(record)
-            if all(cached is not None for cached in record.statuses):
-                self._settle(record)
-        self._cancel_attempts(losers)
+            snapshot: Sequence[SolveJobStatus] | None = self._settlement_snapshot(record)
+            if snapshot is None:
+                return
+            losers = [
+                attempt.job_id for attempt in snapshot if attempt.state not in TERMINAL_STATES
+            ]
+            self._settle(record, snapshot)
+        if losers:
+            # Not on this thread: it is the finishing attempt's pool worker, whose slot
+            # admission already counts free, and a loser's process-tree teardown can
+            # take seconds. Not under record.lock either: cancelling a queued loser runs
+            # this listener synchronously. Daemon, because JobRegistry.shutdown stops
+            # any loser this thread has not reached.
+            threading.Thread(
+                target=self._cancel_attempts,
+                args=(losers,),
+                name="portfolio-cancel-losers",
+                daemon=True,
+            ).start()
 
-    def _settle(self, record: _PortfolioRecord) -> None:
-        # Caller holds record.lock and every attempt status is cached. The winner is
-        # computed over the final snapshot, so decisive events that arrived out of
-        # finish order still honor the earliest-finish rule.
-        statuses: list[SolveJobStatus] = [
-            cached for cached in record.statuses if cached is not None
-        ]
+    def _settlement_snapshot(self, record: _PortfolioRecord) -> Sequence[SolveJobStatus] | None:
+        # Caller holds record.lock. Returns the attempt statuses to settle on, or None
+        # while the race is undecided. Once a decisive status is cached the race does
+        # not wait for the losers: each uncached attempt is read as it is right now.
+        cached: list[SolveJobStatus] = [status for status in record.statuses if status is not None]
+        if len(cached) == len(record.statuses):
+            return cached
+        if not any(_is_decisive(status) for status in cached):
+            return None
+        snapshot: list[SolveJobStatus] = []
+        for job_id, cached_status in zip(record.attempt_job_ids, record.statuses, strict=True):
+            if cached_status is not None:
+                snapshot.append(cached_status)
+                continue
+            try:
+                snapshot.append(self._registry.get(job_id))
+            except ValueError:
+                # Evicted: the solve registry evicts only terminal records, so this
+                # attempt finished and its own event is still on the way. Settle then.
+                return None
+        return snapshot
+
+    def _settle(self, record: _PortfolioRecord, statuses: Sequence[SolveJobStatus]) -> None:
+        # Caller holds record.lock. The winner is computed over the whole snapshot, so
+        # a decisive attempt whose event arrived out of finish order still honors the
+        # earliest-finish rule.
         try:
             result: PortfolioSolveResult = _build_portfolio_result(
                 record.plan,
@@ -336,6 +377,10 @@ class PortfolioJobRegistry:
                 # Unknown job_id: the solve registry evicts only terminal records, so
                 # this attempt already finished and there is nothing to stop.
                 continue
+            except Exception:
+                # Logged, not raised: one attempt's failed teardown must not leave the
+                # rest running, and on the loser-cancel thread it would otherwise vanish.
+                _logger.exception("could not cancel portfolio attempt %s", job_id)
 
     def _finalize(
         self,
@@ -352,6 +397,9 @@ class PortfolioJobRegistry:
         record.elapsed_ms = max(now - record.started_at_ms, 0)
         record.result = result if state == "succeeded" else None
         record.message = message
+        # Each cached status carries its attempt's full solver output; the retained
+        # record needs only the built result.
+        record.statuses = []
         with self._lock:
             self._terminal_order.append(record.job_id)
             self._evict_terminal_overflow()

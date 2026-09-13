@@ -6,8 +6,9 @@ independent solve attempts, admits them atomically through the *existing* regist
 attempts' statuses. The background portfolio path (``portfolio_registry``) drives this:
 ``_admit_portfolio`` admits the plan synchronously (fail-fast on a bad plan or a
 full queue) and routes each attempt's terminal event to the registry's listener,
-which calls ``_build_portfolio_result`` once every attempt is terminal — the winning
-``SolveResult`` plus metadata explaining what happened to every attempt.
+which calls ``_build_portfolio_result`` once the race settles (on the first decisive
+attempt, or when every attempt is terminal) — the winning ``SolveResult`` plus
+metadata explaining what happened to every attempt.
 
 Local-first invariants are inherited from the layers below: every attempt runs on
 the managed MiniZinc runtime via the registry's cancellable solve, capabilities are
@@ -74,8 +75,8 @@ class _PortfolioAdmission(NamedTuple):
 
     ``models_sha256``/``data_sha256``/``checker_sha256``/``solve_controls`` are
     captured here — while the caller's original request values are still in
-    scope — because by the time ``_build_portfolio_result`` runs (when the last
-    attempt finishes, via the background ``PortfolioJobRegistry``) those originals
+    scope — because by the time ``_build_portfolio_result`` runs (when the race
+    settles, via the background ``PortfolioJobRegistry``) those originals
     are out of scope. They
     must be threaded through unchanged to the eventual ``PortfolioSolveResult``.
     """
@@ -204,9 +205,10 @@ def _build_portfolio_result(
     checker_sha256: str | None,
     solve_controls: PortfolioSolveControls,
 ) -> PortfolioSolveResult:
-    """Build the winner-led ``PortfolioSolveResult`` from a terminal attempt snapshot.
+    """Build the winner-led ``PortfolioSolveResult`` from the snapshot the race settled on.
 
-    Called by the portfolio registry once every attempt is terminal. With no
+    Called by the portfolio registry on the first decisive attempt (losers still
+    running are passed as they are) or once every attempt is terminal. With no
     decisive ``winner_index``, falls back to the best available terminal attempt (or
     ``no_winner`` when none produced a usable result); the model enforces
     ``winner present ⇔ status=="winner"``. ``models_sha256``/``data_sha256``/
