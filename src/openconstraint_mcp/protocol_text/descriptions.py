@@ -658,12 +658,11 @@ SUBMIT_PORTFOLIO_JOB_DESCRIPTION = (
     "exceeds the job registry's running+queued capacity is reported at once as "
     "an MCP error, before any job exists. The attempts then run as ordinary jobs "
     "on the SAME bounded solve registry as `submit_solve_job` (so they count "
-    "against its capacity and also appear in `list_solve_jobs`), and the winner "
-    "is selected when you poll. Returns a PortfolioJobStatus with a "
-    "server-generated opaque `job_id` and `state` `running`; poll with "
-    "`get_portfolio_job(job_id)` — which advances the race and cancels the "
-    "losers once a winner emerges — and stop the whole race early with "
-    "`cancel_portfolio_job(job_id)`. "
+    "against its capacity and also appear in `list_solve_jobs`), and the race "
+    "settles on its own: the losers are cancelled as soon as a winner emerges. "
+    "Returns a PortfolioJobStatus with a server-generated opaque `job_id` and "
+    "`state` `running`; poll with `get_portfolio_job(job_id)`, which only reads "
+    "status, and stop the whole race early with `cancel_portfolio_job(job_id)`. "
     + _REGISTRY_NOTE
     + " "
     + _returns_immediately_note("get_portfolio_job")
@@ -672,9 +671,9 @@ SUBMIT_PORTFOLIO_JOB_DESCRIPTION = (
 
 GET_PORTFOLIO_JOB_DESCRIPTION = (
     "Poll a background portfolio job by its `job_id` (from "
-    "`submit_portfolio_job`). This also DRIVES the race: each poll selects a "
-    "winner once one attempt reaches a decisive verdict and cancels the "
-    "still-running losers, so poll until terminal rather than walking away. "
+    "`submit_portfolio_job`). Polling only READS: the race settles on its own — "
+    "the losers are cancelled as soon as one attempt reaches a decisive verdict "
+    "— and a poll never selects a winner or cancels an attempt. "
     "Returns a PortfolioJobStatus: `job_id`, `state`, `per_attempt_timeout_ms`, "
     "`submitted_at_ms`, `started_at_ms`, `finished_at_ms`, `elapsed_ms`, an "
     "optional `result` (the full PortfolioSolveResult), and an optional "

@@ -2246,7 +2246,7 @@ class _PortfolioFakeProc:
     ``_terminate_process_tree`` must never see it. Any test racing MORE THAN ONE
     attempt must therefore request ``_never_terminate_for_real`` below (or patch
     a recorder of its own): winner selection cancels the still-running losers,
-    and whether a loser is still mid-flight when the winner is polled is a
+    and whether a loser is still mid-flight when the winner finishes is a
     timing race the test cannot control — it loses locally and wins under CI
     load. A single-attempt race never cancels, so it needs no guard.
     """
@@ -2404,7 +2404,7 @@ async def test_submit_portfolio_job_returns_running_then_get_reaches_succeeded(
             {"models": ["solve satisfy;"], "solvers": ["cp-sat", "org.gecode.gecode"]},
         )
     )
-    # The first poll inside submit may already have selected a winner on a fast solve.
+    # A fast solve may already have settled the race by the time submit returns.
     assert submitted["state"] in {"running", "succeeded"}
     job_id = submitted["job_id"]
 

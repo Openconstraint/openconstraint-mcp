@@ -636,8 +636,8 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         max_retained_terminal=_env_int("OPENCONSTRAINT_MCP_MAX_RETAINED_TERMINAL", 64, minimum=1),
     )
     # The server-owned background-portfolio registry: it drives the SAME `registry`
-    # for attempts and selects a winner lazily on each poll, so it owns no worker
-    # pool and cannot starve the attempt pool. Retention of finished portfolio
+    # for attempts and selects a winner from their terminal events, so it owns no
+    # worker pool and cannot starve the attempt pool. Retention of finished portfolio
     # records is bounded; the dominant capacity bound is the solve registry's.
     portfolios = PortfolioJobRegistry(registry)
     # The server-owned CP-SAT background-job registry (the deliberate, bounded

@@ -623,12 +623,13 @@ Portfolios run as background jobs — the portfolio analogue of
 poll for the winner, so a hard race never blocks past a client's synchronous
 request timeout.
 
-The design is **collect-on-poll**: there is no extra worker pool. The attempts
-are admitted as ordinary jobs on the **same** solve registry as
-`submit_solve_job` (so they count against its capacity and also show up in
-`list_solve_jobs`), and winner-selection — the pure function of the attempts'
-statuses — runs **when you call `get_portfolio_job`**. That keeps submit
-non-blocking without cloning the job machinery.
+There is no extra worker pool. The attempts are admitted as ordinary jobs on
+the **same** solve registry as `submit_solve_job` (so they count against its
+capacity and also show up in `list_solve_jobs`), and the race **settles on its
+own**: each attempt reports to the portfolio when it finishes, the first
+decisive attempt cancels the still-running losers immediately, and the job
+finalizes once every attempt is terminal. That keeps submit non-blocking
+without cloning the job machinery.
 
 - **`submit_portfolio_job`** — admit a portfolio race as a background job. Takes
   `models`, `solvers`, optional shared `data`/`checker`, `seed_count`, `seeds`,
@@ -639,10 +640,9 @@ non-blocking without cloning the job machinery.
   `-a/-f/-p/-r` flag, or a plan past the registry's running+queued capacity is
   reported at once as an MCP error, **before any job exists**. Returns a
   `PortfolioJobStatus` with an opaque `job_id` and `state` `"running"`.
-- **`get_portfolio_job`** — poll a portfolio job by `job_id`. **Each poll drives
-  the race**: once an attempt reaches a decisive verdict it selects the winner
-  and cancels the still-running losers, so poll until terminal rather than
-  submitting and walking away. Returns a `PortfolioJobStatus`: `state`
+- **`get_portfolio_job`** — poll a portfolio job by `job_id`. Polling only
+  reads: it never selects a winner or cancels an attempt, and a race you never
+  poll still finishes. Returns a `PortfolioJobStatus`: `state`
   (`"running"`, `"succeeded"`, `"cancelled"`), `per_attempt_timeout_ms`, timing
   fields, an optional `result` (the full `PortfolioSolveResult`), and an optional
   `message`. **State contract:** `result` is present exactly when `state` is
@@ -656,10 +656,7 @@ non-blocking without cloning the job machinery.
 - **`list_portfolio_jobs`** — list the retained portfolio jobs, one
   `PortfolioJobStatus` each. Finished jobs are retained only up to a cap.
 
-Loser attempts are cancelled at the next poll (not the instant a winner appears),
-bounded by each attempt's own `per_attempt_timeout_ms` — negligible for a polling
-client, and the trade for not running a second worker pool. Like the other job
-tools these return at once and emit no progress notifications; watch `state` via
+Like the other job tools these return at once and emit no progress notifications; watch `state` via
 `get_portfolio_job`. An unknown `job_id` is an MCP error.
 
 ## Configuring registry bounds
