@@ -15,7 +15,8 @@ with the best-available result, or ``failed`` if the aggregate cannot be built).
 ``get``/``list`` only read, so a never-polled race still finishes.
 
 The listener runs on the finishing attempt's worker thread (or synchronously inside
-the ``JobRegistry.cancel``/``shutdown`` that finalized a queued attempt). Losers are
+the ``JobRegistry.cancel``/``shutdown`` that finalized a queued attempt). It drops
+queued losers itself, before that worker can pick one up; running losers are
 cancelled on a short-lived thread instead: a process-tree teardown can take seconds,
 and the finishing worker's slot is already counted free by admission. Lock order is
 ``record.lock``, then this registry's ``_lock`` or the ``JobRegistry`` lock. While
@@ -296,7 +297,8 @@ class PortfolioJobRegistry:
     ) -> None:
         # The JobRegistry terminal listener for one attempt (never called under that
         # registry's lock).
-        losers: list[str] = []
+        queued_losers: list[str] = []
+        running_losers: list[str] = []
         with record.lock:
             if record.state != "running":
                 return
@@ -304,19 +306,24 @@ class PortfolioJobRegistry:
             snapshot: Sequence[SolveJobStatus] | None = self._settlement_snapshot(record)
             if snapshot is None:
                 return
-            losers = [
-                attempt.job_id for attempt in snapshot if attempt.state not in TERMINAL_STATES
-            ]
+            for attempt in snapshot:
+                if attempt.state == "queued":
+                    queued_losers.append(attempt.job_id)
+                elif attempt.state not in TERMINAL_STATES:
+                    running_losers.append(attempt.job_id)
             self._settle(record, snapshot)
-        if losers:
-            # Not on this thread: it is the finishing attempt's pool worker, whose slot
-            # admission already counts free, and a loser's process-tree teardown can
-            # take seconds. Not under record.lock either: cancelling a queued loser runs
-            # this listener synchronously. Daemon, because JobRegistry.shutdown stops
-            # any loser this thread has not reached.
+        # Queued losers on this thread, before it returns: it is the finishing attempt's
+        # pool worker, which takes the next queued item at once. Dropping a queued job is
+        # instant (one another worker starts meanwhile is stopped like a running loser).
+        # Not under record.lock: that cancel runs this listener synchronously.
+        self._cancel_attempts(queued_losers)
+        if running_losers:
+            # Not on this thread: admission already counts its slot free, and a loser's
+            # process-tree teardown can take seconds. Daemon, because
+            # JobRegistry.shutdown stops any loser this thread has not reached.
             threading.Thread(
                 target=self._cancel_attempts,
-                args=(losers,),
+                args=(running_losers,),
                 name="portfolio-cancel-losers",
                 daemon=True,
             ).start()

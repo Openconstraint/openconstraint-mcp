@@ -830,6 +830,51 @@ def test_loser_teardown_does_not_occupy_the_winners_worker(
         job_registry.shutdown()
 
 
+def test_decisive_winner_cancels_a_queued_loser_before_it_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # On a 2-worker pool the chuffed attempt queues behind the running cp-sat winner and
+    # gecode loser. The winner's freed worker takes the next queued item as soon as it
+    # returns, so the queued loser must already be cancelled by then — not left for a
+    # cancel that waits behind the running loser's (held-open) teardown.
+    loser_started: threading.Event = threading.Event()
+    teardown_started: threading.Event = threading.Event()
+    teardown_may_finish: threading.Event = threading.Event()
+    solved: list[str] = []
+
+    def _fake_solve(model: str, *, solver: str, on_start: Any, **kw: Any) -> SolveResult:
+        solved.append(solver)
+        on_start(_FakeProc())
+        if solver == "cp-sat":
+            loser_started.wait(timeout=5)
+            return _solve_result("optimal", solver=solver)
+        loser_started.set()
+        teardown_may_finish.wait(timeout=10)
+        return _solve_result("satisfied", solver=solver)
+
+    def _slow_terminate(proc: Any, **kwargs: Any) -> None:
+        teardown_started.set()
+        teardown_may_finish.wait(timeout=10)
+
+    _patch_solve(monkeypatch, _fake_solve)
+    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _slow_terminate)
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=2)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+    try:
+        job_id: str = portfolios.submit(
+            models=["solve satisfy;"],
+            solvers=["cp-sat", "org.gecode.gecode", "org.chuffed.chuffed"],
+        )
+        queued_id: str = portfolios._records[job_id].attempt_job_ids[2]
+        assert teardown_started.wait(timeout=3)
+
+        assert job_registry.get(queued_id).state == "cancelled"
+        assert "org.chuffed.chuffed" not in solved
+    finally:
+        teardown_may_finish.set()
+        job_registry.shutdown()
+
+
 def test_cancel_still_stops_later_attempts_when_one_teardown_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
