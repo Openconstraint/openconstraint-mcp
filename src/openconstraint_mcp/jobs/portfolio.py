@@ -101,6 +101,7 @@ def _admit_portfolio(
     per_attempt_timeout_ms: int,
     solve_controls: PortfolioSolveControls,
     on_attempt_terminal: Callable[[int, SolveJobStatus], None],
+    on_attempt_error: Callable[[int, str], None],
     seeds: list[int] | None = None,
 ) -> _PortfolioAdmission:
     """Validate the plan and admit its attempts atomically; return a ``_PortfolioAdmission``.
@@ -112,7 +113,8 @@ def _admit_portfolio(
     full queue instead of recording a background job that instantly fails. On return
     the attempts are already admitted to ``registry`` (running or queued), and each
     attempt's terminal status reaches ``on_attempt_terminal`` with its plan index —
-    possibly before this function returns. The returned
+    possibly before this function returns. Internal completion/listener errors reach
+    ``on_attempt_error`` instead, so the owner can fail the race. The returned
     ``models_sha256``/``data_sha256``/``checker_sha256`` are provenance hashes of the
     exact ``models``/``data``/``checker`` text this call admitted (see
     ``PortfolioSolveResult``).
@@ -163,7 +165,9 @@ def _admit_portfolio(
     models_sha256: list[str] = [text_sha256(model) for model in models]
     data_sha256: str | None = text_sha256(data) if data is not None else None
     checker_sha256: str | None = text_sha256(checker) if checker is not None else None
-    job_ids: list[str] = registry.submit_many(requests, on_terminal=on_attempt_terminal)
+    job_ids: list[str] = registry.submit_many(
+        requests, on_terminal=on_attempt_terminal, on_terminal_error=on_attempt_error
+    )
     return _PortfolioAdmission(
         start=start,
         job_ids=job_ids,

@@ -12,6 +12,8 @@ running are snapshotted as they are, the aggregate ``PortfolioSolveResult`` is b
 the job finalizes ``succeeded`` at once, and those losers are cancelled afterwards.
 With no decisive attempt it settles once every attempt is terminal (``succeeded``
 with the best-available result, or ``failed`` if the aggregate cannot be built).
+An internal completion/listener error ends a running race as ``failed`` through
+the attempt registry's separate error callback, then cancels remaining attempts.
 ``get``/``list`` only read, so a never-polled race still finishes.
 
 The listener runs on the finishing attempt's worker thread (or synchronously inside
@@ -190,7 +192,7 @@ class PortfolioJobRegistry:
         the race then settles on its attempts' terminal events. Running portfolios need
         no bound of their own: a portfolio stays ``running`` only while one of its
         attempts has not reported terminal, and the last report always finalizes it
-        (``succeeded``, or ``failed`` when the aggregate cannot be built), so live
+        (``succeeded``, or ``failed`` on an internal completion/aggregation error), so live
         portfolios are bounded by the solve registry's capacity.
         """
         # Built per call: PortfolioSolveControls is mutable and is recorded by
@@ -226,6 +228,9 @@ class PortfolioJobRegistry:
                 solve_controls=controls,
                 on_attempt_terminal=lambda index, status: self._on_attempt_terminal(
                     record, index, status
+                ),
+                on_attempt_error=lambda index, message: self._on_attempt_error(
+                    record, index, message
                 ),
             )
             record.start = admission.start
@@ -291,6 +296,17 @@ class PortfolioJobRegistry:
         if record is None:
             raise ValueError(f"unknown portfolio job_id: {job_id}")
         return record
+
+    def _on_attempt_error(self, record: _PortfolioRecord, index: int, message: str) -> None:
+        # Independent of attempt snapshots: their construction may be what failed.
+        with record.lock:
+            if record.state != "running":
+                return
+            self._finalize(
+                record, "failed", None, f"Could not complete portfolio attempt {index}: {message}"
+            )
+        # Outside record.lock: queued cancellation invokes the listeners inline.
+        self._cancel_attempts(record.attempt_job_ids)
 
     def _on_attempt_terminal(
         self, record: _PortfolioRecord, index: int, status: SolveJobStatus

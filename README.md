@@ -259,6 +259,9 @@ expose, each in an inline-source and a path-based form, plus background solve
 jobs, solver portfolios, registry bounds, and progress notifications. See
 [docs/mcp-tools.md](https://github.com/Openconstraint/openconstraint-mcp/blob/master/docs/mcp-tools.md).
 
+Background portfolios report internal completion errors as `failed` with a
+`job_failed` diagnostic and cancel remaining attempts best-effort.
+
 ## CP-SAT Python execution path
 
 The second solving path: the client's LLM writes complete OR-Tools CP-SAT

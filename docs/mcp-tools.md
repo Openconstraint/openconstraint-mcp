@@ -651,7 +651,11 @@ the job machinery.
   is `"succeeded"`. A race with no decisive winner is still `"succeeded"` (carrying a
   `"no_winner"` `PortfolioSolveResult`); a per-attempt failure is recorded in that
   result's attempts table, not as a failed job. `"failed"` means the server could
-  not build the race result (`message` says why, with a `job_failed` diagnostic).
+  not build the race result, or encountered an internal error while completing an
+  attempt or handling its completion notification (`message` says why, with a
+  `job_failed` diagnostic). These errors end the race without requiring polling;
+  remaining attempts are cancelled best-effort, and the failed portfolio is
+  subject to the normal terminal-record retention limit.
   Pace polling against
   `per_attempt_timeout_ms` rather than a fixed `sleep`.
 - **`cancel_portfolio_job`** — stop a running race and **every** still-running

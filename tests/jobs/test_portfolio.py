@@ -118,7 +118,10 @@ def _ignore_attempt_event(index: int, status: SolveJobStatus) -> None:
 def _admit(registry: JobRegistry, **kwargs: Any) -> _PortfolioAdmission:
     """Admit a portfolio plan, filling the optional fields the engine requires."""
     return _admit_portfolio(
-        registry, on_attempt_terminal=_ignore_attempt_event, **{**_ADMIT_DEFAULTS, **kwargs}
+        registry,
+        on_attempt_terminal=_ignore_attempt_event,
+        on_attempt_error=lambda index, message: None,
+        **{**_ADMIT_DEFAULTS, **kwargs},
     )
 
 

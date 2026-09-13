@@ -1051,6 +1051,62 @@ def test_on_terminal_listener_may_call_get_and_cancel_without_deadlock(
 # --- terminal listener failures ------------------------------------------------
 
 
+@pytest.mark.parametrize("completion_path", ["worker", "failed_worker", "cancel", "shutdown"])
+def test_snapshot_error_notifies_owner_once_outside_lock(
+    monkeypatch: pytest.MonkeyPatch, completion_path: str
+) -> None:
+    started: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    registry: JobRegistry = JobRegistry(max_running_jobs=1)
+    errors: list[tuple[int, str]] = []
+    original_status: Any = registry._to_status
+
+    def _snapshot(record: Any) -> SolveJobStatus:
+        if record.request.model == "target":
+            raise RuntimeError("snapshot exploded")
+        return original_status(record)
+
+    def _on_error(index: int, message: str) -> None:
+        # Re-entry would deadlock if completion invoked this under registry._lock.
+        with registry._lock:
+            errors.append((index, message))
+
+    def _solve(model: str, *, on_start: Any, **kwargs: Any) -> SolveResult:
+        if model == "blocker":
+            on_start(_FakeProc())
+            started.set()
+            release.wait(timeout=5)
+        elif completion_path == "failed_worker":
+            raise RuntimeError("solver exploded")
+        return _solve_result()
+
+    _patch_solve(monkeypatch, _solve)
+    monkeypatch.setattr(
+        "openconstraint_mcp.jobs.registry._terminate_process_tree", lambda proc: release.set()
+    )
+    monkeypatch.setattr(registry, "_to_status", _snapshot)
+    try:
+        if completion_path in {"cancel", "shutdown"}:
+            registry.submit(model="blocker")
+            assert started.wait(timeout=3)
+        job_ids: list[str] = registry.submit_many(
+            [_request("target"), _request("other")], on_terminal_error=_on_error
+        )
+        if completion_path == "cancel":
+            with pytest.raises(RuntimeError, match="snapshot exploded"):
+                registry.cancel(job_ids[0])
+        elif completion_path == "shutdown":
+            registry.shutdown()
+        else:
+            future: Future[None] | None = registry._records[job_ids[0]].future
+            assert future is not None
+            future.result(timeout=3)
+    finally:
+        release.set()
+        registry.shutdown()
+    assert errors == [(0, "RuntimeError: snapshot exploded")]
+
+
 def _raising_listener(index: int, status: SolveJobStatus) -> None:
     raise RuntimeError("listener exploded")
 

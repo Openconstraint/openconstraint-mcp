@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import Future
 from typing import Any
 
 import pytest
@@ -638,6 +639,98 @@ def test_result_build_failure_finalizes_the_portfolio_failed(
     assert final.state == "failed"
     assert final.diagnostic is not None and final.diagnostic.category == "job_failed"
     assert "RuntimeError: result build exploded" in (final.message or "")
+
+
+@pytest.mark.parametrize("failure_site", ["snapshot", "eviction", "listener"])
+def test_completion_error_finalizes_portfolio_without_polling(
+    monkeypatch: pytest.MonkeyPatch, failure_site: str
+) -> None:
+    _patch_solve(monkeypatch, lambda *args, **kwargs: _solve_result("optimal"))
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=1)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+
+    def _broken(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("completion exploded")
+
+    try:
+        with monkeypatch.context() as patch:
+            if failure_site == "snapshot":
+                patch.setattr(job_registry, "_to_status", _broken)
+            elif failure_site == "eviction":
+                patch.setattr(job_registry, "_evict_terminal_overflow", _broken)
+            else:
+                patch.setattr(portfolios, "_settlement_snapshot", _broken)
+            job_id: str = portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
+            attempt_id: str = portfolios._records[job_id].attempt_job_ids[0]
+            future: Future[None] | None = job_registry._records[attempt_id].future
+            assert future is not None
+            future.result(timeout=3)
+        final: PortfolioJobStatus = portfolios.get(job_id)
+        assert final.state == "failed"
+        assert "completion exploded" in (final.message or "")
+    finally:
+        job_registry.shutdown()
+
+
+def test_completion_error_cancels_remaining_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    loser_started: threading.Event = threading.Event()
+    releases: dict[str, threading.Event] = {
+        "loser": threading.Event(),
+        "queued": threading.Event(),
+    }
+    handles: dict[_FakeProc, threading.Event] = {}
+
+    def _fake_solve(model: str, *, on_start: Any, **kwargs: Any) -> SolveResult:
+        if model == "winner":
+            assert loser_started.wait(timeout=3)
+            return _solve_result("optimal")
+        proc: _FakeProc = _FakeProc()
+        handles[proc] = releases[model]
+        on_start(proc)
+        loser_started.set()
+        releases[model].wait(timeout=5)
+        return _solve_result()
+
+    def _broken_snapshot(*args: Any) -> Any:
+        raise RuntimeError("snapshot exploded")
+
+    _patch_solve(monkeypatch, _fake_solve)
+    monkeypatch.setattr(
+        "openconstraint_mcp.jobs.registry._terminate_process_tree", lambda proc: handles[proc].set()
+    )
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=2)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+    monkeypatch.setattr(portfolios, "_settlement_snapshot", _broken_snapshot)
+    try:
+        job_id: str = portfolios.submit(models=["winner", "loser", "queued"], solvers=["cp-sat"])
+        attempt_ids: list[str] = portfolios._records[job_id].attempt_job_ids
+        _poll(portfolios, job_id)
+        states: list[str] = [_wait_solve_terminal(job_registry, job) for job in attempt_ids[1:]]
+        assert states == ["cancelled", "cancelled"]
+    finally:
+        for release in releases.values():
+            release.set()
+        job_registry.shutdown()
+
+
+def test_completion_error_portfolios_are_evicted(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_solve(monkeypatch, lambda *args, **kwargs: _solve_result("optimal"))
+
+    def _broken_listener(*args: Any) -> None:
+        raise RuntimeError("listener exploded")
+
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=1)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry, max_retained_terminal=1)
+    monkeypatch.setattr(portfolios, "_on_attempt_terminal", _broken_listener)
+    try:
+        first_id: str = portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
+        _poll(portfolios, first_id)
+        second_id: str = portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
+        _poll(portfolios, second_id)
+        with pytest.raises(ValueError, match="unknown portfolio job_id"):
+            portfolios.get(first_id)
+    finally:
+        job_registry.shutdown()
 
 
 def test_failed_portfolio_is_evicted_by_the_retention_cap(

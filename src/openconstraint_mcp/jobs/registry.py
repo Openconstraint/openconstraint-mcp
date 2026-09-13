@@ -94,6 +94,7 @@ class _JobRecord:
     cancel_requested: bool = False
     # Set by submit_many: called once, outside the lock, after the record finalizes.
     on_terminal: Callable[[int, SolveJobStatus], None] | None = None
+    on_terminal_error: Callable[[int, str], None] | None = None
     batch_index: int = 0
 
 
@@ -181,6 +182,7 @@ class JobRegistry:
         requests: Sequence[SolveRequest],
         *,
         on_terminal: Callable[[int, SolveJobStatus], None] | None = None,
+        on_terminal_error: Callable[[int, str], None] | None = None,
     ) -> list[str]:
         """Admit a batch of solves atomically — all or none (D8) — in request order.
 
@@ -195,13 +197,16 @@ class JobRegistry:
         this, so this primitive runs no ``--solvers-json`` itself. Returns the
         ``job_id`` list in request order.
 
-        ``on_terminal``, when given, is called exactly once per admitted job with
+        ``on_terminal``, when given, is called once on normal completion with
         ``(position in requests, terminal status)`` after that job finalizes — on the
         finishing worker's thread, or synchronously on the thread whose ``cancel``/
         ``shutdown`` finalized a job that never started. It never runs while the
         registry lock is held, so it may call back into the registry; an event can
         arrive before this method returns. A listener exception is logged and does not
         propagate, so it cannot abort ``cancel``/``shutdown`` or vanish on a worker.
+        ``on_terminal_error`` receives the index and error summary if completion or
+        the terminal listener fails. Both callbacks run outside the registry lock;
+        the error callback lets an owning portfolio fail instead of waiting forever.
         """
         for request in requests:
             validate_model_and_timeout(request.model, request.timeout_ms)
@@ -210,7 +215,12 @@ class JobRegistry:
             if self._in_flight + len(requests) > self._max_running + self._max_queued:
                 raise JobRejectedError(self._queue_full_message(batch=len(requests)))
             job_ids: list[str] = [
-                self._admit_locked(request, on_terminal=on_terminal, batch_index=index)
+                self._admit_locked(
+                    request,
+                    on_terminal=on_terminal,
+                    on_terminal_error=on_terminal_error,
+                    batch_index=index,
+                )
                 for index, request in enumerate(requests)
             ]
             return job_ids
@@ -243,13 +253,13 @@ class JobRegistry:
             # Cancelled before the worker started: it will never run, so finalize here.
             # A second cancel racing this one also sees future.cancel() True, but
             # its _finalize is a no-op, so only the first notifies.
+            status: SolveJobStatus | None = self._complete(
+                record, "cancelled", None, "Cancelled before start"
+            )
+            if status is not None:
+                return status
             with self._lock:
-                transitioned: bool = self._finalize(
-                    record, "cancelled", None, "Cancelled before start"
-                )
-                status: SolveJobStatus = self._to_status(record)
-            self._notify_terminal(record, transitioned, status)
-            return status
+                return self._to_status(record)
         if handle is not None:
             _terminate_process_tree(handle)
         with self._lock:
@@ -284,12 +294,7 @@ class JobRegistry:
         for record in records:
             future = record.future
             if future is not None and future.cancel():
-                with self._lock:
-                    transitioned: bool = self._finalize(
-                        record, "cancelled", None, "Cancelled at shutdown"
-                    )
-                    status: SolveJobStatus = self._to_status(record)
-                self._notify_terminal(record, transitioned, status)
+                self._complete(record, "cancelled", None, "Cancelled at shutdown")
         with self._lock:
             # A terminal record can still own a leader that termination could not
             # reap. Its None returncode is the teardown-retry signal.
@@ -327,6 +332,7 @@ class JobRegistry:
         request: SolveRequest,
         *,
         on_terminal: Callable[[int, SolveJobStatus], None] | None = None,
+        on_terminal_error: Callable[[int, str], None] | None = None,
         batch_index: int = 0,
     ) -> str:
         # Caller holds the lock AND has already checked capacity. Creates the record,
@@ -342,6 +348,7 @@ class JobRegistry:
             state="running" if runs_now else "queued",
             started_at_ms=now if runs_now else None,
             on_terminal=on_terminal,
+            on_terminal_error=on_terminal_error,
             batch_index=batch_index,
         )
         self._records[job_id] = record
@@ -421,19 +428,57 @@ class JobRegistry:
         self._evict_terminal_overflow()
         return True
 
-    @staticmethod
-    def _notify_terminal(record: _JobRecord, transitioned: bool, status: SolveJobStatus) -> None:
+    def _complete(
+        self,
+        record: _JobRecord,
+        state: JobState,
+        result: SolveResult | None,
+        message: str | None,
+    ) -> SolveJobStatus | None:
+        # Shared by workers, queued cancellation, and shutdown. In particular,
+        # eviction or status construction can fail AFTER _finalize changed state.
+        # Report that failure independently of constructing a SolveJobStatus.
+        error: str | None = None
+        status: SolveJobStatus | None = None
+        with self._lock:
+            try:
+                if result is not None and record.cancel_requested:
+                    state, result, message = "cancelled", None, "Cancelled by client"
+                if not self._finalize(record, state, result, message):
+                    return None
+                status = self._to_status(record)
+            except Exception as exc:  # noqa: BLE001 - completion boundary
+                error = exception_summary(exc)
+                _logger.exception("completion failed for job %s", record.job_id)
+        if error is not None:
+            self._notify_terminal_error(record, error)
+        elif status is not None:
+            self._notify_terminal(record, status)
+        return status
+
+    def _notify_terminal(self, record: _JobRecord, status: SolveJobStatus) -> None:
         # Caller must NOT hold the lock: a listener may call back into the registry
         # (a portfolio cancels its losers), and threading.Lock is not reentrant.
-        if not transitioned or record.on_terminal is None:
+        if record.on_terminal is None:
             return
         try:
             record.on_terminal(record.batch_index, status)
-        except Exception:
+        except Exception as exc:
             # Logged, not raised: shutdown must still finalize the remaining queued jobs
             # and terminate live children, and on a worker thread the error would
             # otherwise vanish into a Future nobody reads.
             _logger.exception("terminal listener failed for job %s", record.job_id)
+            self._notify_terminal_error(record, exception_summary(exc))
+
+    @staticmethod
+    def _notify_terminal_error(record: _JobRecord, message: str) -> None:
+        # Caller must NOT hold the registry lock: the owner may cancel other jobs.
+        if record.on_terminal_error is None:
+            return
+        try:
+            record.on_terminal_error(record.batch_index, message)
+        except Exception:
+            _logger.exception("terminal error listener failed for job %s", record.job_id)
 
     def _evict_terminal_overflow(self) -> None:
         # Caller holds the lock. FIFO eviction of the oldest terminal jobs beyond
@@ -484,15 +529,6 @@ class JobRegistry:
                 on_start=lambda proc: self._on_start(job_id, proc),
             )
         except Exception as exc:  # noqa: BLE001 - worker boundary: never leak; record as failed
-            with self._lock:
-                transitioned: bool = self._finalize(record, "failed", None, exception_summary(exc))
-                status: SolveJobStatus = self._to_status(record)
-            self._notify_terminal(record, transitioned, status)
+            self._complete(record, "failed", None, exception_summary(exc))
             return
-        with self._lock:
-            if record.cancel_requested:
-                transitioned = self._finalize(record, "cancelled", None, "Cancelled by client")
-            else:
-                transitioned = self._finalize(record, job_state_for_result(result), result, None)
-            status = self._to_status(record)
-        self._notify_terminal(record, transitioned, status)
+        self._complete(record, job_state_for_result(result), result, None)
