@@ -105,27 +105,50 @@ def test_submit_then_poll_reaches_succeeded_with_winner(monkeypatch: pytest.Monk
 def test_poll_succeeds_after_child_attempt_would_exceed_solve_retention(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The first attempt finishes non-decisively and is cached while the second still
+    # runs; unrelated solves then evict the first attempt's solve record. The race
+    # must still settle from the cached status, not a re-read of the evicted record.
+    release = threading.Event()
+
+    class _ExitedProc(_FakeProc):
+        # Retention eviction reaps an evicted record's handle via poll().
+        def poll(self) -> int:
+            return 0
+
     def _fake_solve(model: str, *, solver: str, on_start: Any, **kw: Any) -> SolveResult:
-        on_start(_FakeProc())
-        return _solve_result("optimal", solver=solver)
+        on_start(_ExitedProc())
+        if solver == "org.gecode.gecode":
+            release.wait(timeout=5)
+            return _solve_result("optimal", solver=solver)
+        return _solve_result("unknown", solver=solver)
 
     _patch_solve(monkeypatch, _fake_solve)
 
-    job_registry = JobRegistry(max_running_jobs=1, max_queued_jobs=4, max_retained_terminal=2)
+    job_registry = JobRegistry(max_running_jobs=2, max_queued_jobs=4, max_retained_terminal=1)
     portfolios = PortfolioJobRegistry(job_registry)
     try:
-        job_id = portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
-        (attempt_id,) = portfolios._records[job_id].attempt_job_ids
-        _wait_solve_terminal(job_registry, attempt_id)
+        job_id = portfolios.submit(
+            models=["solve satisfy;"], solvers=["cp-sat", "org.gecode.gecode"]
+        )
+        record = portfolios._records[job_id]
+        cached_id, _ = record.attempt_job_ids
+        deadline = time.monotonic() + 3.0
+        while record.statuses[0] is None and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert record.statuses[0] is not None
 
-        for _ in range(3):
-            unrelated_id = job_registry.submit(model="solve satisfy;")
-            _wait_solve_terminal(job_registry, unrelated_id)
+        unrelated_id = job_registry.submit(model="solve satisfy;", solver="cp-sat")
+        _wait_solve_terminal(job_registry, unrelated_id)
+        with pytest.raises(ValueError, match="unknown job_id"):
+            job_registry.get(cached_id)  # evicted while the portfolio is still running
+        assert portfolios.get(job_id).state == "running"
 
-        final = portfolios.get(job_id)
+        release.set()
+        final = _poll(portfolios, job_id)
         assert final.state == "succeeded"
         assert final.result is not None
-        assert final.result.winner_index == 0
+        assert final.result.winner_index == 1
+        assert final.result.attempts[0].result_status == "unknown"
         assert final.result.winner is not None
     finally:
         job_registry.shutdown()
@@ -459,12 +482,27 @@ def test_get_has_no_side_effects_on_a_running_race(monkeypatch: pytest.MonkeyPat
 
 
 def test_attempt_finishing_during_submit_is_counted(monkeypatch: pytest.MonkeyPatch) -> None:
-    # submit_many is wrapped to return only after its attempts are terminal, so the
-    # attempt's event is delivered while submit is still admitting the record.
+    # submit_many is wrapped to return only after the attempt's listener has probed
+    # record.lock, so the event is delivered while submit is still admitting the record.
+    # (A terminal solve state alone is not enough: the listener runs after it.) The
+    # probe must find the lock held; otherwise early events could see an empty record.
+    listener_entered = threading.Event()
+    lock_held_at_event: list[bool] = []
+    original_listener = PortfolioJobRegistry._on_attempt_terminal
+
+    def _spy_listener(self: PortfolioJobRegistry, record: Any, index: int, status: Any) -> None:
+        acquired: bool = record.lock.acquire(blocking=False)
+        if acquired:
+            record.lock.release()
+        lock_held_at_event.append(not acquired)
+        listener_entered.set()
+        original_listener(self, record, index, status)
+
     def _fake_solve(model: str, *, solver: str, on_start: Any, **kw: Any) -> SolveResult:
         on_start(_FakeProc())
         return _solve_result("optimal", solver=solver)
 
+    monkeypatch.setattr(PortfolioJobRegistry, "_on_attempt_terminal", _spy_listener)
     _patch_solve(monkeypatch, _fake_solve)
 
     job_registry = JobRegistry(max_running_jobs=4)
@@ -472,8 +510,8 @@ def test_attempt_finishing_during_submit_is_counted(monkeypatch: pytest.MonkeyPa
 
     def _submit_then_await_terminal(requests: Any, **kwargs: Any) -> list[str]:
         job_ids: list[str] = real_submit_many(requests, **kwargs)
-        for attempt_id in job_ids:
-            _wait_solve_terminal(job_registry, attempt_id)
+        assert listener_entered.wait(timeout=3)
+        assert lock_held_at_event == [True]
         return job_ids
 
     monkeypatch.setattr(job_registry, "submit_many", _submit_then_await_terminal)
