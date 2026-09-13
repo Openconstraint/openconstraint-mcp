@@ -20,6 +20,7 @@ machinery and ``schemas``; it never imports ``server``.
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -52,6 +53,8 @@ from ..schemas.minizinc import (
 )
 from ..shared.job_errors import JobRejectedError, exception_summary, now_ms
 from ..shared.proc import terminate_process_tree as _terminate_process_tree
+
+_logger: logging.Logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -197,7 +200,8 @@ class JobRegistry:
         finishing worker's thread, or synchronously on the thread whose ``cancel``/
         ``shutdown`` finalized a job that never started. It never runs while the
         registry lock is held, so it may call back into the registry; an event can
-        arrive before this method returns. Listener exceptions are not caught.
+        arrive before this method returns. A listener exception is logged and does not
+        propagate, so it cannot abort ``cancel``/``shutdown`` or vanish on a worker.
         """
         for request in requests:
             validate_model_and_timeout(request.model, request.timeout_ms)
@@ -421,8 +425,15 @@ class JobRegistry:
     def _notify_terminal(record: _JobRecord, transitioned: bool, status: SolveJobStatus) -> None:
         # Caller must NOT hold the lock: a listener may call back into the registry
         # (a portfolio cancels its losers), and threading.Lock is not reentrant.
-        if transitioned and record.on_terminal is not None:
+        if not transitioned or record.on_terminal is None:
+            return
+        try:
             record.on_terminal(record.batch_index, status)
+        except Exception:
+            # Logged, not raised: shutdown must still finalize the remaining queued jobs
+            # and terminate live children, and on a worker thread the error would
+            # otherwise vanish into a Future nobody reads.
+            _logger.exception("terminal listener failed for job %s", record.job_id)
 
     def _evict_terminal_overflow(self) -> None:
         # Caller holds the lock. FIFO eviction of the oldest terminal jobs beyond

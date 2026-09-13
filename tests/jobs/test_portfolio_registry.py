@@ -18,10 +18,14 @@ import pytest
 from openconstraint_mcp.jobs.portfolio_registry import PortfolioJobRegistry
 from openconstraint_mcp.jobs.registry import JobRegistry
 from openconstraint_mcp.schemas.minizinc import SolveResult
-from openconstraint_mcp.schemas.portfolio import PortfolioSolveControls, PortfolioSolveResult
+from openconstraint_mcp.schemas.portfolio import (
+    PortfolioJobStatus,
+    PortfolioSolveControls,
+    PortfolioSolveResult,
+)
 from openconstraint_mcp.shared.job_errors import JobRejectedError
 
-_TERMINAL = {"succeeded", "cancelled"}
+_TERMINAL = {"succeeded", "failed", "cancelled"}
 _SOLVE_TERMINAL = {"succeeded", "failed", "timeout", "cancelled"}
 
 
@@ -574,7 +578,33 @@ def test_late_attempt_completion_after_cancel_stays_cancelled(
         job_registry.shutdown()
 
 
-def test_result_build_error_surfaces_from_get(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_submit_failing_while_hashing_provenance_admits_no_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Provenance hashing must finish before the attempts are admitted: a failure after
+    # admission would leave attempts running that no portfolio record owns.
+    def _hash_exploded(text: str) -> str:
+        raise RuntimeError("hash exploded")
+
+    def _never(model: str, *, on_start: Any, **kw: Any) -> SolveResult:
+        raise AssertionError("no solve should run when admission fails")
+
+    _patch_solve(monkeypatch, _never)
+    monkeypatch.setattr("openconstraint_mcp.jobs.portfolio.text_sha256", _hash_exploded)
+
+    job_registry: JobRegistry = JobRegistry()
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+    try:
+        with pytest.raises(RuntimeError, match="hash exploded"):
+            portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
+        assert job_registry.list() == []
+    finally:
+        job_registry.shutdown()
+
+
+def _patch_broken_result_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Attempts solve decisively, but building the race's aggregate raises."""
+
     def _fake_solve(model: str, *, solver: str, on_start: Any, **kw: Any) -> SolveResult:
         on_start(_FakeProc())
         return _solve_result("optimal", solver=solver)
@@ -587,21 +617,41 @@ def test_result_build_error_surfaces_from_get(monkeypatch: pytest.MonkeyPatch) -
         "openconstraint_mcp.jobs.portfolio_registry._build_portfolio_result", _broken_build
     )
 
-    job_registry = JobRegistry(max_running_jobs=4)
-    portfolios = PortfolioJobRegistry(job_registry)
+
+def test_result_build_failure_finalizes_the_portfolio_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Every attempt is terminal but the aggregate cannot be built: the job must still
+    # reach a terminal state that reports the error, not stay `running` forever.
+    _patch_broken_result_build(monkeypatch)
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=4)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
     try:
-        job_id = portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
-        raised: RuntimeError | None = None
-        deadline = time.monotonic() + 5.0
-        while raised is None and time.monotonic() < deadline:
-            try:
-                portfolios.get(job_id)
-            except RuntimeError as exc:
-                raised = exc
-            else:
-                time.sleep(0.01)
-        assert raised is not None
-        assert "result build exploded" in str(raised)
+        job_id: str = portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
+        final: PortfolioJobStatus = _poll(portfolios, job_id)
+    finally:
+        job_registry.shutdown()
+
+    assert final.state == "failed"
+    assert final.diagnostic is not None and final.diagnostic.category == "job_failed"
+    assert "RuntimeError: result build exploded" in (final.message or "")
+
+
+def test_failed_portfolio_is_evicted_by_the_retention_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A failed race is terminal, so the retention cap bounds it like any finished job.
+    _patch_broken_result_build(monkeypatch)
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=4)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry, max_retained_terminal=1)
+    try:
+        first_id: str = portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
+        _poll(portfolios, first_id)
+        second_id: str = portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
+        _poll(portfolios, second_id)
+
+        with pytest.raises(ValueError, match="unknown portfolio job_id"):
+            portfolios.get(first_id)
     finally:
         job_registry.shutdown()
 

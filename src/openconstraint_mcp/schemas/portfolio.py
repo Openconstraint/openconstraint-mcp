@@ -162,14 +162,14 @@ class PortfolioSolveResult(BaseModel):
 
 
 # A background portfolio job's lifecycle. Unlike a single solve job there is no
-# `queued`/`timeout`/`failed`: the race's attempts are admitted to the solve
+# `queued`/`timeout`: the race's attempts are admitted to the solve
 # registry the moment the portfolio is submitted (so a full-queue rejection surfaces
 # synchronously, not as a job), winner-selection is a pure function of the attempts'
-# statuses (it cannot itself fail — a per-attempt failure is captured in the
-# attempts table, and a race with no decisive winner is still a SUCCESSFUL
-# orchestration carrying a `no_winner` PortfolioSolveResult), and only `succeeded`
-# is result-bearing.
-PortfolioJobState = Literal["running", "succeeded", "cancelled"]
+# statuses (a per-attempt failure is captured in the attempts table, and a race with
+# no decisive winner is still a SUCCESSFUL orchestration carrying a `no_winner`
+# PortfolioSolveResult; `failed` means only that building that aggregate raised), and
+# only `succeeded` is result-bearing.
+PortfolioJobState = Literal["running", "succeeded", "failed", "cancelled"]
 
 
 class PortfolioJobStatus(BaseModel):
@@ -181,8 +181,9 @@ class PortfolioJobStatus(BaseModel):
     state. ``result`` (the full ``PortfolioSolveResult``, winner and the
     cancelled-loser table alike) is present IFF ``state == "succeeded"`` — this is
     enforced, so a client branches on ``state`` and trusts ``result``'s presence.
-    A ``no_winner`` race is ``succeeded`` (the orchestration completed); ``cancelled``
-    means the client stopped the race. Mid-race statistics are not provided: a
+    A ``no_winner`` race is ``succeeded`` (the orchestration completed); ``failed``
+    means the server could not build the race result (``message`` says why);
+    ``cancelled`` means the client stopped the race. Mid-race statistics are not provided: a
     ``running`` job reports only ``state``, ``elapsed_ms``, and the requested
     ``per_attempt_timeout_ms`` so a client can pace polling against the per-attempt
     budget instead of guessing an interval.

@@ -157,10 +157,12 @@ def _admit_portfolio(
                 extra_args=build_solve_extra_args(solver, attempt_controls),
             )
         )
-    job_ids = registry.submit_many(requests, on_terminal=on_attempt_terminal)
-    models_sha256 = [text_sha256(model) for model in models]
-    data_sha256 = text_sha256(data) if data is not None else None
-    checker_sha256 = text_sha256(checker) if checker is not None else None
+    # Hash before admitting: submit_many must be the last step that can fail, or a
+    # failure after it would leave admitted attempts that no portfolio record owns.
+    models_sha256: list[str] = [text_sha256(model) for model in models]
+    data_sha256: str | None = text_sha256(data) if data is not None else None
+    checker_sha256: str | None = text_sha256(checker) if checker is not None else None
+    job_ids: list[str] = registry.submit_many(requests, on_terminal=on_attempt_terminal)
     return _PortfolioAdmission(
         start=start,
         job_ids=job_ids,

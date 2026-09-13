@@ -8,7 +8,8 @@ attempts ARE ordinary jobs in the shared ``JobRegistry``; the only thing this
 registry adds is winner-selection, driven by that registry's terminal listener.
 Each time an attempt finishes, ``_on_attempt_terminal`` caches its status; the first
 decisive attempt cancels the still-pending losers at once, and when every attempt is
-terminal the aggregate ``PortfolioSolveResult`` is built and the job finalizes.
+terminal the aggregate ``PortfolioSolveResult`` is built and the job finalizes
+``succeeded`` (or ``failed``, if the aggregate cannot be built).
 ``get``/``list`` only read, so a never-polled race still finishes.
 
 The listener runs on the finishing attempt's worker thread (or synchronously inside
@@ -43,7 +44,7 @@ from ..schemas.portfolio import (
     PortfolioSolveControls,
     PortfolioSolveResult,
 )
-from ..shared.job_errors import now_ms
+from ..shared.job_errors import exception_summary, now_ms
 
 # portfolio_registry reuses portfolio's synchronous admission (_admit_portfolio) and
 # its result builder and decisiveness rules. These are package-internal helpers, not
@@ -69,8 +70,7 @@ class _PortfolioRecord:
     one ``statuses`` slot per plan index. An attempt event that arrives before
     admission returns waits on ``lock`` until they are set. ``statuses`` caches each
     attempt's terminal snapshot, ``decided`` marks that the losers were already
-    cancelled, ``error`` holds a result-build failure for ``get`` to raise, and — once
-    terminal — ``result``/``message`` are cached.
+    cancelled, and — once terminal — ``result``/``message`` are cached.
     """
 
     job_id: str
@@ -86,7 +86,6 @@ class _PortfolioRecord:
     checker_sha256: str | None = None
     statuses: list[SolveJobStatus | None] = field(default_factory=list)
     decided: bool = False
-    error: Exception | None = None
     state: PortfolioJobState = "running"
     finished_at_ms: int | None = None
     elapsed_ms: int | None = None
@@ -112,9 +111,9 @@ def _to_status(record: _PortfolioRecord) -> PortfolioJobStatus:
         elapsed_ms = record.elapsed_ms
     else:
         elapsed_ms = max(now_ms() - record.started_at_ms, 0)
-    # `cancelled` gets a wrapper diagnostic; `succeeded` derives from the race
+    # `cancelled`/`failed` get a wrapper diagnostic; `succeeded` derives from the race
     # result (None for a decisive winner, no_winner/timeout otherwise); `running`
-    # has none. A portfolio has no `failed`/`timeout` state.
+    # has none. A portfolio has no `timeout` state.
     diagnostic = wrapper_job_diagnostic(
         record.state,
         message=record.message or f"portfolio {record.state}",
@@ -179,8 +178,10 @@ class PortfolioJobRegistry:
         so a bad plan or full queue fails fast as it does for the synchronous tool —
         no job is created in those cases. Returns immediately with the job ``running``;
         the race then settles on its attempts' terminal events. Running portfolios need
-        no bound of their own: each holds at least one in-flight attempt, so they are
-        already bounded by the solve registry's capacity.
+        no bound of their own: a portfolio stays ``running`` only while one of its
+        attempts has not reported terminal, and the last report always finalizes it
+        (``succeeded``, or ``failed`` when the aggregate cannot be built), so live
+        portfolios are bounded by the solve registry's capacity.
         """
         # Built per call: PortfolioSolveControls is mutable and is recorded by
         # reference, so a shared default instance would leak across portfolios.
@@ -230,16 +231,10 @@ class PortfolioJobRegistry:
         return record.job_id
 
     def get(self, job_id: str) -> PortfolioJobStatus:
-        """Read a portfolio job's status; never selects a winner or cancels anything.
-
-        Raises the stored exception if building the race result failed, so that bug
-        surfaces to the client instead of vanishing on a worker thread.
-        """
+        """Read a portfolio job's status; never selects a winner or cancels anything."""
         with self._lock:
             record = self._require_record(job_id)
         with record.lock:
-            if record.error is not None:
-                raise record.error
             return _to_status(record)
 
     def cancel(self, job_id: str) -> PortfolioJobStatus:
@@ -322,8 +317,13 @@ class PortfolioJobRegistry:
                 record.checker_sha256,
                 record.solve_controls,
             )
-        except Exception as exc:  # noqa: BLE001 - kept for get(); a worker would swallow it
-            record.error = exc
+        except Exception as exc:  # noqa: BLE001 - an internal bug must still end the race
+            self._finalize(
+                record,
+                "failed",
+                None,
+                f"Could not build the portfolio result: {exception_summary(exc)}",
+            )
             return
         self._finalize(record, "succeeded", result, None)
 

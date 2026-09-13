@@ -643,12 +643,14 @@ without cloning the job machinery.
 - **`get_portfolio_job`** — poll a portfolio job by `job_id`. Polling only
   reads: it never selects a winner or cancels an attempt, and a race you never
   poll still finishes. Returns a `PortfolioJobStatus`: `state`
-  (`"running"`, `"succeeded"`, `"cancelled"`), `per_attempt_timeout_ms`, timing
-  fields, an optional `result` (the full `PortfolioSolveResult`), and an optional
-  `message`. **State contract:** `result` is present exactly when `state` is
-  `"succeeded"`. A race with no decisive winner is still `"succeeded"` (carrying a
+  (`"running"`, `"succeeded"`, `"failed"`, `"cancelled"`), `per_attempt_timeout_ms`,
+  timing fields, an optional `result` (the full `PortfolioSolveResult`), and an
+  optional `message`. **State contract:** `result` is present exactly when `state`
+  is `"succeeded"`. A race with no decisive winner is still `"succeeded"` (carrying a
   `"no_winner"` `PortfolioSolveResult`); a per-attempt failure is recorded in that
-  result's attempts table, not as a failed job. Pace polling against
+  result's attempts table, not as a failed job. `"failed"` means the server could
+  not build the race result once every attempt finished (`message` says why, with
+  a `job_failed` diagnostic). Pace polling against
   `per_attempt_timeout_ms` rather than a fixed `sleep`.
 - **`cancel_portfolio_job`** — stop a running race and **every** still-running
   attempt (each attempt's managed process tree is terminated). Best-effort and

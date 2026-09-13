@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -1045,3 +1046,74 @@ def test_on_terminal_listener_may_call_get_and_cancel_without_deadlock(
     if completed:  # a deadlocked worker would hang the pool join below
         registry.shutdown()
     assert completed, "listener deadlocked calling back into the registry"
+
+
+# --- terminal listener failures ------------------------------------------------
+
+
+def _raising_listener(index: int, status: SolveJobStatus) -> None:
+    raise RuntimeError("listener exploded")
+
+
+def test_shutdown_finalizes_every_queued_job_when_the_listener_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    _patch_solve(monkeypatch, _blocking_solve_until(release, started))
+
+    def _fake_terminate(proc: Any, **kwargs: Any) -> None:
+        release.set()  # unblock the running worker so shutdown can join the pool
+
+    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
+    registry: JobRegistry = JobRegistry(max_running_jobs=1, max_queued_jobs=4)
+    registry.submit(model="solve satisfy;")  # occupies the only worker
+    assert started.wait(timeout=3)
+    queued_ids: list[str] = registry.submit_many(
+        [_request(), _request()], on_terminal=_raising_listener
+    )
+    try:
+        registry.shutdown()
+    finally:
+        release.set()
+
+    assert [registry.get(job_id).state for job_id in queued_ids] == ["cancelled", "cancelled"]
+
+
+def test_cancel_returns_the_cancelled_status_when_the_listener_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    _patch_solve(monkeypatch, _blocking_solve_until(release, started))
+    registry: JobRegistry = JobRegistry(max_running_jobs=1, max_queued_jobs=4)
+    try:
+        registry.submit(model="solve satisfy;")  # occupies the only worker
+        assert started.wait(timeout=3)
+        (queued_id,) = registry.submit_many([_request()], on_terminal=_raising_listener)
+        status: SolveJobStatus = registry.cancel(queued_id)
+    finally:
+        release.set()
+        registry.shutdown()
+
+    assert status.state == "cancelled"
+
+
+def test_listener_exception_on_the_worker_thread_is_logged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.ERROR, logger="openconstraint_mcp.jobs.registry")
+    _patch_solve(monkeypatch, lambda model, *, on_start, **kw: _solve_result())
+    registry: JobRegistry = JobRegistry()
+    try:
+        (job_id,) = registry.submit_many([_request()], on_terminal=_raising_listener)
+        _wait_until_terminal(registry, job_id)
+    finally:
+        registry.shutdown()  # joins the worker, which notifies after finalizing
+
+    logged: list[str] = [
+        str(record.exc_info[1])
+        for record in caplog.records
+        if record.name == "openconstraint_mcp.jobs.registry" and record.exc_info
+    ]
+    assert logged == ["listener exploded"]
