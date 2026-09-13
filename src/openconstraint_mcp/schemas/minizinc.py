@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .artifacts import SavedModelArtifact
 from .diagnostics import Diagnostic
@@ -135,6 +135,28 @@ class SolveResult(BaseModel):
     # Stage 2 structured diagnostic (None on a clean success). Additive: the
     # authoritative outcome stays `status`; this is the stable branch point.
     diagnostic: Diagnostic | None = None
+
+
+class SolveControls(BaseModel):
+    """The five MiniZinc solve controls, carried as one internal record.
+
+    Internal only: it appears in no MCP tool schema (tools keep flat parameters
+    and build one of these). Range checks deliberately live in
+    ``build_solve_extra_args``, not in field validators, so a bad value keeps its
+    existing error text. Field order is load-bearing: the saved manifest's
+    ``solve_controls`` splices ``model_dump()`` after ``timeout_ms``.
+    """
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+    free_search: bool = False
+    parallel: int | None = None
+    random_seed: int | None = None
+    all_solutions: bool = False
+    num_solutions: int | None = None
+
+
+DEFAULT_SOLVE_CONTROLS: SolveControls = SolveControls()
 
 
 def job_state_for_result(result: SolveResult) -> JobState:

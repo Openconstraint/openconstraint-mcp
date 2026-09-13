@@ -155,10 +155,7 @@ class PortfolioJobRegistry:
         seed_count: int = 1,
         seeds: list[int] | None = None,
         per_attempt_timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
-        free_search: bool = False,
-        parallel: int | None = None,
-        all_solutions: bool = False,
-        num_solutions: int | None = None,
+        solve_controls: PortfolioSolveControls | None = None,
     ) -> str:
         """Admit a portfolio as a background race; return its ``portfolio_job_id``.
 
@@ -187,6 +184,15 @@ class PortfolioJobRegistry:
                     f"Too many running portfolio jobs (max {self._max_running}). Poll "
                     "or cancel a running portfolio before submitting another."
                 )
+        # Built per call: PortfolioSolveControls is mutable and is recorded by
+        # reference, so a shared default instance would leak across portfolios.
+        controls: PortfolioSolveControls = (
+            solve_controls
+            if solve_controls is not None
+            else PortfolioSolveControls(
+                free_search=False, parallel=None, all_solutions=False, num_solutions=None
+            )
+        )
         admission = _admit_portfolio(
             self._registry,
             models=models,
@@ -196,10 +202,7 @@ class PortfolioJobRegistry:
             seed_count=seed_count,
             seeds=seeds,
             per_attempt_timeout_ms=per_attempt_timeout_ms,
-            free_search=free_search,
-            parallel=parallel,
-            all_solutions=all_solutions,
-            num_solutions=num_solutions,
+            solve_controls=controls,
             pin_attempts=True,
         )
         try:

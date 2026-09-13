@@ -10,6 +10,7 @@ from typing import Any, NamedTuple
 from ..runtime import RuntimeMissingError, get_minizinc_binary, is_runtime_installed
 from ..schemas.diagnostics import Diagnostic, UnsupportedFeatureError
 from ..schemas.minizinc import (
+    DEFAULT_SOLVE_CONTROLS,
     CheckerReport,
     CheckerStatus,
     CheckResult,
@@ -17,6 +18,7 @@ from ..schemas.minizinc import (
     ModelInspectionResult,
     SaveVerifiedModelResult,
     SolutionCheck,
+    SolveControls,
     SolverCapabilities,
     SolveResult,
     SolverInfo,
@@ -25,7 +27,7 @@ from ..schemas.minizinc import (
     UnsatCoreConstraint,
     UnsatCoreResult,
 )
-from ..schemas.portfolio import PortfolioSolveResult
+from ..schemas.portfolio import PortfolioSolveControls, PortfolioSolveResult
 from ..shared.childproc import ChildProcessTracker
 from ..shared.childrun import ChildExecutionResult, execute_child
 from ..shared.save_target import text_sha256, validate_save_target
@@ -353,9 +355,9 @@ def _run_managed_minizinc(
 ) -> _RunOutcome:
     """Run the managed MiniZinc binary on ``model`` and report the raw outcome.
 
-    Shared by ``solve_model`` (``extra_args=()``), ``check_model``
-    (``extra_args=("-c",)``), and ``solve_model_cancellable`` (which passes
-    ``on_start`` only, leaving ``tracker`` untracked as before). The model is
+    Shared by ``run_prepared_solve`` (the solve argv; a background job passes
+    ``on_start`` only, leaving ``tracker`` untracked as before) and ``check_model``
+    (``extra_args=("-c",)``). The model is
     written into a private temp dir and ``subprocess.run`` is pinned to that dir
     via ``cwd`` so cwd-relative ``include`` statements resolve onto emptiness
     rather than the server's working directory. With no data the model file is
@@ -407,8 +409,8 @@ def _build_inline_cmd(
     """Write the inline model/data/checker into ``tmp_dir`` and build the argv.
 
     The temp-dir file contract for ``_run_managed_minizinc``, shared by its
-    tracked (``solve_model``/``check_model``) and cancellable
-    (``solve_model_cancellable``) callers: ``model.mzn`` always; ``data.dzn``
+    tracked (``solve_model``/``check_model``) and cancellable (background-job
+    ``run_prepared_solve``) callers: ``model.mzn`` always; ``data.dzn``
     when ``data`` is not ``None`` (appended positionally after the model, MiniZinc's
     ``<model>.mzn <data>.dzn`` order); ``checker.mzc.mzn`` when ``checker`` is given
     (added to ``extra_args`` via ``--solution-checker`` before the positional
@@ -727,11 +729,11 @@ def _attach_checker_and_diagnose(
 ) -> SolveResult:
     """Attach the nested checker report (when one ran) and set the solve diagnostic.
 
-    The single tail every solve path shares: ``_run_solve``, the cancellable job
-    solve, and the path-based solve each build a ``SolveResult``, optionally
-    attach a ``--solution-checker`` report, then derive the structured diagnostic
-    from the finished result (checker verdict included). Centralized so the three
-    cannot drift.
+    The single tail every solve path shares: ``run_prepared_solve`` (inline and
+    background-job solves) and the path-based solve each build a ``SolveResult``,
+    optionally attach a ``--solution-checker`` report, then derive the structured
+    diagnostic from the finished result (checker verdict included). Centralized so
+    they cannot drift.
     """
     if attach_checker:
         result.checker = _build_checker_report(outcome, result)
@@ -767,15 +769,7 @@ def solver_supports_num_solutions(solver: str) -> bool:
     return solver in NUM_SOLUTIONS_SOLVERS
 
 
-def build_solve_extra_args(
-    *,
-    solver: str,
-    free_search: bool,
-    parallel: int | None,
-    random_seed: int | None,
-    all_solutions: bool,
-    num_solutions: int | None,
-) -> tuple[str, ...]:
+def build_solve_extra_args(solver: str, controls: SolveControls) -> tuple[str, ...]:
     """Build the solve ``extra_args``: the json-stream transport plus any
     optional solver/search-control flags.
 
@@ -792,16 +786,19 @@ def build_solve_extra_args(
     (including the default cp-sat) it raises a ``ValueError`` naming the
     supported solvers, so the doomed ``-n`` command is never built.
     """
+    parallel: int | None = controls.parallel
+    random_seed: int | None = controls.random_seed
+    num_solutions: int | None = controls.num_solutions
     if parallel is not None and parallel < 1:
         raise ValueError("parallel must be >= 1")
     flags: list[str] = []
-    if free_search:
+    if controls.free_search:
         flags.append("-f")
     if parallel is not None:
         flags += ["-p", str(parallel)]
     if random_seed is not None:
         flags += ["-r", str(random_seed)]
-    if all_solutions:
+    if controls.all_solutions:
         flags.append("-a")
     if num_solutions is None:
         return *_SOLVE_STREAM_ARGS, *flags
@@ -818,13 +815,7 @@ def build_solve_extra_args(
 
 
 def validate_solver_capabilities(
-    *,
-    solver: str,
-    capabilities: SolverCapabilities,
-    free_search: bool,
-    parallel: int | None,
-    random_seed: int | None,
-    all_solutions: bool,
+    solver: str, capabilities: SolverCapabilities, controls: SolveControls
 ) -> None:
     """Reject a requested ``-a/-f/-p/-r`` control the resolved solver omits (D4 case a).
 
@@ -838,10 +829,10 @@ def validate_solver_capabilities(
     must not be folded into these stdFlags-derived booleans.
     """
     checks = (
-        (all_solutions, capabilities.supports_all_solutions, "all_solutions", "-a"),
-        (free_search, capabilities.supports_free_search, "free_search", "-f"),
-        (parallel is not None, capabilities.supports_parallel, "parallel", "-p"),
-        (random_seed is not None, capabilities.supports_random_seed, "random_seed", "-r"),
+        (controls.all_solutions, capabilities.supports_all_solutions, "all_solutions", "-a"),
+        (controls.free_search, capabilities.supports_free_search, "free_search", "-f"),
+        (controls.parallel is not None, capabilities.supports_parallel, "parallel", "-p"),
+        (controls.random_seed is not None, capabilities.supports_random_seed, "random_seed", "-r"),
     )
     for requested, supported, control, flag in checks:
         if requested and not supported:
@@ -863,14 +854,7 @@ def resolve_capability_map() -> dict[str, SolverCapabilities]:
     return {solver.id: solver.capabilities for solver in list_solvers().solvers}
 
 
-def enforce_solver_capabilities(
-    *,
-    solver: str,
-    free_search: bool,
-    parallel: int | None,
-    random_seed: int | None,
-    all_solutions: bool,
-) -> None:
+def enforce_solver_capabilities(solver: str, controls: SolveControls) -> None:
     """Lazily resolve runtime capabilities and reject unsupported ``-a/-f/-p/-r``.
 
     No-op — and NO ``--solvers-json`` subprocess — when none of the four gated
@@ -883,22 +867,33 @@ def enforce_solver_capabilities(
     as today. Each entry point calls this once; the job worker trusts admission and
     never re-resolves.
     """
-    if not (free_search or all_solutions or parallel is not None or random_seed is not None):
+    if not (
+        controls.free_search
+        or controls.all_solutions
+        or controls.parallel is not None
+        or controls.random_seed is not None
+    ):
         return
     capabilities = resolve_capability_map().get(solver)
     if capabilities is None:
         return
-    validate_solver_capabilities(
-        solver=solver,
-        capabilities=capabilities,
-        free_search=free_search,
-        parallel=parallel,
-        random_seed=random_seed,
-        all_solutions=all_solutions,
-    )
+    validate_solver_capabilities(solver, capabilities, controls)
 
 
-def _run_solve(
+def prepare_solve_args(solver: str, controls: SolveControls) -> tuple[str, ...]:
+    """Validate ``controls``, enforce runtime capabilities, and return the solve argv.
+
+    The single owner of the solve prelude every capability-checking entry point
+    shares. Pure validation and arg build first (a bad ``parallel``/``num_solutions``
+    raises before any subprocess), THEN the lazy capability resolution (one
+    ``--solvers-json`` only when a gated control is requested).
+    """
+    extra_args: tuple[str, ...] = build_solve_extra_args(solver, controls)
+    enforce_solver_capabilities(solver, controls)
+    return extra_args
+
+
+def run_prepared_solve(
     model: str,
     *,
     solver: str,
@@ -907,14 +902,19 @@ def _run_solve(
     timeout_ms: int,
     extra_args: Sequence[str],
     tracker: ChildProcessTracker | None = None,
+    on_start: Callable[[subprocess.Popen[str]], None] | None = None,
 ) -> SolveResult:
     """Run a prepared (validated, capability-enforced) inline solve and build its result.
 
-    The enforcement-free tail shared by ``solve_model`` and the internal solve of
-    ``save_verified_model``: both validate controls and enforce capabilities once
-    up front (so the save path resolves capabilities at most once — D1), build the
-    ``extra_args``, then call this to run and parse. ``extra_args`` already carries
-    the json-stream transport plus any control flags from ``build_solve_extra_args``.
+    The enforcement-free solve shared by ``solve_model``, the internal solve of
+    ``save_verified_model``, and the background job worker: each entry point
+    validates controls and enforces capabilities once up front (so the save path
+    resolves capabilities at most once — D1, and the worker never re-resolves),
+    then calls this to run and parse. ``extra_args`` already carries the
+    json-stream transport plus any control flags from ``build_solve_extra_args``.
+    ``tracker`` registers the child for server teardown; ``on_start`` publishes
+    the live handle so a job registry can terminate the process tree to cancel.
+    A job's result is thus byte-for-byte what the synchronous tool returns.
     """
     outcome = _run_managed_minizinc(
         model,
@@ -924,6 +924,7 @@ def _run_solve(
         data=data,
         checker=checker,
         tracker=tracker,
+        on_start=on_start,
     )
     result = _build_solve_result(outcome, solver=solver)
     return _attach_checker_and_diagnose(result, outcome, attach_checker=checker is not None)
@@ -936,32 +937,11 @@ def solve_model(
     data: str | None = None,
     checker: str | None = None,
     timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
-    free_search: bool = False,
-    parallel: int | None = None,
-    random_seed: int | None = None,
-    all_solutions: bool = False,
-    num_solutions: int | None = None,
+    controls: SolveControls = DEFAULT_SOLVE_CONTROLS,
     tracker: ChildProcessTracker | None = None,
 ) -> SolveResult:
-    # Pure validation + arg build first (raises on a bad parallel/num_solutions
-    # before any subprocess), THEN the lazy capability resolution (one
-    # --solvers-json only when a gated control is requested), THEN the solve.
-    extra_args = build_solve_extra_args(
-        solver=solver,
-        free_search=free_search,
-        parallel=parallel,
-        random_seed=random_seed,
-        all_solutions=all_solutions,
-        num_solutions=num_solutions,
-    )
-    enforce_solver_capabilities(
-        solver=solver,
-        free_search=free_search,
-        parallel=parallel,
-        random_seed=random_seed,
-        all_solutions=all_solutions,
-    )
-    return _run_solve(
+    extra_args = prepare_solve_args(solver, controls)
+    return run_prepared_solve(
         model,
         solver=solver,
         data=data,
@@ -970,51 +950,6 @@ def solve_model(
         extra_args=extra_args,
         tracker=tracker,
     )
-
-
-def solve_model_cancellable(
-    model: str,
-    *,
-    solver: str = DEFAULT_SOLVER,
-    data: str | None = None,
-    checker: str | None = None,
-    timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
-    free_search: bool = False,
-    parallel: int | None = None,
-    random_seed: int | None = None,
-    all_solutions: bool = False,
-    num_solutions: int | None = None,
-    on_start: Callable[[subprocess.Popen[str]], None],
-) -> SolveResult:
-    """Cancellable counterpart of ``solve_model`` for background jobs.
-
-    Identical solve semantics and ``SolveResult`` shape, but executed through
-    ``_run_managed_minizinc`` with ``on_start`` (no ``tracker``): the live child
-    handle is published to ``on_start`` so a caller (the job registry) can
-    terminate the whole process tree to cancel the solve, and the run stays
-    untracked as before. Reuses ``build_solve_extra_args`` for validation/argv and
-    ``_build_solve_result`` / ``_build_checker_report`` for the parse, so a job's
-    result is byte-for-byte what the synchronous tool would return for the same
-    inputs.
-    """
-    outcome = _run_managed_minizinc(
-        model,
-        solver=solver,
-        timeout_ms=timeout_ms,
-        extra_args=build_solve_extra_args(
-            solver=solver,
-            free_search=free_search,
-            parallel=parallel,
-            random_seed=random_seed,
-            all_solutions=all_solutions,
-            num_solutions=num_solutions,
-        ),
-        data=data,
-        checker=checker,
-        on_start=on_start,
-    )
-    result = _build_solve_result(outcome, solver=solver)
-    return _attach_checker_and_diagnose(result, outcome, attach_checker=checker is not None)
 
 
 def check_model(
@@ -1116,11 +1051,7 @@ def _validate_portfolio_result_consistency(
     model: str,
     data: str | None,
     solver: str,
-    random_seed: int | None,
-    free_search: bool,
-    parallel: int | None,
-    all_solutions: bool,
-    num_solutions: int | None,
+    controls: SolveControls,
 ) -> None:
     """Eagerly reject a ``portfolio_result`` that cannot describe this save request.
 
@@ -1129,7 +1060,7 @@ def _validate_portfolio_result_consistency(
     and cannot be, a proof that ``portfolio_result`` is honest. A client could
     construct a self-consistent fake ``portfolio_result`` that passes every
     check here; that is acceptable because the save decision itself never reads
-    ``portfolio_result`` — only the fresh ``check_model``/``_run_solve`` below
+    ``portfolio_result`` — only the fresh ``check_model``/``run_prepared_solve`` below
     gates the save (see ``save_verified_model``'s docstring). ``checker_sha256``
     is deliberately not checked here: it is informational-only provenance for
     the eventual log, never a save gate. The race's shared
@@ -1165,10 +1096,10 @@ def _validate_portfolio_result_consistency(
             f"{winning_attempt.solver!r}, which does not match the supplied "
             f"solver {solver!r}"
         )
-    if winning_attempt.seed != random_seed:
+    if winning_attempt.seed != controls.random_seed:
         raise ValueError(
             f"portfolio_result's winning attempt's seed ({winning_attempt.seed!r}) "
-            f"does not match the supplied random_seed ({random_seed!r})"
+            f"does not match the supplied random_seed ({controls.random_seed!r})"
         )
     if portfolio_result.models_sha256[winning_attempt.model_index] != text_sha256(model):
         raise ValueError(
@@ -1182,13 +1113,12 @@ def _validate_portfolio_result_consistency(
             "supplied data: the portfolio_result was attached to a different "
             "data instance"
         )
-    controls = portfolio_result.solve_controls
-    for name, race_value, save_value in (
-        ("free_search", controls.free_search, free_search),
-        ("parallel", controls.parallel, parallel),
-        ("all_solutions", controls.all_solutions, all_solutions),
-        ("num_solutions", controls.num_solutions, num_solutions),
-    ):
+    race_controls: PortfolioSolveControls = portfolio_result.solve_controls
+    # Declared field order (free_search, parallel, all_solutions, num_solutions)
+    # fixes which mismatch is reported first.
+    for name in PortfolioSolveControls.model_fields:
+        race_value: bool | int | None = getattr(race_controls, name)
+        save_value: bool | int | None = getattr(controls, name)
         if race_value != save_value:
             raise ValueError(
                 f"portfolio_result.solve_controls.{name} ({race_value!r}) does not "
@@ -1206,11 +1136,7 @@ def save_verified_model(
     problem: str | None = None,
     solver: str = DEFAULT_SOLVER,
     timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
-    free_search: bool = False,
-    parallel: int | None = None,
-    random_seed: int | None = None,
-    all_solutions: bool = False,
-    num_solutions: int | None = None,
+    controls: SolveControls = DEFAULT_SOLVE_CONTROLS,
     overwrite: bool = False,
     portfolio_result: PortfolioSolveResult | None = None,
     tracker: ChildProcessTracker | None = None,
@@ -1241,38 +1167,14 @@ def save_verified_model(
     here; it is never written on a failed save.
     """
     validate_model_and_timeout(model, timeout_ms)
-    # Validates the solve controls (parallel/num_solutions ranges and the
-    # solver-gated -n) with the exact solve_model rules and keeps the built args so
-    # the internal solve does not rebuild them.
-    extra_args = build_solve_extra_args(
-        solver=solver,
-        free_search=free_search,
-        parallel=parallel,
-        random_seed=random_seed,
-        all_solutions=all_solutions,
-        num_solutions=num_solutions,
-    )
-    # Reject an unsupported -a/-f/-p/-r control before check, solve, or write
-    # (one --solvers-json at most for the whole save — D1); the internal solve uses
-    # _run_solve, which does not re-enforce.
-    enforce_solver_capabilities(
-        solver=solver,
-        free_search=free_search,
-        parallel=parallel,
-        random_seed=random_seed,
-        all_solutions=all_solutions,
-    )
+    # Validates the solve controls with the exact solve_model rules and rejects an
+    # unsupported -a/-f/-p/-r control before check, solve, or write (one
+    # --solvers-json at most for the whole save — D1). The built args are kept so
+    # the internal solve neither rebuilds them nor re-enforces.
+    extra_args = prepare_solve_args(solver, controls)
     if portfolio_result is not None:
         _validate_portfolio_result_consistency(
-            portfolio_result,
-            model=model,
-            data=data,
-            solver=solver,
-            random_seed=random_seed,
-            free_search=free_search,
-            parallel=parallel,
-            all_solutions=all_solutions,
-            num_solutions=num_solutions,
+            portfolio_result, model=model, data=data, solver=solver, controls=controls
         )
     target = validate_save_target(target_dir, overwrite=overwrite)
 
@@ -1288,7 +1190,7 @@ def save_verified_model(
             diagnostic=_save_gate_diagnostic(check.diagnostic),
         )
 
-    solve = _run_solve(
+    solve = run_prepared_solve(
         model,
         solver=solver,
         data=data,
@@ -1316,14 +1218,7 @@ def save_verified_model(
         problem=problem,
         check=check,
         solve=solve,
-        solve_controls={
-            "timeout_ms": timeout_ms,
-            "free_search": free_search,
-            "parallel": parallel,
-            "random_seed": random_seed,
-            "all_solutions": all_solutions,
-            "num_solutions": num_solutions,
-        },
+        solve_controls={"timeout_ms": timeout_ms, **controls.model_dump()},
         overwrite=overwrite,
         portfolio_result=portfolio_result,
     )
@@ -1381,11 +1276,7 @@ def solve_model_path(
     data_path: Path | None = None,
     checker_path: Path | None = None,
     timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
-    free_search: bool = False,
-    parallel: int | None = None,
-    random_seed: int | None = None,
-    all_solutions: bool = False,
-    num_solutions: int | None = None,
+    controls: SolveControls = DEFAULT_SOLVE_CONTROLS,
     tracker: ChildProcessTracker | None = None,
 ) -> SolveResult:
     """Solve a MiniZinc model read from ``model_path`` via the managed runtime.
@@ -1401,23 +1292,9 @@ def solve_model_path(
     """
     model_path, data_path = validate_model_data_paths(model_path, data_path)
     checker_path = validate_checker_path(checker_path) if checker_path is not None else None
-    extra_args = build_solve_extra_args(
-        solver=solver,
-        free_search=free_search,
-        parallel=parallel,
-        random_seed=random_seed,
-        all_solutions=all_solutions,
-        num_solutions=num_solutions,
-    )
     # Reject an unsupported -a/-f/-p/-r control before the solve, same lazy
     # one-shot resolution as the inline path (D2/D4).
-    enforce_solver_capabilities(
-        solver=solver,
-        free_search=free_search,
-        parallel=parallel,
-        random_seed=random_seed,
-        all_solutions=all_solutions,
-    )
+    extra_args = prepare_solve_args(solver, controls)
     if checker_path is not None:
         extra_args = (*extra_args, "--solution-checker", str(checker_path))
     outcome = _run_managed_minizinc_paths(

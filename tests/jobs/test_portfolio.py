@@ -5,7 +5,7 @@ now owns the portfolio workflow. These tests drive the retained engine directly 
 ``_admit_portfolio`` (plan validation, capability gate, cross-product expansion,
 atomic admission) and ``_select_portfolio_outcome`` (the non-blocking collect-on-poll
 selection pass) — with ``_race`` polling the selection pass to a terminal result the
-way the registry's ``get`` does, but without a runtime (``solve_model_cancellable``
+way the registry's ``get`` does, but without a runtime (``run_prepared_solve``
 is mocked).
 """
 
@@ -76,7 +76,14 @@ def _never_terminate_for_real(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _patch_solve(monkeypatch: pytest.MonkeyPatch, fake: Any) -> None:
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.solve_model_cancellable", fake)
+    monkeypatch.setattr("openconstraint_mcp.jobs.registry.run_prepared_solve", fake)
+
+
+def _seed_from_args(extra_args: tuple[str, ...]) -> int | None:
+    """Read the ``-r`` seed a worker's prepared argv carries (``None`` when unseeded)."""
+    if "-r" not in extra_args:
+        return None
+    return int(extra_args[extra_args.index("-r") + 1])
 
 
 def _patch_capabilities(
@@ -99,10 +106,9 @@ _ADMIT_DEFAULTS: dict[str, Any] = {
     "seed_count": 1,
     "seeds": None,
     "per_attempt_timeout_ms": DEFAULT_SOLVE_TIMEOUT_MS,
-    "free_search": False,
-    "parallel": None,
-    "all_solutions": False,
-    "num_solutions": None,
+    "solve_controls": PortfolioSolveControls(
+        free_search=False, parallel=None, all_solutions=False, num_solutions=None
+    ),
 }
 
 
@@ -225,8 +231,9 @@ def test_portfolio_result_records_shared_solve_controls(monkeypatch: pytest.Monk
             registry,
             models=["solve satisfy;"],
             solvers=["cp-sat"],
-            free_search=True,
-            parallel=2,
+            solve_controls=PortfolioSolveControls(
+                free_search=True, parallel=2, all_solutions=False, num_solutions=None
+            ),
         )
         assert result.solve_controls == PortfolioSolveControls(
             free_search=True, parallel=2, all_solutions=False, num_solutions=None
@@ -430,7 +437,89 @@ def test_portfolio_rejects_unsupported_control_before_submitting(
     registry = JobRegistry()
     try:
         with pytest.raises(ValueError, match="free_search"):
-            _admit(registry, models=["solve satisfy;"], solvers=["cp-sat"], free_search=True)
+            _admit(
+                registry,
+                models=["solve satisfy;"],
+                solvers=["cp-sat"],
+                solve_controls=PortfolioSolveControls(
+                    free_search=True, parallel=None, all_solutions=False, num_solutions=None
+                ),
+            )
+        assert registry.list() == []
+    finally:
+        registry.shutdown()
+
+
+def test_portfolio_rejects_parallel_below_one_before_submitting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The solver supports -p, so the capability gate passes; the range check that
+    # builds each attempt's argv must still reject the plan before any job is admitted.
+    _patch_capabilities(monkeypatch, {"cp-sat": SolverCapabilities(supports_parallel=True)})
+
+    def _fail(model: str, *, on_start: Any, **kw: Any) -> SolveResult:
+        raise AssertionError("no solve should run for an out-of-range control")
+
+    _patch_solve(monkeypatch, _fail)
+    registry = JobRegistry()
+    try:
+        with pytest.raises(ValueError, match="parallel must be >= 1"):
+            _admit(
+                registry,
+                models=["solve satisfy;"],
+                solvers=["cp-sat"],
+                solve_controls=PortfolioSolveControls(
+                    free_search=False, parallel=0, all_solutions=False, num_solutions=None
+                ),
+            )
+        assert registry.list() == []
+    finally:
+        registry.shutdown()
+
+
+def test_portfolio_rejects_num_solutions_below_one_before_submitting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fail(model: str, *, on_start: Any, **kw: Any) -> SolveResult:
+        raise AssertionError("no solve should run for an out-of-range control")
+
+    _patch_solve(monkeypatch, _fail)
+    registry = JobRegistry()
+    try:
+        with pytest.raises(ValueError, match="num_solutions must be >= 1"):
+            _admit(
+                registry,
+                models=["solve satisfy;"],
+                solvers=["org.chuffed.chuffed"],
+                solve_controls=PortfolioSolveControls(
+                    free_search=False, parallel=None, all_solutions=False, num_solutions=0
+                ),
+            )
+        assert registry.list() == []
+    finally:
+        registry.shutdown()
+
+
+def test_portfolio_rejects_whole_plan_when_a_later_solver_lacks_num_solutions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The first attempt (chuffed) builds valid -n argv; the second (cp-sat) is not
+    # allowlisted for -n, so the whole plan fails before any attempt is admitted.
+    def _fail(model: str, *, on_start: Any, **kw: Any) -> SolveResult:
+        raise AssertionError("no solve should run when any attempt's control is invalid")
+
+    _patch_solve(monkeypatch, _fail)
+    registry = JobRegistry()
+    try:
+        with pytest.raises(ValueError, match="solver 'cp-sat' does not support num_solutions"):
+            _admit(
+                registry,
+                models=["solve satisfy;"],
+                solvers=["org.chuffed.chuffed", "cp-sat"],
+                solve_controls=PortfolioSolveControls(
+                    free_search=False, parallel=None, all_solutions=False, num_solutions=2
+                ),
+            )
         assert registry.list() == []
     finally:
         registry.shutdown()
@@ -445,10 +534,10 @@ def test_portfolio_expands_seeds_when_seed_count_gt_one(monkeypatch: pytest.Monk
     seeds_seen: list[int | None] = []
 
     def _fake_solve(
-        model: str, *, random_seed: int | None, on_start: Any, **kw: Any
+        model: str, *, extra_args: tuple[str, ...], on_start: Any, **kw: Any
     ) -> SolveResult:
         on_start(_FakeProc())
-        seeds_seen.append(random_seed)
+        seeds_seen.append(_seed_from_args(extra_args))
         return _solve_result("satisfied", solver="org.gecode.gecode")
 
     _patch_solve(monkeypatch, _fake_solve)
@@ -477,10 +566,10 @@ def test_portfolio_uses_explicit_seeds_in_order(monkeypatch: pytest.MonkeyPatch)
     seen: list[tuple[str, int | None, str]] = []
 
     def _fake_solve(
-        model: str, *, solver: str, random_seed: int | None, on_start: Any, **kw: Any
+        model: str, *, solver: str, extra_args: tuple[str, ...], on_start: Any, **kw: Any
     ) -> SolveResult:
         on_start(_FakeProc())
-        seen.append((solver, random_seed, model))
+        seen.append((solver, _seed_from_args(extra_args), model))
         return SolveResult(
             status="unknown",
             solver=solver,

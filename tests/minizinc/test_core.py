@@ -17,6 +17,7 @@ from openconstraint_mcp.minizinc.artifacts import (
     SOLVE_RESULT_FILENAME,
 )
 from openconstraint_mcp.minizinc.core import (
+    _SOLVE_STREAM_ARGS,
     DEFAULT_CHECK_TIMEOUT_MS,
     DEFAULT_INSPECT_TIMEOUT_MS,
     DEFAULT_SOLVE_TIMEOUT_MS,
@@ -28,19 +29,23 @@ from openconstraint_mcp.minizinc.core import (
     _run_managed_minizinc,
     _RunOutcome,
     _solver_capabilities,
+    build_solve_extra_args,
     check_model,
     find_unsat_core,
     inspect_model,
     list_solvers,
+    prepare_solve_args,
+    run_prepared_solve,
     save_verified_model,
     solve_model,
-    solve_model_cancellable,
     solver_supports_num_solutions,
 )
 from openconstraint_mcp.runtime import RuntimeMissingError
+from openconstraint_mcp.schemas.diagnostics import UnsupportedFeatureError
 from openconstraint_mcp.schemas.minizinc import (
     CheckResult,
     ModelInspectionResult,
+    SolveControls,
     SolverCapabilities,
     SolveResult,
     SolverInfo,
@@ -673,14 +678,19 @@ def test_solve_model_with_checker_transcript_is_raw_stdout(
 # --- Phase 2: solver/search-control flags ----------------------------------
 
 
-def _solve_cmd_with_flags(monkeypatch: pytest.MonkeyPatch, **flags: Any) -> list[str]:
+def _solve_cmd_with_flags(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    solver: str = DEFAULT_SOLVER,
+    checker: str | None = None,
+    **flags: Any,
+) -> list[str]:
     """Solve a trivial model with the given flags; return the argv it built.
 
     Reports every gated control as supported for the solve's solver — the unit
     under test here is argv assembly, not capability rejection — so a requested
     ``-a/-f/-p/-r`` resolves and appends its flag instead of raising.
     """
-    solver = str(flags.get("solver", DEFAULT_SOLVER))
     full = SolverCapabilities(
         supports_all_solutions=True,
         supports_free_search=True,
@@ -691,7 +701,12 @@ def _solve_cmd_with_flags(monkeypatch: pytest.MonkeyPatch, **flags: Any) -> list
     calls = _record_subprocess(
         monkeypatch, child_result(stdout=STREAM_SATISFY, stderr="", returncode=0)
     )
-    solve_model("var 1..5: x;\nsolve satisfy;", **flags)
+    solve_model(
+        "var 1..5: x;\nsolve satisfy;",
+        solver=solver,
+        checker=checker,
+        controls=SolveControls(**flags),
+    )
     return calls[0]["args"][0]
 
 
@@ -767,7 +782,7 @@ def test_solve_model_rejects_non_positive_parallel(
 
     monkeypatch.setattr("openconstraint_mcp.minizinc.core.execute_child", _fail_if_called)
     with pytest.raises(ValueError, match="parallel"):
-        solve_model("solve satisfy;", parallel=bad)
+        solve_model("solve satisfy;", controls=SolveControls(parallel=bad))
 
 
 # --- num_solutions (solver-gated) ------------------------------------------
@@ -792,7 +807,7 @@ def test_solve_model_num_solutions_rejects_short_alias(
 
     monkeypatch.setattr("openconstraint_mcp.minizinc.core.execute_child", _fail_if_called)
     with pytest.raises(ValueError, match="num_solutions") as exc_info:
-        solve_model("solve satisfy;", num_solutions=2, solver="gecode")
+        solve_model("solve satisfy;", controls=SolveControls(num_solutions=2), solver="gecode")
     message = str(exc_info.value)
     assert "org.chuffed.chuffed" in message
     assert "org.gecode.gecode" in message
@@ -808,7 +823,7 @@ def test_solve_model_num_solutions_rejected_for_default_solver(
 
     monkeypatch.setattr("openconstraint_mcp.minizinc.core.execute_child", _fail_if_called)
     with pytest.raises(ValueError, match="num_solutions") as exc_info:
-        solve_model("solve satisfy;", num_solutions=2)
+        solve_model("solve satisfy;", controls=SolveControls(num_solutions=2))
     message = str(exc_info.value)
     assert "org.chuffed.chuffed" in message
     assert "org.gecode.gecode" in message
@@ -822,7 +837,7 @@ def test_solve_model_num_solutions_rejected_before_checker_run_for_default_solve
 
     monkeypatch.setattr("openconstraint_mcp.minizinc.core.execute_child", _fail_if_called)
     with pytest.raises(ValueError, match="num_solutions") as exc_info:
-        solve_model("solve satisfy;", checker=_CHECKER_SRC, num_solutions=2)
+        solve_model("solve satisfy;", checker=_CHECKER_SRC, controls=SolveControls(num_solutions=2))
     message = str(exc_info.value)
     assert "org.chuffed.chuffed" in message
     assert "org.gecode.gecode" in message
@@ -837,7 +852,11 @@ def test_solve_model_rejects_non_positive_num_solutions(
 
     monkeypatch.setattr("openconstraint_mcp.minizinc.core.execute_child", _fail_if_called)
     with pytest.raises(ValueError, match="num_solutions"):
-        solve_model("solve satisfy;", num_solutions=bad, solver="org.chuffed.chuffed")
+        solve_model(
+            "solve satisfy;",
+            controls=SolveControls(num_solutions=bad),
+            solver="org.chuffed.chuffed",
+        )
 
 
 def test_solve_model_default_omits_num_solutions_flag(
@@ -917,7 +936,7 @@ def test_solve_model_rejects_unsupported_control(
     _patch_capabilities(monkeypatch, {"cp-sat": SolverCapabilities()})
     _fail_if_solve_runs(monkeypatch)
     with pytest.raises(ValueError, match=control) as exc_info:
-        solve_model("solve satisfy;", **kwargs)
+        solve_model("solve satisfy;", controls=SolveControls(**kwargs))
     message = str(exc_info.value)
     assert "cp-sat" in message
     assert flag in message
@@ -931,7 +950,9 @@ def test_solve_model_unresolved_solver_passes_capability_check(
     # MiniZinc resolves the alias, exactly as before (D4 case c).
     _patch_capabilities(monkeypatch, {"cp-sat": SolverCapabilities()})
     _record_subprocess(monkeypatch, child_result(stdout=STREAM_SATISFY, stderr="", returncode=0))
-    result = solve_model("solve satisfy;", solver="gecode", free_search=True)
+    result = solve_model(
+        "solve satisfy;", solver="gecode", controls=SolveControls(free_search=True)
+    )
     assert result.status == "satisfied"
 
 
@@ -956,9 +977,34 @@ def test_solve_model_supported_control_resolves_once_and_solves(
         monkeypatch, {"cp-sat": SolverCapabilities(supports_free_search=True)}
     )
     _record_subprocess(monkeypatch, child_result(stdout=STREAM_SATISFY, stderr="", returncode=0))
-    result = solve_model("solve satisfy;", free_search=True)
+    result = solve_model("solve satisfy;", controls=SolveControls(free_search=True))
     assert result.status == "satisfied"
     assert resolve_calls[0] == 1
+
+
+def test_prepare_solve_args_range_error_precedes_capability_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolve_calls = _patch_capabilities(monkeypatch, {"cp-sat": SolverCapabilities()})
+    with pytest.raises(ValueError, match="parallel must be >= 1"):
+        prepare_solve_args("cp-sat", SolveControls(parallel=0))
+    assert resolve_calls[0] == 0
+
+
+def test_prepare_solve_args_default_controls_return_transport_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolve_calls = _patch_capabilities(monkeypatch, {"cp-sat": SolverCapabilities()})
+    assert prepare_solve_args("cp-sat", SolveControls()) == _SOLVE_STREAM_ARGS
+    assert resolve_calls[0] == 0
+
+
+def test_prepare_solve_args_rejects_unsupported_free_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_capabilities(monkeypatch, {"cp-sat": SolverCapabilities()})
+    with pytest.raises(UnsupportedFeatureError, match="-f"):
+        prepare_solve_args("cp-sat", SolveControls(free_search=True))
 
 
 def test_solve_model_forwards_inline_data_positionally(
@@ -1912,9 +1958,86 @@ def test_save_verified_model_rejects_unsupported_control_before_check(
     target = tmp_path / "project"
 
     with pytest.raises(ValueError, match="free_search"):
-        save_verified_model(_SAVE_MODEL, target_dir=target, free_search=True)
+        save_verified_model(
+            _SAVE_MODEL, target_dir=target, controls=SolveControls(free_search=True)
+        )
 
     assert not target.exists()
+
+
+def test_save_verified_model_supported_control_resolves_capabilities_once(
+    fake_minizinc_binary: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # The save's compile check and internal solve trust the one up-front
+    # enforcement: a gated control resolves the capability map exactly once (D1).
+    resolve_calls = _patch_capabilities(
+        monkeypatch, {"cp-sat": SolverCapabilities(supports_free_search=True)}
+    )
+    _fake_check_then_solve(
+        monkeypatch,
+        check=child_result(stdout="", stderr="", returncode=0),
+        solve=child_result(stdout=STREAM_SATISFY, stderr="", returncode=0),
+    )
+
+    result = save_verified_model(
+        _SAVE_MODEL, target_dir=tmp_path / "project", controls=SolveControls(free_search=True)
+    )
+
+    assert result.status == "saved"
+    assert resolve_calls[0] == 1
+
+
+def test_save_verified_model_manifest_solve_controls_keys_and_order(
+    fake_minizinc_binary: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # The manifest's solve_controls is timeout_ms followed by the five controls in
+    # a fixed order; saved manifests must stay byte-identical, key order included.
+    solver = "org.chuffed.chuffed"
+    _patch_capabilities(
+        monkeypatch,
+        {
+            solver: SolverCapabilities(
+                supports_all_solutions=True,
+                supports_free_search=True,
+                supports_parallel=True,
+                supports_random_seed=True,
+            )
+        },
+    )
+    _fake_check_then_solve(
+        monkeypatch,
+        check=child_result(stdout="", stderr="", returncode=0),
+        solve=child_result(stdout=STREAM_SATISFY, stderr="", returncode=0),
+    )
+    target = tmp_path / "project"
+
+    save_verified_model(
+        _SAVE_MODEL,
+        target_dir=target,
+        solver=solver,
+        timeout_ms=5_000,
+        controls=SolveControls(
+            free_search=True,
+            parallel=2,
+            random_seed=7,
+            all_solutions=True,
+            num_solutions=3,
+        ),
+    )
+
+    manifest = json.loads((target / MANIFEST_FILENAME).read_text())
+    assert list(manifest["solve_controls"].items()) == [
+        ("timeout_ms", 5_000),
+        ("free_search", True),
+        ("parallel", 2),
+        ("random_seed", 7),
+        ("all_solutions", True),
+        ("num_solutions", 3),
+    ]
 
 
 def test_save_verified_model_satisfied_solve_writes_project(
@@ -2313,7 +2436,9 @@ def test_save_verified_model_rejects_gated_num_solutions_before_any_subprocess(
     # the compile check spends a subprocess on a doomed request.
     _fail_if_subprocess_called(monkeypatch)
     with pytest.raises(ValueError, match="num_solutions"):
-        save_verified_model(_SAVE_MODEL, target_dir=tmp_path / "project", num_solutions=2)
+        save_verified_model(
+            _SAVE_MODEL, target_dir=tmp_path / "project", controls=SolveControls(num_solutions=2)
+        )
 
 
 # --- save_verified_model(portfolio_result=...) ------------------------------
@@ -2659,7 +2784,7 @@ def test_save_verified_model_portfolio_result_seed_mismatch_raises_before_runtim
         save_verified_model(
             _SAVE_MODEL,
             target_dir=tmp_path / "project",
-            random_seed=8,
+            controls=SolveControls(random_seed=8),
             portfolio_result=portfolio_result,
         )
 
@@ -2735,7 +2860,10 @@ def test_save_verified_model_portfolio_result_unseeded_winner_matches_unseeded_s
     portfolio_result = _portfolio_result(seed=None)
 
     result = save_verified_model(
-        _SAVE_MODEL, target_dir=target, random_seed=None, portfolio_result=portfolio_result
+        _SAVE_MODEL,
+        target_dir=target,
+        controls=SolveControls(random_seed=None),
+        portfolio_result=portfolio_result,
     )
 
     assert result.status == "saved"
@@ -2868,7 +2996,7 @@ def _patch_cancellable_executor(
     return calls
 
 
-def test_solve_model_cancellable_does_not_resolve_capabilities(
+def test_run_prepared_solve_does_not_resolve_capabilities(
     fake_minizinc_binary: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The job worker trusts admission: the cancellable solve must NOT resolve
@@ -2877,9 +3005,13 @@ def test_solve_model_cancellable_does_not_resolve_capabilities(
     # thus runs --solvers-json at most once — at admission, never in the worker.
     resolve_calls = _patch_capabilities(monkeypatch, {"cp-sat": SolverCapabilities()})
     _patch_cancellable_executor(monkeypatch, child_result(stdout=STREAM_SATISFY, returncode=0))
-    result = solve_model_cancellable(
+    result = run_prepared_solve(
         "var 1..5: x;\nsolve satisfy;",
-        free_search=True,
+        solver=DEFAULT_SOLVER,
+        data=None,
+        checker=None,
+        timeout_ms=DEFAULT_SOLVE_TIMEOUT_MS,
+        extra_args=build_solve_extra_args(DEFAULT_SOLVER, SolveControls(free_search=True)),
         on_start=lambda _proc: None,
     )
     assert result.status == "satisfied"

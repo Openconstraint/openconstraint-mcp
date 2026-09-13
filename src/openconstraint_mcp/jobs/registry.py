@@ -32,9 +32,8 @@ from uuid import uuid4
 from ..minizinc.core import (
     DEFAULT_SOLVE_TIMEOUT_MS,
     DEFAULT_SOLVER,
-    build_solve_extra_args,
-    enforce_solver_capabilities,
-    solve_model_cancellable,
+    prepare_solve_args,
+    run_prepared_solve,
     validate_model_and_timeout,
 )
 
@@ -44,25 +43,34 @@ from ..minizinc.core import (
 # never drift apart.
 from ..schemas.diagnostics import Diagnostic, wrapper_job_diagnostic
 from ..schemas.job_state import RESULT_BEARING_STATES, TERMINAL_STATES, JobState
-from ..schemas.minizinc import SolveJobStatus, SolveResult, job_state_for_result
+from ..schemas.minizinc import (
+    DEFAULT_SOLVE_CONTROLS,
+    SolveControls,
+    SolveJobStatus,
+    SolveResult,
+    job_state_for_result,
+)
 from ..shared.job_errors import JobRejectedError, exception_summary, now_ms
 from ..shared.proc import terminate_process_tree as _terminate_process_tree
 
 
 @dataclass(frozen=True)
 class SolveRequest:
-    """The immutable solve parameters for one job (mirrors ``solve_model``)."""
+    """The immutable, prepared solve parameters for one job.
+
+    ``extra_args`` is the solve argv the submitter already built from ``controls``
+    (``prepare_solve_args`` for a single job; ``build_solve_extra_args`` per attempt
+    after a portfolio's plan-level capability check). The worker runs it verbatim
+    and never rebuilds or re-resolves.
+    """
 
     model: str
     solver: str
     data: str | None
     checker: str | None
     timeout_ms: int
-    free_search: bool
-    parallel: int | None
-    random_seed: int | None
-    all_solutions: bool
-    num_solutions: int | None
+    controls: SolveControls
+    extra_args: tuple[str, ...]
 
 
 @dataclass
@@ -131,11 +139,7 @@ class JobRegistry:
         data: str | None = None,
         checker: str | None = None,
         timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
-        free_search: bool = False,
-        parallel: int | None = None,
-        random_seed: int | None = None,
-        all_solutions: bool = False,
-        num_solutions: int | None = None,
+        controls: SolveControls = DEFAULT_SOLVE_CONTROLS,
     ) -> str:
         """Admit a solve as a background job; return its server-generated ``job_id``.
 
@@ -147,37 +151,17 @@ class JobRegistry:
         queue is full — no worker or subprocess is created in that case.
         """
         validate_model_and_timeout(model, timeout_ms)
-        # Validates the controls (parallel/num_solutions ranges + the solver-gated
-        # -n); the args are rebuilt by the worker's solve, so they're discarded here.
-        build_solve_extra_args(
-            solver=solver,
-            free_search=free_search,
-            parallel=parallel,
-            random_seed=random_seed,
-            all_solutions=all_solutions,
-            num_solutions=num_solutions,
-        )
-        # Reject an unsupported -a/-f/-p/-r control at admission (one --solvers-json
-        # at most, only when a gated control is set); the worker trusts this and
-        # never re-resolves (D1/D2).
-        enforce_solver_capabilities(
-            solver=solver,
-            free_search=free_search,
-            parallel=parallel,
-            random_seed=random_seed,
-            all_solutions=all_solutions,
-        )
+        # Validates the controls and rejects an unsupported -a/-f/-p/-r control at
+        # admission (one --solvers-json at most, only when a gated control is set);
+        # the worker runs these prepared args and never re-resolves (D1/D2).
         request = SolveRequest(
             model=model,
             solver=solver,
             data=data,
             checker=checker,
             timeout_ms=timeout_ms,
-            free_search=free_search,
-            parallel=parallel,
-            random_seed=random_seed,
-            all_solutions=all_solutions,
-            num_solutions=num_solutions,
+            controls=controls,
+            extra_args=prepare_solve_args(solver, controls),
         )
         with self._lock:
             if self._in_flight >= self._max_running + self._max_queued:
@@ -187,15 +171,16 @@ class JobRegistry:
     def submit_many(self, requests: Sequence[SolveRequest], *, pin: bool = False) -> list[str]:
         """Admit a batch of solves atomically — all or none (D8) — in request order.
 
-        Validates every request up front (model/timeout + control ranges/`-n` gate)
-        with the exact ``solve_model`` rules, then under a SINGLE lock acquisition
-        either admits the whole batch (so a concurrent ``submit`` cannot take a slot
+        Validates every request's model/timeout up front with the exact
+        ``solve_model`` rules, then under a SINGLE lock acquisition either admits
+        the whole batch (so a concurrent ``submit`` cannot take a slot
         mid-sequence) or, when the batch would exceed the bounded running+queued
         capacity, admits NONE and raises ``JobRejectedError`` — never a partial
-        batch. Capability (`-a/-f/-p/-r`) enforcement is the caller's job: a
-        portfolio validates the whole plan once before calling this, so this
-        primitive runs no ``--solvers-json`` itself. Returns the ``job_id`` list in
-        request order.
+        batch. Requests arrive prepared: control validation and capability
+        (`-a/-f/-p/-r`) enforcement are the caller's job — a portfolio checks the
+        whole plan once and builds each attempt's ``extra_args`` before calling
+        this, so this primitive runs no ``--solvers-json`` itself. Returns the
+        ``job_id`` list in request order.
 
         When ``pin`` is true, the admitted records are retained until their caller
         releases the pin. Portfolio jobs use this so their child attempt records
@@ -203,14 +188,6 @@ class JobRegistry:
         """
         for request in requests:
             validate_model_and_timeout(request.model, request.timeout_ms)
-            build_solve_extra_args(
-                solver=request.solver,
-                free_search=request.free_search,
-                parallel=request.parallel,
-                random_seed=request.random_seed,
-                all_solutions=request.all_solutions,
-                num_solutions=request.num_solutions,
-            )
         with self._lock:
             if self._in_flight + len(requests) > self._max_running + self._max_queued:
                 raise JobRejectedError(self._queue_full_message(batch=len(requests)))
@@ -468,17 +445,13 @@ class JobRegistry:
             if record.started_at_ms is None:
                 record.started_at_ms = now_ms()
         try:
-            result = solve_model_cancellable(
+            result = run_prepared_solve(
                 request.model,
                 solver=request.solver,
                 data=request.data,
                 checker=request.checker,
                 timeout_ms=request.timeout_ms,
-                free_search=request.free_search,
-                parallel=request.parallel,
-                random_seed=request.random_seed,
-                all_solutions=request.all_solutions,
-                num_solutions=request.num_solutions,
+                extra_args=request.extra_args,
                 on_start=lambda proc: self._on_start(job_id, proc),
             )
         except Exception as exc:  # noqa: BLE001 - worker boundary: never leak; record as failed
