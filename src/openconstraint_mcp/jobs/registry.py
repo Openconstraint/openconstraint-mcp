@@ -129,6 +129,8 @@ class JobRegistry:
         # that live child — so the handle is stashed here for shutdown to sweep.
         self._unreaped_orphans: list[Popen[str]] = []
         self._in_flight = 0
+        # Set by shutdown(); admission rejects once closed.
+        self._closed: bool = False
         self._executor = ThreadPoolExecutor(
             max_workers=max_running_jobs, thread_name_prefix="solve-job"
         )
@@ -150,7 +152,7 @@ class JobRegistry:
         fast as a ``ValueError`` before any job exists), then applies D1.3 admission
         under the lock. Returns immediately (state ``queued`` or ``running``)
         without awaiting the solve; raises ``JobRejectedError`` when the bounded
-        queue is full — no worker or subprocess is created in that case.
+        queue is full or shutdown has begun — no worker or subprocess is created then.
         """
         validate_model_and_timeout(model, timeout_ms)
         # Validates the controls and rejects an unsupported -a/-f/-p/-r control at
@@ -166,6 +168,7 @@ class JobRegistry:
             extra_args=prepare_solve_args(solver, controls),
         )
         with self._lock:
+            self._require_open()
             if self._in_flight >= self._max_running + self._max_queued:
                 raise JobRejectedError(self._queue_full_message())
             return self._admit_locked(request)
@@ -199,6 +202,7 @@ class JobRegistry:
         for request in requests:
             validate_model_and_timeout(request.model, request.timeout_ms)
         with self._lock:
+            self._require_open()
             if self._in_flight + len(requests) > self._max_running + self._max_queued:
                 raise JobRejectedError(self._queue_full_message(batch=len(requests)))
             job_ids: list[str] = [
@@ -256,6 +260,10 @@ class JobRegistry:
         A hard server kill bypasses this — acceptable for a local, non-persistent v1.
         """
         with self._lock:
+            # Close admission in the SAME acquisition as the snapshot below, so every
+            # job is either in the snapshot (and marked) or rejected — none can be
+            # admitted after the snapshot and stranded by the pool teardown.
+            self._closed = True
             # Mark every non-terminal record cancel_requested FIRST. A worker that
             # is running but has not yet recorded its handle (the launch window)
             # would otherwise slip past both the future.cancel() and the handle
@@ -295,6 +303,11 @@ class JobRegistry:
         self._executor.shutdown(wait=True, cancel_futures=True)
 
     # --- internals (assume the caller holds the lock unless noted) -------------
+
+    def _require_open(self) -> None:
+        # Caller holds the lock. The single admission gate for shutdown.
+        if self._closed:
+            raise JobRejectedError("Job registry is shutting down; no new jobs are accepted.")
 
     def _queue_full_message(self, *, batch: int | None = None) -> str:
         capacity = f"{self._max_running} running + {self._max_queued} queued"

@@ -735,6 +735,81 @@ def test_shutdown_terminates_a_child_launched_after_its_handle_snapshot(
     assert registry.get(job_id).state == "cancelled"
 
 
+def test_submit_after_shutdown_is_rejected() -> None:
+    registry = JobRegistry()
+    registry.shutdown()
+
+    with pytest.raises(JobRejectedError, match="shutting down"):
+        registry.submit(model="solve satisfy;")
+    assert registry.list() == []
+
+
+def test_submit_many_after_shutdown_is_rejected_without_listener_events() -> None:
+    events, listener = _recording_listener()
+    registry = JobRegistry()
+    registry.shutdown()
+
+    with pytest.raises(JobRejectedError, match="shutting down"):
+        registry.submit_many([_request(), _request()], on_terminal=listener)
+    assert registry.list() == []
+    assert events == []
+
+
+def test_submit_during_shutdown_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Admission window race: a submit that runs after shutdown has marked the live
+    # jobs (and taken its record snapshot) but before the pool is torn down must be
+    # rejected. Otherwise its record is missing from the snapshot, is never
+    # finalized, and stays `queued` (or starts unflagged and stalls teardown).
+    worker_running = threading.Event()
+    inner_done = threading.Event()
+    inner: list[str | JobRejectedError] = []
+    registry = JobRegistry(max_running_jobs=1, max_queued_jobs=4)
+
+    def _submitting_solve(model: str, *, on_start: Any, **kw: Any) -> SolveResult:
+        on_start(_FakeProc())
+        if inner:
+            return _solve_result()
+        worker_running.set()
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            with registry._lock:
+                marked = all(r.cancel_requested for r in registry._records.values())
+            if marked:
+                break
+            time.sleep(0.001)
+        try:
+            inner.append(registry.submit(model="solve satisfy;"))
+        except JobRejectedError as exc:
+            inner.append(exc)
+        finally:
+            inner_done.set()
+        return _solve_result()
+
+    def _terminate_after_inner_submit(proc: Any, **kwargs: Any) -> None:
+        # Pin the inner submit inside the window: shutdown terminates handles before
+        # tearing down the pool, so it cannot reach executor.shutdown until then.
+        inner_done.wait(timeout=3)
+
+    _patch_solve(monkeypatch, _submitting_solve)
+    monkeypatch.setattr(
+        "openconstraint_mcp.jobs.registry._terminate_process_tree", _terminate_after_inner_submit
+    )
+
+    registry.submit(model="solve satisfy;")
+    assert worker_running.wait(timeout=3)
+    shutdown_done = threading.Event()
+
+    def _run_shutdown() -> None:
+        registry.shutdown()
+        shutdown_done.set()
+
+    threading.Thread(target=_run_shutdown, name="shutdown").start()
+
+    assert shutdown_done.wait(timeout=5), "shutdown hung"
+    assert len(inner) == 1 and isinstance(inner[0], JobRejectedError)
+    assert len(registry.list()) == 1
+
+
 # --- terminal listener (submit_many on_terminal) ---------------------------
 
 

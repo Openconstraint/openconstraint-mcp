@@ -154,6 +154,16 @@ def test_poll_succeeds_after_child_attempt_would_exceed_solve_retention(
         job_registry.shutdown()
 
 
+def test_submit_after_solve_registry_shutdown_is_rejected() -> None:
+    job_registry = JobRegistry()
+    portfolios = PortfolioJobRegistry(job_registry)
+    job_registry.shutdown()
+
+    with pytest.raises(JobRejectedError, match="shutting down"):
+        portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
+    assert portfolios.list() == []
+
+
 def test_submit_does_not_block_while_attempts_run(monkeypatch: pytest.MonkeyPatch) -> None:
     # The attempts block until released; submit must still return promptly (it only
     # admits them), and a poll while they run reports `running`.
