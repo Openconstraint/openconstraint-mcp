@@ -29,7 +29,7 @@ from openconstraint_mcp.minizinc.core import (
     solve_model,
     solve_model_path,
 )
-from openconstraint_mcp.schemas.minizinc import SolveResult
+from openconstraint_mcp.schemas.minizinc import SolveControls, SolveResult
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("require_real_runtime")]
 
@@ -168,7 +168,7 @@ _ALL_SOLUTIONS_MODEL = "var 1..3: x;\nvar 1..3: y;\nconstraint x < y;\nsolve sat
 
 
 def test_solve_model_all_solutions_enumerates_multiple() -> None:
-    result = solve_model(_ALL_SOLUTIONS_MODEL, all_solutions=True)
+    result = solve_model(_ALL_SOLUTIONS_MODEL, controls=SolveControls(all_solutions=True))
 
     # `-a` enumerates every solution and the stream ends in ALL_SOLUTIONS, which
     # maps to `satisfied`; `solution` is the last enumerated entry of `solutions`.
@@ -186,7 +186,7 @@ def test_solve_model_output_cap_truncates_large_enumeration() -> None:
     result = solve_model(
         "var 1..100000: x;\nsolve satisfy;",
         solver="org.gecode.gecode",
-        all_solutions=True,
+        controls=SolveControls(all_solutions=True),
         timeout_ms=60_000,
     )
 
@@ -205,7 +205,9 @@ def test_solve_model_output_cap_truncates_large_enumeration() -> None:
 def test_solve_model_random_seed_runs_cleanly() -> None:
     # `random_seed` is accepted and the solve completes; the seed effect is
     # solver-internal, so assert only a clean satisfied result.
-    result = solve_model("var 1..5: x;\nconstraint x > 2;\nsolve satisfy;", random_seed=12345)
+    result = solve_model(
+        "var 1..5: x;\nconstraint x > 2;\nsolve satisfy;", controls=SolveControls(random_seed=12345)
+    )
 
     assert result.status == "satisfied"
     assert result.solution is not None
@@ -216,7 +218,9 @@ def test_solve_model_negative_random_seed_surfaces_as_error() -> None:
     # runtime as a `{"type":"status","status":"ERROR"}` verdict. Our parser must
     # map that to `status="error"` (not the silent "unknown" fallback), so a bad
     # parameter is visibly an error rather than an empty no-solution result.
-    result = solve_model("var 1..5: x;\nconstraint x > 2;\nsolve satisfy;", random_seed=-5)
+    result = solve_model(
+        "var 1..5: x;\nconstraint x > 2;\nsolve satisfy;", controls=SolveControls(random_seed=-5)
+    )
 
     assert result.status == "error"
     assert result.solution is None
@@ -225,7 +229,9 @@ def test_solve_model_negative_random_seed_surfaces_as_error() -> None:
 def test_solve_model_parallel_runs_cleanly() -> None:
     # `parallel=2` requests two search threads; assert it solves, not a specific
     # threading effect (solver-dependent).
-    result = solve_model("var 1..5: x;\nconstraint x > 2;\nsolve satisfy;", parallel=2)
+    result = solve_model(
+        "var 1..5: x;\nconstraint x > 2;\nsolve satisfy;", controls=SolveControls(parallel=2)
+    )
 
     assert result.status == "satisfied"
     assert result.solution is not None
@@ -234,7 +240,9 @@ def test_solve_model_parallel_runs_cleanly() -> None:
 def test_solve_model_free_search_runs_cleanly() -> None:
     # `free_search=True` lets the solver use its own search; assert only that the
     # default managed solver accepts the flag and solves.
-    result = solve_model("var 1..5: x;\nconstraint x > 2;\nsolve satisfy;", free_search=True)
+    result = solve_model(
+        "var 1..5: x;\nconstraint x > 2;\nsolve satisfy;", controls=SolveControls(free_search=True)
+    )
 
     assert result.status == "satisfied"
     assert result.solution is not None
@@ -266,7 +274,9 @@ def test_solve_model_num_solutions_caps_satisfaction_count(solver: str) -> None:
     # at exactly two for a solver whose stdFlags include `-n`.
     _skip_if_solver_absent(solver)
 
-    result = solve_model(_ALL_SOLUTIONS_MODEL, solver=solver, num_solutions=2)
+    result = solve_model(
+        _ALL_SOLUTIONS_MODEL, solver=solver, controls=SolveControls(num_solutions=2)
+    )
 
     assert result.status == "satisfied"
     assert len(result.solutions) == 2
@@ -277,7 +287,7 @@ def test_solve_model_num_solutions_rejected_for_cp_sat() -> None:
     # ValueError before any subprocess, so the doomed command is never built and
     # the solver never fakes a success. Unconditional — cp-sat is always present.
     with pytest.raises(ValueError, match="num_solutions"):
-        solve_model(_ALL_SOLUTIONS_MODEL, solver="cp-sat", num_solutions=2)
+        solve_model(_ALL_SOLUTIONS_MODEL, solver="cp-sat", controls=SolveControls(num_solutions=2))
 
 
 @pytest.mark.parametrize("solver", ["org.gecode.gecode", "org.chuffed.chuffed"])
@@ -327,7 +337,9 @@ def test_solve_model_rejects_control_the_solver_does_not_declare() -> None:
         pytest.skip("this runtime's chuffed declares -p; candidate no longer applies")
 
     with pytest.raises(ValueError, match="parallel") as exc_info:
-        solve_model(_ALL_SOLUTIONS_MODEL, solver="org.chuffed.chuffed", parallel=2)
+        solve_model(
+            _ALL_SOLUTIONS_MODEL, solver="org.chuffed.chuffed", controls=SolveControls(parallel=2)
+        )
     message = str(exc_info.value)
     assert "org.chuffed.chuffed" in message
     assert "-p" in message
@@ -341,7 +353,9 @@ def test_solve_model_accepts_control_the_solver_declares() -> None:
     if not caps.supports_free_search:
         pytest.skip("this runtime's chuffed does not declare -f")
 
-    result = solve_model(_ALL_SOLUTIONS_MODEL, solver="org.chuffed.chuffed", free_search=True)
+    result = solve_model(
+        _ALL_SOLUTIONS_MODEL, solver="org.chuffed.chuffed", controls=SolveControls(free_search=True)
+    )
 
     assert result.status == "satisfied"
 
@@ -690,7 +704,9 @@ def test_solve_model_path_with_checker_optimization_completes_with_single_check(
 def test_solve_model_path_with_checker_composes_with_all_solutions(tmp_path: Path) -> None:
     model_path, checker_path = _write_pair(tmp_path, _ALL_SOLUTIONS_MODEL, _OUTPUT_CHECKER)
 
-    result = solve_model_path(model_path, checker_path=checker_path, all_solutions=True)
+    result = solve_model_path(
+        model_path, checker_path=checker_path, controls=SolveControls(all_solutions=True)
+    )
 
     assert result.status == "satisfied"
     assert len(result.solutions) >= 2
@@ -775,12 +791,7 @@ def _probe_raw_statuses(
 ) -> tuple[list[str], SolveResult]:
     """Solve ``model`` once; return its raw stream statuses and normalized result."""
     extra_args = build_solve_extra_args(
-        solver=solver,
-        free_search=False,
-        parallel=None,
-        random_seed=random_seed,
-        all_solutions=all_solutions,
-        num_solutions=None,
+        solver, SolveControls(random_seed=random_seed, all_solutions=all_solutions)
     )
     outcome = _run_managed_minizinc(
         model, solver=solver, timeout_ms=timeout_ms, extra_args=extra_args

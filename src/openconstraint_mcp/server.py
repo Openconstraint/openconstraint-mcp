@@ -120,12 +120,13 @@ from .schemas.minizinc import (
     CheckResult,
     ModelInspectionResult,
     SaveVerifiedModelResult,
+    SolveControls,
     SolveJobStatus,
     SolveResult,
     SolverList,
     UnsatCoreResult,
 )
-from .schemas.portfolio import PortfolioJobStatus, PortfolioSolveResult
+from .schemas.portfolio import PortfolioJobStatus, PortfolioSolveControls, PortfolioSolveResult
 from .schemas.problem_text import ProblemText
 from .schemas.runtime import RuntimeStatus
 from .schemas.tabular import (
@@ -700,11 +701,13 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
                 data=data,
                 checker=checker,
                 timeout_ms=timeout_ms,
-                free_search=free_search,
-                parallel=parallel,
-                random_seed=random_seed,
-                all_solutions=all_solutions,
-                num_solutions=num_solutions,
+                controls=SolveControls(
+                    free_search=free_search,
+                    parallel=parallel,
+                    random_seed=random_seed,
+                    all_solutions=all_solutions,
+                    num_solutions=num_solutions,
+                ),
                 tracker=child_tracker,
             ),
         )
@@ -801,11 +804,13 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
                 problem=problem,
                 solver=solver,
                 timeout_ms=timeout_ms,
-                free_search=free_search,
-                parallel=parallel,
-                random_seed=random_seed,
-                all_solutions=all_solutions,
-                num_solutions=num_solutions,
+                controls=SolveControls(
+                    free_search=free_search,
+                    parallel=parallel,
+                    random_seed=random_seed,
+                    all_solutions=all_solutions,
+                    num_solutions=num_solutions,
+                ),
                 overwrite=overwrite,
                 portfolio_result=portfolio_result,
                 tracker=child_tracker,
@@ -883,11 +888,13 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
                 data_path=Path(data_path) if data_path is not None else None,
                 checker_path=Path(checker_path) if checker_path is not None else None,
                 timeout_ms=timeout_ms,
-                free_search=free_search,
-                parallel=parallel,
-                random_seed=random_seed,
-                all_solutions=all_solutions,
-                num_solutions=num_solutions,
+                controls=SolveControls(
+                    free_search=free_search,
+                    parallel=parallel,
+                    random_seed=random_seed,
+                    all_solutions=all_solutions,
+                    num_solutions=num_solutions,
+                ),
                 tracker=child_tracker,
             ),
         )
@@ -939,11 +946,13 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
             data=data,
             checker=checker,
             timeout_ms=timeout_ms,
-            free_search=free_search,
-            parallel=parallel,
-            random_seed=random_seed,
-            all_solutions=all_solutions,
-            num_solutions=num_solutions,
+            controls=SolveControls(
+                free_search=free_search,
+                parallel=parallel,
+                random_seed=random_seed,
+                all_solutions=all_solutions,
+                num_solutions=num_solutions,
+            ),
         )
         return registry.get(job_id)
 
@@ -992,10 +1001,12 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
             seed_count=seed_count,
             seeds=seeds,
             per_attempt_timeout_ms=per_attempt_timeout_ms,
-            free_search=free_search,
-            parallel=parallel,
-            all_solutions=all_solutions,
-            num_solutions=num_solutions,
+            solve_controls=PortfolioSolveControls(
+                free_search=free_search,
+                parallel=parallel,
+                all_solutions=all_solutions,
+                num_solutions=num_solutions,
+            ),
         )
         return portfolios.get(job_id)
 

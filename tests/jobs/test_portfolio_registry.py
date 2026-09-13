@@ -1,6 +1,6 @@
 """Unit tests for the background portfolio-job registry (collect-on-poll).
 
-A real ``JobRegistry`` drives the attempts (its ``solve_model_cancellable`` is
+A real ``JobRegistry`` drives the attempts (its ``run_prepared_solve`` is
 mocked) and a real ``PortfolioJobRegistry`` selects the winner lazily on each
 ``get``. These prove the async portfolio path — submit returns at once, polling
 finalizes the race, cancel stops it — without a runtime and without a background
@@ -56,7 +56,7 @@ def _never_terminate_for_real(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _patch_solve(monkeypatch: pytest.MonkeyPatch, fake: Any) -> None:
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.solve_model_cancellable", fake)
+    monkeypatch.setattr("openconstraint_mcp.jobs.registry.run_prepared_solve", fake)
 
 
 def _poll(registry: PortfolioJobRegistry, job_id: str, timeout: float = 5.0) -> Any:

@@ -49,6 +49,11 @@ from ..shared.job_errors import JobRejectedError, now_ms
 from .portfolio import _admit_portfolio, _select_portfolio_outcome
 from .registry import JobRegistry
 
+# No shared search control requested: the portfolio's default plan.
+_DEFAULT_PORTFOLIO_SOLVE_CONTROLS: PortfolioSolveControls = PortfolioSolveControls(
+    free_search=False, parallel=None, all_solutions=False, num_solutions=None
+)
+
 
 @dataclass
 class _PortfolioRecord:
@@ -155,10 +160,7 @@ class PortfolioJobRegistry:
         seed_count: int = 1,
         seeds: list[int] | None = None,
         per_attempt_timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
-        free_search: bool = False,
-        parallel: int | None = None,
-        all_solutions: bool = False,
-        num_solutions: int | None = None,
+        solve_controls: PortfolioSolveControls = _DEFAULT_PORTFOLIO_SOLVE_CONTROLS,
     ) -> str:
         """Admit a portfolio as a background race; return its ``portfolio_job_id``.
 
@@ -196,10 +198,7 @@ class PortfolioJobRegistry:
             seed_count=seed_count,
             seeds=seeds,
             per_attempt_timeout_ms=per_attempt_timeout_ms,
-            free_search=free_search,
-            parallel=parallel,
-            all_solutions=all_solutions,
-            num_solutions=num_solutions,
+            solve_controls=solve_controls,
             pin_attempts=True,
         )
         try:

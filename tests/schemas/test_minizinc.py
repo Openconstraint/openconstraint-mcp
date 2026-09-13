@@ -10,6 +10,7 @@ from openconstraint_mcp.schemas.minizinc import (
     ModelInspectionResult,
     SaveVerifiedModelResult,
     SolutionCheck,
+    SolveControls,
     SolveJobStatus,
     SolverCapabilities,
     SolveResult,
@@ -551,3 +552,33 @@ def test_solver_info_capabilities_default_is_conservative() -> None:
         "supports_num_solutions": False,
         "std_flags": [],
     }
+
+
+def test_solve_controls_defaults_request_no_control() -> None:
+    controls = SolveControls()
+    assert controls == SolveControls(
+        free_search=False, parallel=None, random_seed=None, all_solutions=False, num_solutions=None
+    )
+
+
+def test_solve_controls_strict_mode_rejects_bool_for_parallel() -> None:
+    with pytest.raises(ValidationError):
+        SolveControls(parallel=True)
+
+
+def test_solve_controls_is_frozen() -> None:
+    controls = SolveControls()
+    with pytest.raises(ValidationError):
+        controls.free_search = True  # type: ignore[misc]
+
+
+def test_solve_controls_dump_key_order_is_manifest_order() -> None:
+    # The saved manifest's solve_controls splices this dump after timeout_ms, so
+    # the declared field order is load-bearing for byte-identical manifests.
+    assert list(SolveControls().model_dump()) == [
+        "free_search",
+        "parallel",
+        "random_seed",
+        "all_solutions",
+        "num_solutions",
+    ]

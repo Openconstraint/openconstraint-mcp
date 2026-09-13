@@ -7,27 +7,36 @@ from typing import Any
 import pytest
 
 from openconstraint_mcp.jobs.registry import JobRegistry, SolveRequest
+from openconstraint_mcp.minizinc.core import build_solve_extra_args, prepare_solve_args
 from openconstraint_mcp.schemas.minizinc import (
+    SolveControls,
     SolverCapabilities,
     SolveResult,
     SolverInfo,
     SolverList,
 )
 from openconstraint_mcp.shared.job_errors import JobRejectedError
+from tests.minizinc.helpers import STREAM_SATISFY, child_result
 
 
 def _request(model: str = "solve satisfy;", **overrides: Any) -> SolveRequest:
+    """Build a prepared request the way a portfolio does: controls, then their argv."""
+    solver: str = overrides.pop("solver", "cp-sat")
+    controls = SolveControls(
+        **{
+            name: overrides.pop(name)
+            for name in list(overrides)
+            if name in SolveControls.model_fields
+        }
+    )
     fields: dict[str, Any] = {
         "model": model,
-        "solver": "cp-sat",
+        "solver": solver,
         "data": None,
         "checker": None,
         "timeout_ms": 30000,
-        "free_search": False,
-        "parallel": None,
-        "random_seed": None,
-        "all_solutions": False,
-        "num_solutions": None,
+        "controls": controls,
+        "extra_args": build_solve_extra_args(solver, controls),
     }
     fields.update(overrides)
     return SolveRequest(**fields)
@@ -38,7 +47,7 @@ def _patch_list_solvers(monkeypatch: pytest.MonkeyPatch, caps: SolverCapabilitie
 
     Returns a single-element counter of resolver invocations so a test can assert
     a gated-control job resolves capabilities exactly once (at admission, not the
-    worker — the worker's ``solve_model_cancellable`` is mocked away here anyway).
+    worker — the worker's ``run_prepared_solve`` is mocked away here anyway).
     """
     calls = [0]
 
@@ -106,7 +115,7 @@ def _wait_until_terminal(registry: JobRegistry, job_id: str, timeout: float = 3.
 
 
 def _patch_solve(monkeypatch: pytest.MonkeyPatch, fake: Any) -> None:
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.solve_model_cancellable", fake)
+    monkeypatch.setattr("openconstraint_mcp.jobs.registry.run_prepared_solve", fake)
 
 
 def _patch_terminate(monkeypatch: pytest.MonkeyPatch, recorder: list[Any]) -> None:
@@ -249,7 +258,52 @@ def test_submit_resolves_capabilities_once_at_admission(monkeypatch: pytest.Monk
     _patch_solve(monkeypatch, lambda model, *, on_start, **kw: _solve_result())
     registry = JobRegistry()
     try:
-        job_id = registry.submit(model="solve satisfy;", free_search=True)
+        job_id = registry.submit(model="solve satisfy;", controls=SolveControls(free_search=True))
+        assert _wait_until_terminal(registry, job_id) == "succeeded"
+        assert resolve_calls[0] == 1
+    finally:
+        registry.shutdown()
+
+
+def test_worker_runs_the_admission_prepared_extra_args(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The worker never rebuilds the argv: it runs exactly what admission prepared.
+    _patch_list_solvers(
+        monkeypatch, SolverCapabilities(supports_free_search=True, supports_parallel=True)
+    )
+    captured: list[tuple[str, ...]] = []
+
+    def _fake_solve(
+        model: str, *, extra_args: tuple[str, ...], on_start: Any, **kw: Any
+    ) -> SolveResult:
+        captured.append(tuple(extra_args))
+        return _solve_result()
+
+    _patch_solve(monkeypatch, _fake_solve)
+    controls = SolveControls(free_search=True, parallel=2)
+    registry = JobRegistry()
+    try:
+        job_id = registry.submit(model="solve satisfy;", controls=controls)
+        assert _wait_until_terminal(registry, job_id) == "succeeded"
+        assert captured == [prepare_solve_args("cp-sat", controls)]
+    finally:
+        registry.shutdown()
+
+
+def test_gated_control_job_resolves_capabilities_only_at_admission(
+    fake_minizinc_binary: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With the real worker solve (only the child executor is faked), a gated-control
+    # job runs --solvers-json exactly once: at admission, never in the worker.
+    resolve_calls = _patch_list_solvers(monkeypatch, SolverCapabilities(supports_free_search=True))
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.core.execute_child",
+        lambda *args, **kwargs: child_result(stdout=STREAM_SATISFY, stderr="", returncode=0),
+    )
+    registry = JobRegistry()
+    try:
+        job_id = registry.submit(
+            model="var 1..5: x;\nsolve satisfy;", controls=SolveControls(free_search=True)
+        )
         assert _wait_until_terminal(registry, job_id) == "succeeded"
         assert resolve_calls[0] == 1
     finally:
@@ -270,7 +324,7 @@ def test_submit_rejects_unsupported_control_before_creating_job(
     registry = JobRegistry()
     try:
         with pytest.raises(ValueError, match="free_search"):
-            registry.submit(model="solve satisfy;", free_search=True)
+            registry.submit(model="solve satisfy;", controls=SolveControls(free_search=True))
         assert registry.list() == []
     finally:
         registry.shutdown()
@@ -319,19 +373,19 @@ def test_submit_many_rejects_whole_batch_when_over_capacity(
         registry.shutdown()
 
 
-def test_submit_many_validates_every_request_before_admitting(
+def test_submit_many_validates_every_model_before_admitting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # A bad request anywhere in the batch fails the whole call before any job is
-    # created (validation precedes the admission lock).
+    # Requests arrive with their argv prepared, but submit_many still rejects a bad
+    # model/timeout anywhere in the batch before any job is created.
     def _fail_solve(model: str, *, on_start: Any, **kw: Any) -> SolveResult:
         raise AssertionError("no worker should run when a batch request is invalid")
 
     _patch_solve(monkeypatch, _fail_solve)
     registry = JobRegistry()
     try:
-        with pytest.raises(ValueError, match="parallel"):
-            registry.submit_many([_request(), _request(parallel=0)])
+        with pytest.raises(ValueError, match="model must not be empty"):
+            registry.submit_many([_request(), _request(model="")])
         assert registry.list() == []
     finally:
         registry.shutdown()

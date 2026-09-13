@@ -20,6 +20,7 @@ from openconstraint_mcp.runtime import RuntimeMissingError
 from openconstraint_mcp.schemas.minizinc import (
     CheckResult,
     ModelInspectionResult,
+    SolveControls,
     SolverCapabilities,
     SolveResult,
     SolverInfo,
@@ -357,7 +358,9 @@ def test_solve_model_path_num_solutions_adds_valued_n_flag(
         monkeypatch, child_result(stdout=_SOLVE_STREAM_SAMPLE, stderr="", returncode=0)
     )
 
-    solve_model_path(model_path, num_solutions=2, solver="org.chuffed.chuffed")
+    solve_model_path(
+        model_path, controls=SolveControls(num_solutions=2), solver="org.chuffed.chuffed"
+    )
 
     cmd = calls[0]["cmd"]
     assert cmd[cmd.index("-n") + 1] == "2"
@@ -374,7 +377,7 @@ def test_solve_model_path_num_solutions_rejected_for_default_solver(
     _fail_if_run_called(monkeypatch)
 
     with pytest.raises(ValueError, match="num_solutions") as exc_info:
-        solve_model_path(model_path, num_solutions=2)
+        solve_model_path(model_path, controls=SolveControls(num_solutions=2))
     message = str(exc_info.value)
     assert "org.chuffed.chuffed" in message
     assert "org.gecode.gecode" in message
@@ -389,7 +392,9 @@ def test_solve_model_path_rejects_non_positive_num_solutions(
     _fail_if_run_called(monkeypatch)
 
     with pytest.raises(ValueError, match="num_solutions"):
-        solve_model_path(model_path, num_solutions=0, solver="org.chuffed.chuffed")
+        solve_model_path(
+            model_path, controls=SolveControls(num_solutions=0), solver="org.chuffed.chuffed"
+        )
 
 
 def test_solve_model_path_rejects_unsupported_control_before_solve(
@@ -405,7 +410,7 @@ def test_solve_model_path_rejects_unsupported_control_before_solve(
     _fail_if_run_called(monkeypatch)
 
     with pytest.raises(ValueError, match="free_search") as exc_info:
-        solve_model_path(model_path, free_search=True)
+        solve_model_path(model_path, controls=SolveControls(free_search=True))
     message = str(exc_info.value)
     assert "cp-sat" in message
     assert "-f" in message

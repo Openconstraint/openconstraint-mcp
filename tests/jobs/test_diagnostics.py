@@ -10,7 +10,7 @@ from __future__ import annotations
 from openconstraint_mcp.jobs.portfolio import _portfolio_result_diagnostic, _to_attempt
 from openconstraint_mcp.jobs.registry import JobRegistry, SolveRequest, _JobRecord
 from openconstraint_mcp.schemas.diagnostics import Diagnostic
-from openconstraint_mcp.schemas.minizinc import SolveJobStatus, SolveResult
+from openconstraint_mcp.schemas.minizinc import SolveControls, SolveJobStatus, SolveResult
 
 _REQUEST = SolveRequest(
     model="",
@@ -18,11 +18,8 @@ _REQUEST = SolveRequest(
     data=None,
     checker=None,
     timeout_ms=1000,
-    free_search=False,
-    parallel=None,
-    random_seed=None,
-    all_solutions=False,
-    num_solutions=None,
+    controls=SolveControls(),
+    extra_args=(),
 )
 
 

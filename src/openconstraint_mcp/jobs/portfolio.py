@@ -28,12 +28,14 @@ from typing import NamedTuple
 from pydantic import JsonValue
 
 from ..minizinc.core import (
+    build_solve_extra_args,
     resolve_capability_map,
+    validate_model_and_timeout,
     validate_solver_capabilities,
 )
 from ..schemas.diagnostics import Diagnostic
 from ..schemas.job_state import TERMINAL_STATES, JobState
-from ..schemas.minizinc import SolveJobStatus, SolveResult
+from ..schemas.minizinc import SolveControls, SolveJobStatus, SolveResult
 from ..schemas.portfolio import (
     PortfolioAttempt,
     PortfolioAttemptState,
@@ -100,10 +102,7 @@ def _admit_portfolio(
     checker: str | None,
     seed_count: int,
     per_attempt_timeout_ms: int,
-    free_search: bool,
-    parallel: int | None,
-    all_solutions: bool,
-    num_solutions: int | None,
+    solve_controls: PortfolioSolveControls,
     seeds: list[int] | None = None,
     pin_attempts: bool = False,
 ) -> _PortfolioAdmission:
@@ -140,29 +139,25 @@ def _admit_portfolio(
         for m_idx in range(len(models))
     ]
 
-    _validate_plan_capabilities(
-        solvers=solvers,
-        seed_used=seed_used,
-        free_search=free_search,
-        parallel=parallel,
-        all_solutions=all_solutions,
-    )
+    _validate_plan_capabilities(solvers=solvers, seed_used=seed_used, controls=solve_controls)
 
-    requests = [
-        SolveRequest(
-            model=models[m_idx],
-            solver=solver,
-            data=data,
-            checker=checker,
-            timeout_ms=per_attempt_timeout_ms,
-            free_search=free_search,
-            parallel=parallel,
-            random_seed=seed,
-            all_solutions=all_solutions,
-            num_solutions=num_solutions,
+    requests: list[SolveRequest] = []
+    for m_idx, solver, seed in plan:
+        # Per attempt, model/timeout is checked before the controls are built, so a
+        # plan with several problems reports the same first error as before.
+        validate_model_and_timeout(models[m_idx], per_attempt_timeout_ms)
+        attempt_controls = SolveControls(**solve_controls.model_dump(), random_seed=seed)
+        requests.append(
+            SolveRequest(
+                model=models[m_idx],
+                solver=solver,
+                data=data,
+                checker=checker,
+                timeout_ms=per_attempt_timeout_ms,
+                controls=attempt_controls,
+                extra_args=build_solve_extra_args(solver, attempt_controls),
+            )
         )
-        for m_idx, solver, seed in plan
-    ]
     job_ids = registry.submit_many(requests, pin=pin_attempts)
     models_sha256 = [text_sha256(model) for model in models]
     data_sha256 = text_sha256(data) if data is not None else None
@@ -174,12 +169,7 @@ def _admit_portfolio(
         models_sha256=models_sha256,
         data_sha256=data_sha256,
         checker_sha256=checker_sha256,
-        solve_controls=PortfolioSolveControls(
-            free_search=free_search,
-            parallel=parallel,
-            all_solutions=all_solutions,
-            num_solutions=num_solutions,
-        ),
+        solve_controls=solve_controls,
     )
 
 
@@ -320,9 +310,7 @@ def _validate_plan_capabilities(
     *,
     solvers: Sequence[str],
     seed_used: bool,
-    free_search: bool,
-    parallel: int | None,
-    all_solutions: bool,
+    controls: PortfolioSolveControls,
 ) -> None:
     """Reject the plan if any solver omits a requested control (one resolve, D4).
 
@@ -332,21 +320,17 @@ def _validate_plan_capabilities(
     solver string (a short alias) passes through (D4 case c) — MiniZinc resolves it
     at solve time.
     """
-    if not (free_search or all_solutions or parallel is not None or seed_used):
+    if not (
+        controls.free_search or controls.all_solutions or controls.parallel is not None or seed_used
+    ):
         return
     capability_map = resolve_capability_map()
+    plan_controls = SolveControls(**controls.model_dump(), random_seed=1 if seed_used else None)
     for solver in solvers:
         capabilities = capability_map.get(solver)
         if capabilities is None:
             continue
-        validate_solver_capabilities(
-            solver=solver,
-            capabilities=capabilities,
-            free_search=free_search,
-            parallel=parallel,
-            random_seed=1 if seed_used else None,
-            all_solutions=all_solutions,
-        )
+        validate_solver_capabilities(solver, capabilities, plan_controls)
 
 
 def _await_all_terminal(registry: JobRegistry, job_ids: Sequence[str]) -> list[SolveJobStatus]:
