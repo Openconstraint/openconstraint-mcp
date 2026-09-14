@@ -40,15 +40,15 @@ PortfolioStatus = Literal["winner", "no_winner"]
 
 
 class PortfolioAttempt(BaseModel):
-    """One model/solver/seed attempt in a portfolio race and its final observed state.
+    """One model/solver/seed attempt in a portfolio race, as of when the race settled.
 
-    Carries enough to explain the attempt without re-polling the registry after
-    the portfolio returns: which formulation it ran (`model_index`, a 0-based handle
-    into the caller's `models` list), its `solver`/`seed` (the exact requested or
-    generated seed value, or ``None`` when the portfolio ran unseeded), the
-    portfolio-level `state`,
-    the raw registry `job_state` (``None`` if it was never admitted), and — when a
-    ``SolveResult`` was produced — the `result_status` and `objective`. `message`
+    Records which formulation it ran (`model_index`, a 0-based handle into the
+    caller's `models` list), its `solver`/`seed` (the exact requested or generated
+    seed value, or ``None`` when the portfolio ran unseeded), the portfolio-level
+    `state` and raw registry `job_state` (``None`` if it was never admitted) at
+    settlement, and — when a ``SolveResult`` was produced — the `result_status` and
+    `objective`. A loser not yet stopped at settlement stays `running`/`submitted`;
+    its final outcome is not recorded (see ``PortfolioSolveResult``). `message`
     carries failure/cancel detail; `job_id` is the registry handle (``None`` when
     not admitted). The winning formulation is `models[attempts[winner_index].model_index]`.
     `checker_status` is the attempt's own checker verdict (``None`` when no checker

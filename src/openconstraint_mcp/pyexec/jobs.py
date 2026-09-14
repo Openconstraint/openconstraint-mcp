@@ -120,8 +120,9 @@ class _CpsatJobRecord:
 class CpsatJobRegistry:
     """A bounded, single-owned registry of background CP-SAT Python jobs.
 
-    Mirrors ``JobRegistry`` (MiniZinc) in structure and contract. Supports two
-    submission flavors:
+    Mirrors ``JobRegistry`` (MiniZinc) in structure and contract, except that a job
+    admitted while a running slot is free reports ``running`` at once instead of
+    staying ``queued`` until a worker starts it. Supports two submission flavors:
     - ``submit_source`` — inline Python source (same as ``run_cpsat_python``).
     - ``submit_file`` — local script path (same as ``run_cpsat_python_file``).
 
