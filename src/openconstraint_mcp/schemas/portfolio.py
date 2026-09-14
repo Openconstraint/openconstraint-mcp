@@ -101,9 +101,13 @@ class PortfolioSolveResult(BaseModel):
     winner_index present ⇔ status == "winner"`` is enforced, so a client can branch
     on `status` and trust the winner fields. `attempts` records every attempt's
     state as of when the race settled: the winner, the losers that had finished,
-    and any loser still being cancelled (``running``/``submitted``), so loser fates
-    are visible without polling child jobs. `selection_policy` documents how the
-    winner was chosen (e.g. ``"first-decisive-result"``).
+    and any loser not yet stopped (``running``/``submitted``). Remaining attempts
+    are cancelled after settlement; their cleanup does not delay the winner.
+    This snapshot is never refreshed, even on later portfolio polls or when saved
+    to ``experiment-log.json``: ``running`` is the state at settlement, not evidence
+    that a loser is still executing. Final loser outcomes are not tracked here.
+    `selection_policy` documents how the winner was chosen (e.g.
+    ``"first-decisive-result"``).
 
     ``models_sha256``/``data_sha256``/``checker_sha256`` are provenance: sha256 hex
     digests of the exact ``models``/``data``/``checker`` text the race was admitted
@@ -182,7 +186,7 @@ class PortfolioJobStatus(BaseModel):
     one with ``state="running"`` immediately so the race never blocks past a
     synchronous MCP client timeout, and ``get_portfolio_job`` polls it to a terminal
     state. ``result`` (the full ``PortfolioSolveResult``, winner and the
-    cancelled-loser table alike) is present IFF ``state == "succeeded"`` — this is
+    attempt table at settlement alike) is present IFF ``state == "succeeded"`` — this is
     enforced, so a client branches on ``state`` and trusts ``result``'s presence.
     A ``no_winner`` race is ``succeeded`` (the orchestration completed); ``failed``
     means an internal completion/notification error or failure to build the race

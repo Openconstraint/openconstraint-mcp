@@ -317,6 +317,8 @@ class PortfolioJobRegistry:
         running_losers: list[str] = []
         with record.lock:
             if record.state != "running":
+                # Intentional: loser cleanup continues after settlement, but its
+                # terminal events do not refresh the result's attempt snapshot.
                 return
             record.statuses[index] = status
             snapshot: Sequence[SolveJobStatus] | None = self._settlement_snapshot(record)

@@ -605,6 +605,11 @@ generic `solver_options`, `extra_args`, or raw MiniZinc flag passthrough.
   `models[attempts[winner_index].model_index]`. Present it like a single
   `solve_minizinc_model`: lead with the winner's model/solver/seed/status and then
   the winning solve.
+  Remaining attempts are cancelled after settlement without delaying the winner.
+  The attempt table is never refreshed, even on later portfolio polls or when
+  saved to `experiment-log.json`. A recorded `"running"` describes the state at
+  settlement; it does not mean the loser is still executing. The table does not
+  track final loser outcomes.
   - **Provenance hashes.** `models_sha256` (one sha256 digest per formulation,
     index-aligned with `models`), `data_sha256` (sha256 of `data`, or `null`
     iff `data` was `None` — an empty-string `data` hashes distinctly from
