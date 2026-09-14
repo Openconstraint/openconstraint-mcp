@@ -13,9 +13,11 @@ corner. A layout that no sequence of guillotine cuts can produce has no such
 tree, so it cannot be expressed at all.
 
 Loads a JSON instance from parsed/ (default: polarizing_film.json) and prints one
-JSON result.
+JSON result. An optional second argument caps CP-SAT's search time in seconds;
+without it the search runs until it proves optimality.
 Run from the repository root:
     uv run examples/guillotine_cutting/model.py polarizing_film.json
+    uv run examples/guillotine_cutting/model.py CGCUT1.json 60
 """
 
 import json
@@ -91,6 +93,10 @@ class Node(NamedTuple):
     holds: list[cp_model.IntVar]
 
 
+def _time_limit_seconds() -> float | None:
+    return float(sys.argv[2]) if len(sys.argv) > 2 else None
+
+
 def read_input() -> dict[str, Any]:
     filename: str = sys.argv[1] if len(sys.argv) > 1 else "polarizing_film.json"
     data_path: Path = Path(__file__).parent / "parsed" / filename
@@ -149,7 +155,7 @@ def trim_cuts(leaf: Rect, product: Product) -> list[Cut]:
     return cuts
 
 
-def solve(instance: ProblemInstance) -> Solution:
+def solve(instance: ProblemInstance, time_limit_seconds: float | None = None) -> Solution:
     sheet_width: int = instance.sheet_width
     sheet_height: int = instance.sheet_height
     products: list[Product] = instance.products
@@ -171,6 +177,7 @@ def solve(instance: ProblemInstance) -> Solution:
             sum(product.max_quantity for product in fitting),
             sheet_width * sheet_height // smallest_area,
         )
+        
     num_nodes: int = max(1, 2 * max_pieces - 1)
 
     x_offsets: list[int] = normal_offsets(
@@ -323,6 +330,8 @@ def solve(instance: ProblemInstance) -> Solution:
     solver: cp_model.CpSolver = cp_model.CpSolver()
     solver.parameters.random_seed = int(os.environ.get("OPENCONSTRAINT_MCP_CPSAT_SEED", "42"))
     solver.parameters.num_workers = 1
+    if time_limit_seconds is not None:
+        solver.parameters.max_time_in_seconds = time_limit_seconds
     status: cp_model.CpSolverStatus = solver.solve(model)
 
     status_map: dict[cp_model.CpSolverStatus, str] = {
@@ -422,7 +431,7 @@ def write_output(payload: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    write_output(serialize_solution(solve(parse_input(read_input()))))
+    write_output(serialize_solution(solve(parse_input(read_input()), _time_limit_seconds())))
 
 
 if __name__ == "__main__":

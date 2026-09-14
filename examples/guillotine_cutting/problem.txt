@@ -70,12 +70,13 @@ optima for unlimited-stage guillotine cutting (Polyakovskiy, Dehghan, Mcgregor
   OF1        70 x 40     10         23              2737   (profit = area)
   OF2        70 x 40     10         24              2690   (profit = area)
 
-The current model does NOT reproduce these. Measured with a time limit added
-outside the script: CGCUT1 finds 244 within 120 s but cannot prove it (bound
-still 260 after 30 s on 8 workers); OF1 reaches 2658 and OF2 2576 after 60 s,
-with bounds 4780 and 5104. They are kept here as the target for improving the
-model. model.py reads them by file name, e.g. `model.py CGCUT1.json`, but has no
-time limit of its own, so such a run does not stop by itself.
+The current model does NOT reproduce these. Measured with a time limit: CGCUT1
+finds 244 within 120 s but cannot prove it (bound still 260 after 30 s on 8
+workers); OF1 reaches 2658 and OF2 2576 after 60 s, with bounds 4780 and 5104.
+They are kept here as the target for improving the model. model.py reads them by
+file name and takes an optional CP-SAT time limit in seconds as a second
+argument, e.g. `model.py CGCUT1.json 60`; without one, such a run does not stop
+by itself.
 
 Model (model.py)
 ----------------
