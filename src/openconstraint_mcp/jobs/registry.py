@@ -51,7 +51,7 @@ from ..schemas.minizinc import (
     SolveResult,
     job_state_for_result,
 )
-from ..shared.job_errors import JobRejectedError, exception_summary, now_ms
+from ..shared.job_errors import JobRejectedError, UnknownJobError, exception_summary, now_ms
 from ..shared.proc import terminate_process_tree as _terminate_process_tree
 
 _logger: logging.Logger = logging.getLogger(__name__)
@@ -214,15 +214,25 @@ class JobRegistry:
             self._require_open()
             if self._in_flight + len(requests) > self._max_running + self._max_queued:
                 raise JobRejectedError(self._queue_full_message(batch=len(requests)))
-            job_ids: list[str] = [
-                self._admit_locked(
-                    request,
-                    on_terminal=on_terminal,
-                    on_terminal_error=on_terminal_error,
-                    batch_index=index,
-                )
-                for index, request in enumerate(requests)
-            ]
+            job_ids: list[str] = []
+            try:
+                for index, request in enumerate(requests):
+                    job_ids.append(
+                        self._admit_locked(
+                            request,
+                            on_terminal=on_terminal,
+                            on_terminal_error=on_terminal_error,
+                            batch_index=index,
+                        )
+                    )
+            except BaseException:
+                # A worker thread that cannot start fails the batch partway. None of it has
+                # run yet (each worker waits for this lock), so un-admit the jobs already
+                # admitted; a worker that then finds no record returns without solving.
+                for job_id in job_ids:
+                    del self._records[job_id]
+                    self._in_flight -= 1
+                raise
             return job_ids
 
     def get(self, job_id: str) -> SolveJobStatus:
@@ -351,8 +361,8 @@ class JobRegistry:
         on_terminal_error: Callable[[int, str], None] | None = None,
         batch_index: int = 0,
     ) -> str:
-        # Caller holds the lock AND has already checked capacity. Creates the record,
-        # bumps in_flight, and launches the worker future — the single admission
+        # Caller holds the lock AND has already checked capacity. Launches the worker
+        # future, then records the job and bumps in_flight — the single admission
         # primitive shared by submit (one) and submit_many (a batch under one lock).
         job_id = uuid4().hex
         now = now_ms()
@@ -365,15 +375,18 @@ class JobRegistry:
             on_terminal_error=on_terminal_error,
             batch_index=batch_index,
         )
+        # Submit first: the worker waits for the caller's lock, so a submit that raises
+        # after queueing the item (a worker thread that cannot start) leaves no record
+        # for that item to run and no in-flight slot to leak.
+        record.future = self._executor.submit(self._run_job, job_id)
         self._records[job_id] = record
         self._in_flight += 1
-        record.future = self._executor.submit(self._run_job, job_id)
         return job_id
 
     def _require_record(self, job_id: str) -> _JobRecord:
         record = self._records.get(job_id)
         if record is None:
-            raise ValueError(f"unknown job_id: {job_id}")
+            raise UnknownJobError(f"unknown job_id: {job_id}")
         return record
 
     @staticmethod
@@ -456,7 +469,9 @@ class JobRegistry:
         status: SolveJobStatus | None = None
         with self._lock:
             try:
-                if result is not None and record.cancel_requested:
+                # A requested cancel wins however the killed solve ended, even by raising;
+                # a job already finalizing as cancelled keeps its own message.
+                if record.cancel_requested and state != "cancelled":
                     state, result, message = "cancelled", None, "Cancelled by client"
                 if not self._finalize(record, state, result, message):
                     return None
@@ -535,7 +550,7 @@ class JobRegistry:
         with self._lock:
             record = self._records.get(job_id)
             if record is None:
-                return  # evicted before it could start
+                return  # un-admitted by a failed batch, or evicted, before it could start
             request = record.request
             record.state = "running"
             if record.started_at_ms is None:

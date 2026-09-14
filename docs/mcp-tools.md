@@ -612,7 +612,9 @@ generic `solver_options`, `extra_args`, or raw MiniZinc flag passthrough.
   The attempt table is never refreshed, even on later portfolio polls or when
   saved to `experiment-log.json`. A recorded `"running"` describes the state at
   settlement; it does not mean the loser is still executing. The table does not
-  track final loser outcomes.
+  track final loser outcomes: read one with `get_solve_job(attempts[i].job_id)`
+  while the solve registry still retains that job (the oldest finished jobs are
+  evicted past a cap).
   - **Provenance hashes.** `models_sha256` (one sha256 digest per formulation,
     index-aligned with `models`), `data_sha256` (sha256 of `data`, or `null`
     iff `data` was `None` — an empty-string `data` hashes distinctly from
@@ -653,7 +655,9 @@ preserved, but that worker remains occupied until cancellation returns.
   **synchronously**: an empty `models`/`solvers`, a bad control, an unsupported
   `-a/-f/-p/-r` flag, or a plan past the registry's running+queued capacity is
   reported at once as an MCP error, **before any job exists**. Returns a
-  `PortfolioJobStatus` with an opaque `job_id` and `state` `"running"`.
+  `PortfolioJobStatus` with an opaque `job_id` and the race's current `state`:
+  usually `"running"`, but a race that settles during submission is already
+  `"succeeded"` or `"failed"`.
 - **`get_portfolio_job`** — poll a portfolio job by `job_id`. Polling only
   reads: it never selects a winner or cancels an attempt, and a race you never
   poll still finishes. Returns a `PortfolioJobStatus`: `state`

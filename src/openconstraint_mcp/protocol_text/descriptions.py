@@ -660,9 +660,11 @@ SUBMIT_PORTFOLIO_JOB_DESCRIPTION = (
     "on the SAME bounded solve registry as `submit_solve_job` (so they count "
     "against its capacity and also appear in `list_solve_jobs`), and the race "
     "settles on its own: the losers are cancelled as soon as a winner emerges. "
-    "Returns a PortfolioJobStatus with a server-generated opaque `job_id` and "
-    "`state` `running`; poll with `get_portfolio_job(job_id)`, which only reads "
-    "status, and stop the whole race early with `cancel_portfolio_job(job_id)`. "
+    "Returns a PortfolioJobStatus with a server-generated opaque `job_id` and its "
+    "current `state`: usually `running`, but a race that settles during submission "
+    "is already `succeeded` or `failed`. Poll with `get_portfolio_job(job_id)`, which "
+    "only reads status, and stop the whole race early with "
+    "`cancel_portfolio_job(job_id)`. "
     + _REGISTRY_NOTE
     + " "
     + _returns_immediately_note("get_portfolio_job")
@@ -698,6 +700,8 @@ GET_PORTFOLIO_JOB_DESCRIPTION = (
     "`Statistics:` section) and the per-attempt table. That table is a snapshot "
     "from when the race settled: `succeeded` arrives as soon as one attempt is "
     "decisive, so a loser still being cancelled then shows `running`/`submitted`. "
+    "Read a loser's final state with `get_solve_job(attempts[i].job_id)` while that "
+    "solve job is still retained. "
     "The winning FORMULATION "
     "is `models[attempts[winner_index].model_index]`. " + _UNKNOWN_JOB_ID_ERROR
 )

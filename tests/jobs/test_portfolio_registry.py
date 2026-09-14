@@ -300,6 +300,48 @@ def test_cancel_running_portfolio_reaches_cancelled_and_stops_attempts(
         job_registry.shutdown()
 
 
+def test_cancel_drops_queued_attempts_before_stopping_running_ones(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # On a 1-worker pool the gecode attempt queues behind the running cp-sat attempt.
+    # Stopping cp-sat frees that worker, which takes the next queued item at once, so the
+    # queued attempt must already be dropped by then — not launched only to be torn down.
+    running_started: threading.Event = threading.Event()
+    queued_started: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    solved: list[str] = []
+
+    def _fake_solve(model: str, *, solver: str, on_start: Any, **kw: Any) -> SolveResult:
+        solved.append(solver)
+        on_start(_FakeProc())
+        (running_started if solver == "cp-sat" else queued_started).set()
+        release.wait(timeout=5)
+        return _solve_result("satisfied", solver=solver)
+
+    def _slow_terminate(proc: Any, **kwargs: Any) -> None:
+        # A real teardown takes seconds: long enough for the freed worker to take the
+        # next queued item before cancel moves on.
+        release.set()
+        queued_started.wait(timeout=0.5)
+
+    _patch_solve(monkeypatch, _fake_solve)
+    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _slow_terminate)
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=1)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+    try:
+        job_id: str = portfolios.submit(
+            models=["solve satisfy;"], solvers=["cp-sat", "org.gecode.gecode"]
+        )
+        assert running_started.wait(timeout=3)
+
+        portfolios.cancel(job_id)
+    finally:
+        release.set()
+        job_registry.shutdown()
+
+    assert solved == ["cp-sat"]
+
+
 def test_list_returns_one_entry_per_submitted_portfolio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -751,6 +793,53 @@ def test_completion_error_does_not_cancel_the_failed_attempt(
             if record.getMessage().startswith("could not cancel portfolio attempt")
         ]
         assert cancel_failures == []
+    finally:
+        job_registry.shutdown()
+
+
+def test_completion_error_does_not_cancel_an_attempt_that_already_finished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # On a 1-worker pool the cp-sat attempt fails first (not decisive, so the race keeps
+    # running), then the gecode attempt's listener raises. Only attempts that never
+    # reported terminal are left to stop, so the finished cp-sat attempt is not offered.
+    offered: list[str] = []
+
+    def _fake_solve(model: str, *, solver: str, on_start: Any, **kw: Any) -> SolveResult:
+        if solver == "cp-sat":
+            raise RuntimeError("cp-sat crashed")
+        return _solve_result("satisfied", solver=solver)
+
+    def _recording(real: Callable[[str], Any]) -> Callable[[str], Any]:
+        def _call(job_id: str) -> Any:
+            offered.append(job_id)
+            return real(job_id)
+
+        return _call
+
+    _patch_solve(monkeypatch, _fake_solve)
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=1)
+    for name in ("cancel", "cancel_if_queued"):
+        monkeypatch.setattr(job_registry, name, _recording(getattr(job_registry, name)))
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+    real_snapshot: Callable[[_PortfolioRecord], Any] = portfolios._settlement_snapshot
+
+    def _second_report_explodes(record: _PortfolioRecord) -> Any:
+        if len(record.statuses) == 2:
+            raise RuntimeError("snapshot exploded")
+        return real_snapshot(record)
+
+    monkeypatch.setattr(portfolios, "_settlement_snapshot", _second_report_explodes)
+    try:
+        job_id: str = portfolios.submit(
+            models=["solve satisfy;"], solvers=["cp-sat", "org.gecode.gecode"]
+        )
+        failing_id: str = _admitted(portfolios._records[job_id]).job_ids[1]
+        future: Future[None] | None = job_registry._records[failing_id].future
+        assert future is not None
+        future.result(timeout=3)  # its worker runs the error cleanup before returning
+
+        assert (portfolios.get(job_id).state, offered) == ("failed", [])
     finally:
         job_registry.shutdown()
 
@@ -1235,6 +1324,72 @@ def test_cancel_still_stops_later_attempts_when_one_teardown_raises(
     finally:
         release.set()
         job_registry.shutdown()
+
+
+def test_decisive_race_fails_when_a_loser_status_cannot_be_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A status that fails validation raises pydantic's ValidationError, which is a
+    # ValueError. It must not read as an evicted attempt (wait for that attempt's own
+    # event, here held for 10 s): the race fails as soon as the winner reports.
+    loser_release: threading.Event = threading.Event()
+    _patch_decisive_winner_over_running_loser(monkeypatch, loser_release)
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=2)
+    real_get: Callable[[str], SolveJobStatus] = job_registry.get
+
+    def _running_status_invalid(job_id: str) -> SolveJobStatus:
+        status: SolveJobStatus = real_get(job_id)
+        if status.state == "running":
+            return SolveJobStatus.model_validate({})  # raises ValidationError
+        return status
+
+    monkeypatch.setattr(job_registry, "get", _running_status_invalid)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+    try:
+        job_id: str = portfolios.submit(
+            models=["solve satisfy;"], solvers=["cp-sat", "org.gecode.gecode"]
+        )
+
+        assert _poll(portfolios, job_id, timeout=2.0).state == "failed"
+    finally:
+        loser_release.set()
+        job_registry.shutdown()
+
+
+def test_cancel_logs_an_attempt_whose_status_cannot_be_built(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Unlike an evicted attempt, one whose cancel fails validation (ValidationError is a
+    # ValueError) is a real teardown error: logged, not silently skipped.
+    started: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+
+    def _blocking_solve(model: str, *, solver: str, on_start: Any, **kw: Any) -> SolveResult:
+        on_start(_FakeProc())
+        started.set()
+        release.wait(timeout=5)
+        return _solve_result("satisfied", solver=solver)
+
+    def _invalid_cancel(job_id: str) -> SolveJobStatus:
+        return SolveJobStatus.model_validate({})  # raises ValidationError
+
+    _patch_solve(monkeypatch, _blocking_solve)
+    job_registry: JobRegistry = JobRegistry()
+    monkeypatch.setattr(job_registry, "cancel", _invalid_cancel)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+    try:
+        job_id: str = portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
+        assert started.wait(timeout=3)
+
+        portfolios.cancel(job_id)
+    finally:
+        release.set()
+        job_registry.shutdown()
+
+    assert any(
+        record.getMessage().startswith("could not cancel portfolio attempt")
+        for record in caplog.records
+    )
 
 
 def test_finished_portfolio_releases_its_attempt_statuses(

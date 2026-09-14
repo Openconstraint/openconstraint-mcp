@@ -18,7 +18,6 @@ from typing import Any
 from ..schemas.artifacts import SavedArtifactRole, SavedModelArtifact
 from ..schemas.minizinc import CheckResult, SolveResult
 from ..schemas.portfolio import (
-    PORTFOLIO_ATTEMPT_TERMINAL_STATES,
     PortfolioAttempt,
     PortfolioSolveResult,
 )
@@ -168,7 +167,8 @@ def _write_staged_artifacts(
     if portfolio_result is not None:
         # Compact summary only — the full attempt table lives in
         # experiment-log.json, not duplicated here, so the manifest stays
-        # skimmable.
+        # skimmable. No per-state counts: attempt states are a snapshot taken when the
+        # race settled, before its losers were cancelled.
         winner = _winning_attempt(portfolio_result)
         verification["experiment_log"] = {
             "exploration_type": "minizinc_portfolio",
@@ -177,14 +177,6 @@ def _write_staged_artifacts(
             "winner_solver": winner.solver,
             "winner_model_index": winner.model_index,
             "attempt_count": len(portfolio_result.attempts),
-            "terminal_attempt_count": sum(
-                1
-                for attempt in portfolio_result.attempts
-                if attempt.state in PORTFOLIO_ATTEMPT_TERMINAL_STATES
-            ),
-            "cancelled_attempt_count": sum(
-                1 for attempt in portfolio_result.attempts if attempt.state == "cancelled"
-            ),
             "statuses_seen": sorted(
                 {
                     attempt.result_status

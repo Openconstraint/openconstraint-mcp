@@ -255,6 +255,38 @@ def test_cancel_running_job_reaches_cancelled_and_terminates_handle(
         registry.shutdown()
 
 
+def test_cancelled_running_job_whose_solve_then_raises_reaches_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Killing the child can make the solve itself raise (say, while reading the dead
+    # process's output). The client asked for the stop, so the job must not read failed.
+    started: threading.Event = threading.Event()
+    killed: threading.Event = threading.Event()
+
+    def _solve_raising_once_killed(model: str, *, on_start: Any, **kw: Any) -> SolveResult:
+        on_start(_FakeProc())
+        started.set()
+        killed.wait(timeout=5)
+        raise RuntimeError("lost the killed child's output")
+
+    _patch_solve(monkeypatch, _solve_raising_once_killed)
+    monkeypatch.setattr(
+        "openconstraint_mcp.jobs.registry._terminate_process_tree",
+        lambda proc, **kwargs: killed.set(),
+    )
+    registry: JobRegistry = JobRegistry()
+    try:
+        job_id: str = registry.submit(model="solve satisfy;")
+        assert started.wait(timeout=3)
+
+        registry.cancel(job_id)
+
+        assert _wait_until_terminal(registry, job_id) == "cancelled"
+    finally:
+        killed.set()
+        registry.shutdown()
+
+
 def test_cancel_if_queued_drops_a_job_no_worker_has_started(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -421,6 +453,42 @@ def test_submit_many_rejects_whole_batch_when_over_capacity(
     finally:
         release.set()
         registry.shutdown()
+
+
+def test_submit_many_admits_nothing_when_a_worker_thread_cannot_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ThreadPoolExecutor.submit raises when it cannot start a worker thread, after the
+    # batch's earlier jobs were already handed to the pool. The batch must still admit
+    # none: no job may run or notify, and no admission slot may leak.
+    solved: list[str] = []
+    submits: list[Future[Any]] = []
+
+    def _recording_solve(model: str, *, on_start: Any, **kw: Any) -> SolveResult:
+        solved.append(model)
+        return _solve_result()
+
+    _patch_solve(monkeypatch, _recording_solve)
+    events, listener = _recording_listener()
+    registry: JobRegistry = JobRegistry()
+    real_submit: Callable[..., Future[Any]] = registry._executor.submit
+
+    def _thread_start_fails_on_second_job(fn: Callable[..., Any], /, *args: Any) -> Future[Any]:
+        # Like the real submit, the work item is queued before the thread start fails.
+        future: Future[Any] = real_submit(fn, *args)
+        submits.append(future)
+        if len(submits) == 2:
+            raise RuntimeError("can't start new thread")
+        return future
+
+    monkeypatch.setattr(registry._executor, "submit", _thread_start_fails_on_second_job)
+    try:
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            registry.submit_many([_request("first"), _request("second")], on_terminal=listener)
+    finally:
+        registry.shutdown()  # joins the worker both jobs were handed to
+
+    assert (registry.list(), registry._in_flight, solved, events) == ([], 0, [], [])
 
 
 def test_submit_many_validates_every_request_before_admitting(

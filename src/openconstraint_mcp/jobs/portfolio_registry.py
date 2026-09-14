@@ -57,7 +57,7 @@ from ..schemas.portfolio import (
     PortfolioSolveControls,
     PortfolioSolveResult,
 )
-from ..shared.job_errors import exception_summary, now_ms
+from ..shared.job_errors import UnknownJobError, exception_summary, now_ms
 
 # portfolio_registry reuses portfolio's synchronous admission (_admit_portfolio) and
 # its result builder and decisiveness rules. These are package-internal helpers, not
@@ -192,8 +192,8 @@ class PortfolioJobRegistry:
         Validation, capability enforcement, and the over-capacity ``JobRejectedError``
         all happen synchronously here (the attempts are admitted before this returns),
         so a bad plan or full queue fails fast as it does for the synchronous tool —
-        no job is created in those cases. Returns immediately with the job ``running``;
-        the race then settles on its attempts' terminal events. Running portfolios need
+        no job is created in those cases. Returns immediately; the race settles on its
+        attempts' terminal events, possibly before this returns. Running portfolios need
         no bound of their own: a portfolio stays ``running`` only while one of its
         attempts has not reported terminal, and the last report always finalizes it
         (``succeeded``, or ``failed`` on an internal completion/aggregation error), so live
@@ -255,9 +255,9 @@ class PortfolioJobRegistry:
         """Stop a running portfolio race and its attempts; a no-op once terminal.
 
         Finalizes the job ``cancelled`` (no aggregate result) under ``record.lock``,
-        then — outside it, since cancelling a queued attempt runs its listener on this
-        thread — cancels every attempt that has not reported terminal. Their late
-        events are ignored. Cancelling an already-terminal job returns its status
+        then — outside it, since dropping a queued attempt runs its listener on this
+        thread — drops every queued attempt and cancels the ones already running. Their
+        late events are ignored. Cancelling an already-terminal job returns its status
         unchanged.
         """
         with self._lock:
@@ -269,7 +269,9 @@ class PortfolioJobRegistry:
             pending: list[str] = _pending_attempt_ids(record)
             self._finalize(record, "cancelled", None, "Cancelled by client")
             status: PortfolioJobStatus = _to_status(record)
-        self._cancel_attempts(pending)
+        # Queued attempts first: stopping a running one frees its worker, which would
+        # otherwise start this race's next queued attempt only to tear it down again.
+        self._cancel_attempts(self._drop_queued(pending))
         return status
 
     def list(self) -> list[PortfolioJobStatus]:
@@ -301,16 +303,16 @@ class PortfolioJobRegistry:
         with record.lock:
             if record.state != "running":
                 return
+            # Read before _finalize, which drops the cached statuses. Not the failed
+            # attempt: it is already terminal, and cancelling it would only rebuild the
+            # status whose construction may be what failed.
+            failed_job_id: str = _admitted(record).job_ids[index]
+            remaining: list[str] = [
+                job_id for job_id in _pending_attempt_ids(record) if job_id != failed_job_id
+            ]
             self._finalize(
                 record, "failed", None, f"Could not complete portfolio attempt {index}: {message}"
             )
-            # Not the failed attempt: it is already terminal, and cancelling it would only
-            # rebuild the status whose construction may be what failed.
-            remaining: list[str] = [
-                job_id
-                for attempt_index, job_id in enumerate(_admitted(record).job_ids)
-                if attempt_index != index and attempt_index not in record.statuses
-            ]
         # Without snapshots it is unknown which attempts are still queued, so every one
         # is first offered to the non-blocking drop.
         self._stop_attempts(queued=remaining, running=[])
@@ -339,19 +341,26 @@ class PortfolioJobRegistry:
             self._settle(record, snapshot)
         self._stop_attempts(queued=queued_losers, running=running_losers)
 
+    def _drop_queued(self, job_ids: Sequence[str]) -> Sequence[str]:
+        # Caller must NOT hold record.lock: a drop runs its listener synchronously.
+        # Drops every attempt no worker has started (never blocking) and returns the
+        # ones a worker already took, which still need a real cancel.
+        not_dropped: list[str] = []
+        for job_id in job_ids:
+            try:
+                dropped: bool = self._registry.cancel_if_queued(job_id)
+            except UnknownJobError:
+                continue  # evicted, which only happens to a terminal record
+            if not dropped:
+                not_dropped.append(job_id)
+        return not_dropped
+
     def _stop_attempts(self, *, queued: Sequence[str], running: Sequence[str]) -> None:
         # Caller must NOT hold record.lock: a drop runs its listener synchronously.
         # Queued attempts on this thread, before it returns: it is the finishing attempt's
         # pool worker, which takes the next queued item at once. Dropping one never
         # blocks; one another worker has started meanwhile joins the running attempts.
-        to_cancel: list[str] = list(running)
-        for job_id in queued:
-            try:
-                dropped: bool = self._registry.cancel_if_queued(job_id)
-            except ValueError:
-                continue  # evicted, which only happens to a terminal record
-            if not dropped:
-                to_cancel.append(job_id)
+        to_cancel: list[str] = [*running, *self._drop_queued(queued)]
         if to_cancel:
             # Not on this thread: admission already counts its slot free, and a running
             # attempt's process-tree teardown can take seconds. Daemon, because
@@ -388,7 +397,7 @@ class PortfolioJobRegistry:
                 continue
             try:
                 snapshot.append(self._registry.get(job_id))
-            except ValueError:
+            except UnknownJobError:
                 # These IDs were admitted here; only terminal records are evicted.
                 # JobRegistry._complete keeps the record/status through notification
                 # even after eviction. Wait for that event; completion/listener
@@ -427,7 +436,7 @@ class PortfolioJobRegistry:
         for job_id in job_ids:
             try:
                 self._registry.cancel(job_id)
-            except ValueError:
+            except UnknownJobError:
                 # These IDs were admitted here; a missing record was evicted after
                 # becoming terminal. Skipping cancellation does not depend on its
                 # terminal event having arrived (unlike _settlement_snapshot).

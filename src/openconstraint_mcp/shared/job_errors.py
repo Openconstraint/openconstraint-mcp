@@ -17,6 +17,15 @@ class JobRejectedError(RuntimeError):
     """Raised when a submit would exceed the bounded running+queued capacity."""
 
 
+class UnknownJobError(ValueError):
+    """Raised for a ``job_id`` a registry does not hold: never admitted, or evicted.
+
+    A ``ValueError``, so the server's unknown-id translation still applies, yet its own
+    type: a caller that skips evicted jobs must not also swallow pydantic's
+    ``ValidationError``, which is a ``ValueError`` too.
+    """
+
+
 def now_ms() -> int:
     return int(time.time() * 1000)
 
