@@ -17,14 +17,16 @@ the attempt registry's separate error callback, then cancels remaining attempts.
 ``get``/``list`` only read, so a never-polled race still finishes.
 
 The listener runs on the finishing attempt's worker thread (or synchronously inside
-the ``JobRegistry.cancel``/``shutdown`` that finalized a queued attempt). It drops
-queued losers itself, before that worker can pick one up; running losers are
-cancelled on a short-lived thread instead: a process-tree teardown can take seconds,
-and the finishing worker's slot is already counted free by admission. Lock order is
+the ``JobRegistry.cancel``/``cancel_if_queued``/``shutdown`` that finalized a queued
+attempt). It drops queued losers itself, before that worker can pick one up; running
+losers, and any queued loser another worker started first, are cancelled on a
+short-lived thread instead: a process-tree teardown can take seconds, and the
+finishing worker's slot is already counted free by admission. Lock order is
 ``record.lock``, then this registry's ``_lock`` or the ``JobRegistry`` lock. While
 holding ``record.lock`` the portfolio never calls a ``JobRegistry`` method that can
-run a listener on the calling thread (``cancel``, ``shutdown``); ``submit_many`` and
-``get`` are safe there because they never run a listener.
+run a listener on the calling thread (``cancel``, ``cancel_if_queued``,
+``shutdown``); ``submit_many`` and ``get`` are safe there because they never run a
+listener.
 
 One ``PortfolioJobRegistry`` is created per server in ``create_mcp_server``. It owns
 no worker pool or processes (the attempts live in the ``JobRegistry``, torn down by
@@ -65,6 +67,7 @@ from .portfolio import (
     _build_portfolio_result,
     _first_decisive_index,
     _is_decisive,
+    _PortfolioAdmission,
 )
 from .registry import JobRegistry
 
@@ -75,15 +78,13 @@ _logger: logging.Logger = logging.getLogger(__name__)
 class _PortfolioRecord:
     """Mutable per-portfolio-job state, guarded by ``lock``.
 
-    ``submit`` creates the record before admission and, while holding ``lock``, fills
-    the admission fields: the admitted ``attempt_job_ids``, the ``plan`` and monotonic
-    ``start`` needed to build the aggregate, the ``models_sha256``/``data_sha256``/
-    ``checker_sha256``/``solve_controls`` provenance ``_admit_portfolio`` captured, and
-    one ``statuses`` slot per plan index. An attempt event that arrives before
-    admission returns waits on ``lock`` until they are set. ``statuses`` caches each
-    attempt's terminal snapshot while the race runs and is emptied when it finalizes
-    (only the built ``result`` is kept); once terminal, ``result``/``message`` are
-    cached.
+    ``submit`` creates the record before admission, so an attempt event that arrives
+    before admission returns has a record to wait on: ``admission`` stays ``None``
+    until ``submit``, still holding ``lock``, sets it, and only then registers the
+    record where ``get``/``list``/``cancel`` can find it. ``statuses`` caches each
+    attempt's terminal snapshot by plan index while the race runs and is emptied when
+    it finalizes (only the built ``result`` is kept); once terminal,
+    ``result``/``message`` are cached.
     """
 
     job_id: str
@@ -91,13 +92,8 @@ class _PortfolioRecord:
     started_at_ms: int
     per_attempt_timeout_ms: int
     solve_controls: PortfolioSolveControls
-    start: float = 0.0
-    attempt_job_ids: list[str] = field(default_factory=list)
-    plan: list[tuple[int, str, int | None]] = field(default_factory=list)
-    models_sha256: list[str] = field(default_factory=list)
-    data_sha256: str | None = None
-    checker_sha256: str | None = None
-    statuses: list[SolveJobStatus | None] = field(default_factory=list)
+    admission: _PortfolioAdmission | None = None
+    statuses: dict[int, SolveJobStatus] = field(default_factory=dict)
     state: PortfolioJobState = "running"
     finished_at_ms: int | None = None
     elapsed_ms: int | None = None
@@ -106,12 +102,19 @@ class _PortfolioRecord:
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
+def _admitted(record: _PortfolioRecord) -> _PortfolioAdmission:
+    # Every reader holds record.lock or found the record registered, and submit sets
+    # admission before it releases that lock or registers the record.
+    assert record.admission is not None
+    return record.admission
+
+
 def _pending_attempt_ids(record: _PortfolioRecord) -> list[str]:
     # Caller holds record.lock. Attempts that have not reported a terminal status.
     return [
         job_id
-        for job_id, cached in zip(record.attempt_job_ids, record.statuses, strict=True)
-        if cached is None
+        for index, job_id in enumerate(_admitted(record).job_ids)
+        if index not in record.statuses
     ]
 
 
@@ -216,10 +219,10 @@ class PortfolioJobRegistry:
             solve_controls=controls,
         )
         # Hold record.lock across admission: an attempt can finish before submit_many
-        # returns, and its event must wait until the record is complete. A rejected
-        # plan admits nothing and fires no listener, so the record is simply dropped.
+        # returns, and its event must wait until ``admission`` is set. A rejected plan
+        # admits nothing and fires no listener, so the record is simply dropped.
         with record.lock:
-            admission = _admit_portfolio(
+            record.admission = _admit_portfolio(
                 self._registry,
                 models=models,
                 solvers=solvers,
@@ -236,14 +239,6 @@ class PortfolioJobRegistry:
                     record, index, message
                 ),
             )
-            record.start = admission.start
-            record.attempt_job_ids = list(admission.job_ids)
-            record.plan = list(admission.plan)
-            record.models_sha256 = list(admission.models_sha256)
-            record.data_sha256 = admission.data_sha256
-            record.checker_sha256 = admission.checker_sha256
-            record.solve_controls = admission.solve_controls
-            record.statuses = [None] * len(admission.plan)
             with self._lock:
                 self._records[record.job_id] = record
         return record.job_id
@@ -309,7 +304,7 @@ class PortfolioJobRegistry:
                 record, "failed", None, f"Could not complete portfolio attempt {index}: {message}"
             )
         # Outside record.lock: queued cancellation invokes the listeners inline.
-        self._cancel_attempts(record.attempt_job_ids)
+        self._cancel_attempts(_admitted(record).job_ids)
 
     def _on_attempt_terminal(
         self, record: _PortfolioRecord, index: int, status: SolveJobStatus
@@ -334,10 +329,16 @@ class PortfolioJobRegistry:
                     running_losers.append(attempt.job_id)
             self._settle(record, snapshot)
         # Queued losers on this thread, before it returns: it is the finishing attempt's
-        # pool worker, which takes the next queued item at once. Dropping a queued job is
-        # instant (one another worker starts meanwhile is stopped like a running loser).
-        # Not under record.lock: that cancel runs this listener synchronously.
-        self._cancel_attempts(queued_losers)
+        # pool worker, which takes the next queued item at once. Dropping one never
+        # blocks; one another worker has started meanwhile joins the running losers.
+        # Not under record.lock: a drop runs this listener synchronously.
+        for job_id in queued_losers:
+            try:
+                dropped: bool = self._registry.cancel_if_queued(job_id)
+            except ValueError:
+                continue  # evicted, which only happens to a terminal record
+            if not dropped:
+                running_losers.append(job_id)
         if running_losers:
             # Not on this thread: admission already counts its slot free, and a loser's
             # process-tree teardown can take seconds. Daemon, because
@@ -361,13 +362,14 @@ class PortfolioJobRegistry:
         # Caller holds record.lock. Returns the attempt statuses to settle on, or None
         # while the race is undecided. Once a decisive status is cached the race does
         # not wait for the losers: each uncached attempt is read as it is right now.
-        cached: list[SolveJobStatus] = [status for status in record.statuses if status is not None]
-        if len(cached) == len(record.statuses):
-            return cached
-        if not any(_is_decisive(status) for status in cached):
+        job_ids: list[str] = _admitted(record).job_ids
+        if len(record.statuses) == len(job_ids):
+            return [record.statuses[index] for index in range(len(job_ids))]
+        if not any(_is_decisive(status) for status in record.statuses.values()):
             return None
         snapshot: list[SolveJobStatus] = []
-        for job_id, cached_status in zip(record.attempt_job_ids, record.statuses, strict=True):
+        for index, job_id in enumerate(job_ids):
+            cached_status: SolveJobStatus | None = record.statuses.get(index)
             if cached_status is not None:
                 snapshot.append(cached_status)
                 continue
@@ -386,14 +388,15 @@ class PortfolioJobRegistry:
         # a decisive attempt whose event arrived out of finish order still honors the
         # earliest-finish rule.
         try:
+            admission: _PortfolioAdmission = _admitted(record)
             result: PortfolioSolveResult = _build_portfolio_result(
-                record.plan,
+                admission.plan,
                 statuses,
                 _first_decisive_index(statuses),
-                record.start,
-                record.models_sha256,
-                record.data_sha256,
-                record.checker_sha256,
+                admission.start,
+                admission.models_sha256,
+                admission.data_sha256,
+                admission.checker_sha256,
                 record.solve_controls,
             )
         except Exception as exc:  # noqa: BLE001 - an internal bug must still end the race
@@ -438,7 +441,7 @@ class PortfolioJobRegistry:
         record.message = message
         # Each cached status carries its attempt's full solver output; the retained
         # record needs only the built result.
-        record.statuses = []
+        record.statuses = {}
         with self._lock:
             self._terminal_order.append(record.job_id)
             self._evict_terminal_overflow()

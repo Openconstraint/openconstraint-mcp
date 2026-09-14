@@ -73,7 +73,7 @@ _JOB_TO_ATTEMPT_STATE: dict[JobState, PortfolioAttemptState] = {
 class _PortfolioAdmission(NamedTuple):
     """``_admit_portfolio``'s return: the admitted plan plus its provenance.
 
-    ``models_sha256``/``data_sha256``/``checker_sha256``/``solve_controls`` are
+    ``models_sha256``/``data_sha256``/``checker_sha256`` are
     captured here — while the caller's original request values are still in
     scope — because by the time ``_build_portfolio_result`` runs (when the race
     settles, via the background ``PortfolioJobRegistry``) those originals
@@ -87,7 +87,6 @@ class _PortfolioAdmission(NamedTuple):
     models_sha256: list[str]
     data_sha256: str | None
     checker_sha256: str | None
-    solve_controls: PortfolioSolveControls
 
 
 def _admit_portfolio(
@@ -175,7 +174,6 @@ def _admit_portfolio(
         models_sha256=models_sha256,
         data_sha256=data_sha256,
         checker_sha256=checker_sha256,
-        solve_controls=solve_controls,
     )
 
 

@@ -536,7 +536,7 @@ def test_shutdown_terminates_an_evicted_unreaped_child(monkeypatch: pytest.Monke
 
 
 def test_submit_source_after_shutdown_is_rejected() -> None:
-    registry = CpsatJobRegistry()
+    registry: CpsatJobRegistry = CpsatJobRegistry()
     registry.shutdown()
 
     with pytest.raises(JobRejectedError, match="shutting down"):
@@ -545,9 +545,9 @@ def test_submit_source_after_shutdown_is_rejected() -> None:
 
 
 def test_submit_file_after_shutdown_is_rejected(tmp_path: Path) -> None:
-    script = tmp_path / "model.py"
+    script: Path = tmp_path / "model.py"
     script.write_text("x = 1\n", encoding="utf-8")
-    registry = CpsatJobRegistry()
+    registry: CpsatJobRegistry = CpsatJobRegistry()
     registry.shutdown()
 
     with pytest.raises(JobRejectedError, match="shutting down"):
@@ -560,20 +560,20 @@ def test_submit_during_shutdown_is_rejected(monkeypatch: pytest.MonkeyPatch) -> 
     # jobs (and taken its record snapshot) but before the pool is torn down must be
     # rejected. Otherwise its record is missing from the snapshot, is never
     # finalized, and stays `queued` (or starts unflagged and stalls teardown).
-    worker_running = threading.Event()
-    inner_done = threading.Event()
+    worker_running: threading.Event = threading.Event()
+    inner_done: threading.Event = threading.Event()
     inner: list[str | JobRejectedError] = []
-    registry = CpsatJobRegistry(max_running_jobs=1, max_queued_jobs=4)
+    registry: CpsatJobRegistry = CpsatJobRegistry(max_running_jobs=1, max_queued_jobs=4)
 
     def _submitting_run(source: str, *, on_start: Any, **kw: Any) -> CpsatPythonResult:
         on_start(_FakeProc())
         if inner:
             return _cpsat_result()
         worker_running.set()
-        deadline = time.monotonic() + 3.0
+        deadline: float = time.monotonic() + 3.0
         while time.monotonic() < deadline:
             with registry._lock:
-                marked = all(r.cancel_requested for r in registry._records.values())
+                marked: bool = all(r.cancel_requested for r in registry._records.values())
             if marked:
                 break
             time.sleep(0.001)
@@ -597,7 +597,7 @@ def test_submit_during_shutdown_is_rejected(monkeypatch: pytest.MonkeyPatch) -> 
 
     registry.submit_source("x=0")
     assert worker_running.wait(timeout=3)
-    shutdown_done = threading.Event()
+    shutdown_done: threading.Event = threading.Event()
 
     def _run_shutdown() -> None:
         registry.shutdown()

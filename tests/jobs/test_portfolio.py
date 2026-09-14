@@ -35,7 +35,11 @@ from openconstraint_mcp.schemas.minizinc import (
     SolverInfo,
     SolverList,
 )
-from openconstraint_mcp.schemas.portfolio import PortfolioSolveControls, PortfolioSolveResult
+from openconstraint_mcp.schemas.portfolio import (
+    PortfolioJobStatus,
+    PortfolioSolveControls,
+    PortfolioSolveResult,
+)
 from openconstraint_mcp.shared.job_errors import JobRejectedError
 from openconstraint_mcp.shared.save_target import text_sha256
 
@@ -131,11 +135,11 @@ def _race(registry: JobRegistry, **kwargs: Any) -> PortfolioSolveResult:
     The attempts' terminal events drive selection and loser cancellation; ``get`` only
     reads, so the deadline wait below adds no selection of its own.
     """
-    portfolios = PortfolioJobRegistry(registry)
-    job_id = portfolios.submit(**{**_ADMIT_DEFAULTS, **kwargs})
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(registry)
+    job_id: str = portfolios.submit(**{**_ADMIT_DEFAULTS, **kwargs})
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
-        status = portfolios.get(job_id)
+        status: PortfolioJobStatus = portfolios.get(job_id)
         if status.state != "running":
             assert status.result is not None
             return status.result

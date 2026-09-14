@@ -200,8 +200,8 @@ class JobRegistry:
         ``on_terminal``, when given, is called once on normal completion with
         ``(position in requests, terminal status)`` after that job finalizes — on the
         finishing worker's thread, or synchronously on the thread whose ``cancel``/
-        ``shutdown`` finalized a job that never started. It never runs while the
-        registry lock is held, so it may call back into the registry; an event can
+        ``cancel_if_queued``/``shutdown`` finalized a job that never started. It never runs
+        while the registry lock is held, so it may call back into the registry; an event can
         arrive before this method returns. A listener exception is logged and does not
         propagate, so it cannot abort ``cancel``/``shutdown`` or vanish on a worker.
         ``on_terminal_error`` receives the index and error summary if completion or
@@ -264,6 +264,22 @@ class JobRegistry:
             _terminate_process_tree(handle)
         with self._lock:
             return self._to_status(record)
+
+    def cancel_if_queued(self, job_id: str) -> bool:
+        """Drop a job no worker has started yet; return whether it was dropped.
+
+        Unlike ``cancel``, never terminates a process, so it returns promptly: a job a
+        worker has already taken, or one already terminal, is left untouched for a
+        real ``cancel``. A dropped job finalizes ``cancelled`` and notifies its terminal
+        listener on this thread, exactly like a queued job ``cancel`` drops.
+        """
+        with self._lock:
+            record: _JobRecord = self._require_record(job_id)
+            future: Future[None] | None = record.future
+        if future is None or not future.cancel():
+            return False
+        self._complete(record, "cancelled", None, "Cancelled before start")
+        return True
 
     def shutdown(self) -> None:
         """Terminate running children and tear down the worker pool (lifespan exit).
@@ -490,7 +506,7 @@ class JobRegistry:
         # Caller holds the lock. FIFO eviction of the oldest terminal jobs beyond
         # the retention cap, so a long-lived server cannot grow unbounded (D1.5).
         while len(self._terminal_order) > self._max_retained_terminal:
-            oldest = self._terminal_order.pop(0)
+            oldest: str = self._terminal_order.pop(0)
             evicted = self._records.pop(oldest, None)
             handle = evicted.handle if evicted is not None else None
             # poll() (not the stale .returncode) so a leader that exited on its own

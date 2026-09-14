@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from openconstraint_mcp.jobs.registry import JobRegistry, SolveRequest
+from openconstraint_mcp.jobs.registry import JobRegistry, SolveRequest, _JobRecord
 from openconstraint_mcp.minizinc.core import build_solve_extra_args, prepare_solve_args
 from openconstraint_mcp.schemas.minizinc import (
     SolveControls,
@@ -250,6 +250,52 @@ def test_cancel_running_job_reaches_cancelled_and_terminates_handle(
         assert _wait_until_terminal(registry, job_id) == "cancelled"
         assert terminated == handles
         assert registry.get(job_id).result is None
+    finally:
+        release.set()
+        registry.shutdown()
+
+
+def test_cancel_if_queued_drops_a_job_no_worker_has_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    _patch_solve(monkeypatch, _blocking_solve_until(release, started))
+    registry: JobRegistry = JobRegistry(max_running_jobs=1, max_queued_jobs=4)
+    try:
+        registry.submit(model="solve satisfy;")  # occupies the only worker
+        assert started.wait(timeout=3)
+        queued_id: str = registry.submit(model="solve satisfy;")
+
+        dropped: bool = registry.cancel_if_queued(queued_id)
+
+        assert (dropped, registry.get(queued_id).state) == (True, "cancelled")
+    finally:
+        release.set()
+        registry.shutdown()
+
+
+def test_cancel_if_queued_leaves_a_started_job_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The caller defers a job a worker already took to a real cancel; this one must
+    # neither block on a process teardown nor mark the job.
+    started: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
+    terminated: list[Any] = []
+    _patch_solve(monkeypatch, _blocking_solve_until(release, started))
+    _patch_terminate(monkeypatch, terminated)
+    registry: JobRegistry = JobRegistry()
+    try:
+        job_id: str = registry.submit(model="solve satisfy;")
+        assert started.wait(timeout=3)
+
+        dropped: bool = registry.cancel_if_queued(job_id)
+
+        assert (
+            dropped,
+            registry.get(job_id).state,
+            registry._records[job_id].cancel_requested,
+            terminated,
+        ) == (False, "running", False, [])
     finally:
         release.set()
         registry.shutdown()
@@ -784,7 +830,7 @@ def test_shutdown_terminates_a_child_launched_after_its_handle_snapshot(
 
 
 def test_submit_after_shutdown_is_rejected() -> None:
-    registry = JobRegistry()
+    registry: JobRegistry = JobRegistry()
     registry.shutdown()
 
     with pytest.raises(JobRejectedError, match="shutting down"):
@@ -794,7 +840,7 @@ def test_submit_after_shutdown_is_rejected() -> None:
 
 def test_submit_many_after_shutdown_is_rejected_without_listener_events() -> None:
     events, listener = _recording_listener()
-    registry = JobRegistry()
+    registry: JobRegistry = JobRegistry()
     registry.shutdown()
 
     with pytest.raises(JobRejectedError, match="shutting down"):
@@ -808,20 +854,20 @@ def test_submit_during_shutdown_is_rejected(monkeypatch: pytest.MonkeyPatch) -> 
     # jobs (and taken its record snapshot) but before the pool is torn down must be
     # rejected. Otherwise its record is missing from the snapshot, is never
     # finalized, and stays `queued` (or starts unflagged and stalls teardown).
-    worker_running = threading.Event()
-    inner_done = threading.Event()
+    worker_running: threading.Event = threading.Event()
+    inner_done: threading.Event = threading.Event()
     inner: list[str | JobRejectedError] = []
-    registry = JobRegistry(max_running_jobs=1, max_queued_jobs=4)
+    registry: JobRegistry = JobRegistry(max_running_jobs=1, max_queued_jobs=4)
 
     def _submitting_solve(model: str, *, on_start: Any, **kw: Any) -> SolveResult:
         on_start(_FakeProc())
         if inner:
             return _solve_result()
         worker_running.set()
-        deadline = time.monotonic() + 3.0
+        deadline: float = time.monotonic() + 3.0
         while time.monotonic() < deadline:
             with registry._lock:
-                marked = all(r.cancel_requested for r in registry._records.values())
+                marked: bool = all(r.cancel_requested for r in registry._records.values())
             if marked:
                 break
             time.sleep(0.001)
@@ -845,7 +891,7 @@ def test_submit_during_shutdown_is_rejected(monkeypatch: pytest.MonkeyPatch) -> 
 
     registry.submit(model="solve satisfy;")
     assert worker_running.wait(timeout=3)
-    shutdown_done = threading.Event()
+    shutdown_done: threading.Event = threading.Event()
 
     def _run_shutdown() -> None:
         registry.shutdown()
@@ -874,7 +920,7 @@ def _recording_listener() -> tuple[_Events, Callable[[int, SolveJobStatus], None
 
 
 def _wait_for_events(events: _Events, count: int, timeout: float = 3.0) -> None:
-    deadline = time.monotonic() + timeout
+    deadline: float = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if len(events) >= count:
             return
@@ -899,7 +945,7 @@ def _blocking_solve_until(release: threading.Event, started: threading.Event) ->
 def test_on_terminal_fires_once_for_succeeded_job(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_solve(monkeypatch, lambda model, *, on_start, **kw: _solve_result())
     events, listener = _recording_listener()
-    registry = JobRegistry()
+    registry: JobRegistry = JobRegistry()
     try:
         (job_id,) = registry.submit_many([_request()], on_terminal=listener)
         _wait_for_events(events, 1)
@@ -910,7 +956,7 @@ def test_on_terminal_fires_once_for_succeeded_job(monkeypatch: pytest.MonkeyPatc
 
 
 def test_on_terminal_fires_once_for_timeout_job(monkeypatch: pytest.MonkeyPatch) -> None:
-    timed_out = SolveResult(
+    timed_out: SolveResult = SolveResult(
         status="timeout",
         solver="cp-sat",
         return_code=None,
@@ -921,7 +967,7 @@ def test_on_terminal_fires_once_for_timeout_job(monkeypatch: pytest.MonkeyPatch)
     )
     _patch_solve(monkeypatch, lambda model, *, on_start, **kw: timed_out)
     events, listener = _recording_listener()
-    registry = JobRegistry()
+    registry: JobRegistry = JobRegistry()
     try:
         (job_id,) = registry.submit_many([_request()], on_terminal=listener)
         _wait_for_events(events, 1)
@@ -937,7 +983,7 @@ def test_on_terminal_fires_once_for_failed_job(monkeypatch: pytest.MonkeyPatch) 
 
     _patch_solve(monkeypatch, _boom)
     events, listener = _recording_listener()
-    registry = JobRegistry()
+    registry: JobRegistry = JobRegistry()
     try:
         (job_id,) = registry.submit_many([_request()], on_terminal=listener)
         _wait_for_events(events, 1)
@@ -950,11 +996,11 @@ def test_on_terminal_fires_once_for_failed_job(monkeypatch: pytest.MonkeyPatch) 
 def test_on_terminal_fires_once_for_job_cancelled_before_start(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    started = threading.Event()
-    release = threading.Event()
+    started: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
     _patch_solve(monkeypatch, _blocking_solve_until(release, started))
     events, listener = _recording_listener()
-    registry = JobRegistry(max_running_jobs=1, max_queued_jobs=4)
+    registry: JobRegistry = JobRegistry(max_running_jobs=1, max_queued_jobs=4)
     try:
         registry.submit(model="solve satisfy;")  # occupies the only worker
         assert started.wait(timeout=3)
@@ -970,8 +1016,8 @@ def test_on_terminal_fires_once_for_job_cancelled_before_start(
 def test_on_terminal_fires_once_for_job_cancelled_while_running(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    started = threading.Event()
-    release = threading.Event()
+    started: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
     _patch_solve(monkeypatch, _blocking_solve_until(release, started))
 
     def _fake_terminate(proc: Any, **kwargs: Any) -> None:
@@ -979,7 +1025,7 @@ def test_on_terminal_fires_once_for_job_cancelled_while_running(
 
     monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
     events, listener = _recording_listener()
-    registry = JobRegistry()
+    registry: JobRegistry = JobRegistry()
     try:
         (job_id,) = registry.submit_many([_request()], on_terminal=listener)
         assert started.wait(timeout=3)
@@ -995,8 +1041,8 @@ def test_on_terminal_fires_once_for_job_cancelled_while_running(
 def test_on_terminal_fires_once_for_queued_job_at_shutdown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    started = threading.Event()
-    release = threading.Event()
+    started: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
     _patch_solve(monkeypatch, _blocking_solve_until(release, started))
 
     def _fake_terminate(proc: Any, **kwargs: Any) -> None:
@@ -1004,7 +1050,7 @@ def test_on_terminal_fires_once_for_queued_job_at_shutdown(
 
     monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
     events, listener = _recording_listener()
-    registry = JobRegistry(max_running_jobs=1, max_queued_jobs=4)
+    registry: JobRegistry = JobRegistry(max_running_jobs=1, max_queued_jobs=4)
     try:
         registry.submit(model="solve satisfy;")  # occupies the only worker
         assert started.wait(timeout=3)
@@ -1020,9 +1066,11 @@ def test_on_terminal_reports_batch_index_for_instant_jobs(monkeypatch: pytest.Mo
     # come from the registry rather than a caller-side job_id lookup.
     _patch_solve(monkeypatch, lambda model, *, on_start, **kw: _solve_result())
     events, listener = _recording_listener()
-    registry = JobRegistry(max_running_jobs=4)
+    registry: JobRegistry = JobRegistry(max_running_jobs=4)
     try:
-        job_ids = registry.submit_many([_request(), _request(), _request()], on_terminal=listener)
+        job_ids: list[str] = registry.submit_many(
+            [_request(), _request(), _request()], on_terminal=listener
+        )
         _wait_for_events(events, 3)
     finally:
         registry.shutdown()
@@ -1049,21 +1097,23 @@ class _BarrierFuture(Future[None]):
 def test_on_terminal_fires_once_when_a_queued_job_is_cancelled_twice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    started = threading.Event()
-    release = threading.Event()
+    started: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
     _patch_solve(monkeypatch, _blocking_solve_until(release, started))
     events, listener = _recording_listener()
-    registry = JobRegistry(max_running_jobs=1, max_queued_jobs=4)
+    registry: JobRegistry = JobRegistry(max_running_jobs=1, max_queued_jobs=4)
     try:
         registry.submit(model="solve satisfy;")  # occupies the only worker
         assert started.wait(timeout=3)
         (queued_id,) = registry.submit_many([_request()], on_terminal=listener)
         with registry._lock:
-            record = registry._records[queued_id]
+            record: _JobRecord = registry._records[queued_id]
             inner: Future[None] | None = record.future
             assert inner is not None
             record.future = _BarrierFuture(inner, threading.Barrier(2, timeout=3))
-        cancellers = [threading.Thread(target=registry.cancel, args=(queued_id,)) for _ in range(2)]
+        cancellers: list[threading.Thread] = [
+            threading.Thread(target=registry.cancel, args=(queued_id,)) for _ in range(2)
+        ]
         for canceller in cancellers:
             canceller.start()
         for canceller in cancellers:
@@ -1080,8 +1130,8 @@ def test_on_terminal_listener_may_call_get_and_cancel_without_deadlock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patch_solve(monkeypatch, lambda model, *, on_start, **kw: _solve_result())
-    done = threading.Event()
-    registry = JobRegistry()
+    done: threading.Event = threading.Event()
+    registry: JobRegistry = JobRegistry()
 
     def _reentrant_listener(index: int, status: SolveJobStatus) -> None:
         registry.get(status.job_id)
@@ -1089,7 +1139,7 @@ def test_on_terminal_listener_may_call_get_and_cancel_without_deadlock(
         done.set()
 
     registry.submit_many([_request()], on_terminal=_reentrant_listener)
-    completed = done.wait(timeout=3)
+    completed: bool = done.wait(timeout=3)
     if completed:  # a deadlocked worker would hang the pool join below
         registry.shutdown()
     assert completed, "listener deadlocked calling back into the registry"
@@ -1161,8 +1211,8 @@ def _raising_listener(index: int, status: SolveJobStatus) -> None:
 def test_shutdown_finalizes_every_queued_job_when_the_listener_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    started = threading.Event()
-    release = threading.Event()
+    started: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
     _patch_solve(monkeypatch, _blocking_solve_until(release, started))
 
     def _fake_terminate(proc: Any, **kwargs: Any) -> None:
@@ -1186,8 +1236,8 @@ def test_shutdown_finalizes_every_queued_job_when_the_listener_raises(
 def test_cancel_returns_the_cancelled_status_when_the_listener_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    started = threading.Event()
-    release = threading.Event()
+    started: threading.Event = threading.Event()
+    release: threading.Event = threading.Event()
     _patch_solve(monkeypatch, _blocking_solve_until(release, started))
     registry: JobRegistry = JobRegistry(max_running_jobs=1, max_queued_jobs=4)
     try:
