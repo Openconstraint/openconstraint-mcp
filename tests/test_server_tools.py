@@ -2246,7 +2246,7 @@ class _PortfolioFakeProc:
     ``_terminate_process_tree`` must never see it. Any test racing MORE THAN ONE
     attempt must therefore request ``_never_terminate_for_real`` below (or patch
     a recorder of its own): winner selection cancels the still-running losers,
-    and whether a loser is still mid-flight when the winner is polled is a
+    and whether a loser is still mid-flight when the winner finishes is a
     timing race the test cannot control — it loses locally and wins under CI
     load. A single-attempt race never cancels, so it needs no guard.
     """
@@ -2347,7 +2347,7 @@ async def _poll_portfolio_status(mcp: Any, job_id: str, timeout: float = 5.0) ->
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         status = _structured(await mcp.call_tool("get_portfolio_job", {"job_id": job_id}))
-        if status["state"] in {"succeeded", "cancelled"}:
+        if status["state"] in {"succeeded", "failed", "cancelled"}:
             return status
         await asyncio.sleep(0.01)
     raise AssertionError(f"portfolio job {job_id} did not finish within {timeout}s")
@@ -2404,7 +2404,7 @@ async def test_submit_portfolio_job_returns_running_then_get_reaches_succeeded(
             {"models": ["solve satisfy;"], "solvers": ["cp-sat", "org.gecode.gecode"]},
         )
     )
-    # The first poll inside submit may already have selected a winner on a fast solve.
+    # A fast solve may already have settled the race by the time submit returns.
     assert submitted["state"] in {"running", "succeeded"}
     job_id = submitted["job_id"]
 
@@ -2412,6 +2412,32 @@ async def test_submit_portfolio_job_returns_running_then_get_reaches_succeeded(
     assert final["state"] == "succeeded"
     assert final["result"]["status"] == "winner"
     assert final["result"]["winner"]["status"] == "optimal"
+
+
+@pytest.mark.asyncio
+async def test_portfolio_snapshot_error_surfaces_failed_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "openconstraint_mcp.jobs.registry.run_prepared_solve",
+        lambda *args, **kwargs: _portfolio_solve_result("optimal", "cp-sat"),
+    )
+
+    def _broken_snapshot(record: Any) -> Any:
+        raise RuntimeError("terminal snapshot exploded")
+
+    monkeypatch.setattr(JobRegistry, "_to_status", staticmethod(_broken_snapshot))
+    mcp: Any = create_mcp_server()
+    submitted: dict[str, Any] = _structured(
+        await mcp.call_tool(
+            "submit_portfolio_job", {"models": ["solve satisfy;"], "solvers": ["cp-sat"]}
+        )
+    )
+    final: dict[str, Any] = await _poll_portfolio_status(mcp, submitted["job_id"])
+    assert final["state"] == "failed"
+    assert final["result"] is None
+    assert final["diagnostic"]["category"] == "job_failed"
+    assert "terminal snapshot exploded" in final["message"]
 
 
 @pytest.mark.asyncio

@@ -1,12 +1,11 @@
 """Unit tests for the solver-portfolio admission + winner-selection engine.
 
 The synchronous ``solve_portfolio`` is gone; the background ``PortfolioJobRegistry``
-now owns the portfolio workflow. These tests drive the retained engine directly —
-``_admit_portfolio`` (plan validation, capability gate, cross-product expansion,
-atomic admission) and ``_select_portfolio_outcome`` (the non-blocking collect-on-poll
-selection pass) — with ``_race`` polling the selection pass to a terminal result the
-way the registry's ``get`` does, but without a runtime (``run_prepared_solve``
-is mocked).
+now owns the portfolio workflow. These tests drive ``_admit_portfolio`` (plan
+validation, capability gate, cross-product expansion, atomic admission) directly,
+and ``_race`` runs a plan through the registry's event path — the race settles on
+attempt terminal events and ``_race`` only waits for it — without a runtime
+(``run_prepared_solve`` is mocked).
 """
 
 from __future__ import annotations
@@ -24,8 +23,8 @@ from openconstraint_mcp.jobs.portfolio import (
     _admit_portfolio,
     _first_decisive_index,
     _PortfolioAdmission,
-    _select_portfolio_outcome,
 )
+from openconstraint_mcp.jobs.portfolio_registry import PortfolioJobRegistry
 from openconstraint_mcp.jobs.registry import JobRegistry
 from openconstraint_mcp.minizinc.core import DEFAULT_SOLVE_TIMEOUT_MS
 from openconstraint_mcp.schemas.minizinc import (
@@ -36,7 +35,11 @@ from openconstraint_mcp.schemas.minizinc import (
     SolverInfo,
     SolverList,
 )
-from openconstraint_mcp.schemas.portfolio import PortfolioSolveControls, PortfolioSolveResult
+from openconstraint_mcp.schemas.portfolio import (
+    PortfolioJobStatus,
+    PortfolioSolveControls,
+    PortfolioSolveResult,
+)
 from openconstraint_mcp.shared.job_errors import JobRejectedError
 from openconstraint_mcp.shared.save_target import text_sha256
 
@@ -112,32 +115,34 @@ _ADMIT_DEFAULTS: dict[str, Any] = {
 }
 
 
+def _ignore_attempt_event(index: int, status: SolveJobStatus) -> None:
+    """A no-op attempt listener for tests that exercise admission only."""
+
+
 def _admit(registry: JobRegistry, **kwargs: Any) -> _PortfolioAdmission:
     """Admit a portfolio plan, filling the optional fields the engine requires."""
-    return _admit_portfolio(registry, **{**_ADMIT_DEFAULTS, **kwargs})
+    return _admit_portfolio(
+        registry,
+        on_attempt_terminal=_ignore_attempt_event,
+        on_attempt_error=lambda index, message: None,
+        **{**_ADMIT_DEFAULTS, **kwargs},
+    )
 
 
 def _race(registry: JobRegistry, **kwargs: Any) -> PortfolioSolveResult:
-    """Admit a plan, then poll the non-blocking selection pass to a terminal result.
+    """Submit a plan as a background portfolio and wait until the race settles itself.
 
-    Mirrors how ``PortfolioJobRegistry.get`` drives a race — admit once, then call
-    ``_select_portfolio_outcome`` repeatedly until it returns the aggregate.
+    The attempts' terminal events drive selection and loser cancellation; ``get`` only
+    reads, so the deadline wait below adds no selection of its own.
     """
-    admission = _admit(registry, **kwargs)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(registry)
+    job_id: str = portfolios.submit(**{**_ADMIT_DEFAULTS, **kwargs})
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
-        outcome = _select_portfolio_outcome(
-            registry,
-            admission.job_ids,
-            admission.plan,
-            admission.start,
-            admission.models_sha256,
-            admission.data_sha256,
-            admission.checker_sha256,
-            admission.solve_controls,
-        )
-        if outcome is not None:
-            return outcome
+        status: PortfolioJobStatus = portfolios.get(job_id)
+        if status.state != "running":
+            assert status.result is not None
+            return status.result
         time.sleep(0.01)
     raise AssertionError("portfolio race did not resolve within 10s")
 
@@ -180,7 +185,14 @@ def test_portfolio_returns_decisive_winner_and_cancels_loser(
         assert result.winner.status == "optimal"
         assert result.attempts[0].state == "succeeded"
         assert result.attempts[0].result_status == "optimal"
-        assert result.attempts[1].state == "cancelled"
+        # The race settles on the decisive attempt and cancels the loser right after,
+        # so the loser's end state is read from its solve job, not the settle snapshot.
+        loser_job_id: str | None = result.attempts[1].job_id
+        assert loser_job_id is not None
+        deadline: float = time.monotonic() + 3.0
+        while registry.get(loser_job_id).state == "running" and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert registry.get(loser_job_id).state == "cancelled"
         assert result.selection_policy == "first-decisive-result"
         assert result.models_sha256 == [text_sha256(model_text)]
         assert result.data_sha256 == text_sha256(data_text)

@@ -6,6 +6,7 @@ from mcp_types import GetPromptResult
 from openconstraint_mcp.protocol_text.descriptions import (
     AUTO_TUNE_CONSTRAINT_PROBLEM_PROMPT_DESCRIPTION,
     CPSAT_PYTHON_SOLUTION_WORKFLOW_PROMPT_DESCRIPTION,
+    GET_PORTFOLIO_JOB_DESCRIPTION,
     LIST_AVAILABLE_SOLVERS_DESCRIPTION,
     MCP_SERVER_INSTRUCTIONS,
     MCP_SERVER_INSTRUCTIONS_CORE,
@@ -13,6 +14,7 @@ from openconstraint_mcp.protocol_text.descriptions import (
     RUN_CPSAT_PYTHON_DESCRIPTION,
     SOLVE_MINIZINC_FILES_DESCRIPTION,
     SOLVE_MINIZINC_MODEL_DESCRIPTION,
+    SUBMIT_PORTFOLIO_JOB_DESCRIPTION,
 )
 from openconstraint_mcp.protocol_text.prompts import (
     CPSAT_OUTPUT_CONTRACT_GUIDANCE,
@@ -88,6 +90,20 @@ def test_solve_minizinc_model_description_nudges_portfolio_for_hard_instances() 
 
 def test_run_cpsat_python_description_nudges_portfolio_for_hard_instances() -> None:
     assert "submit_portfolio_job" in RUN_CPSAT_PYTHON_DESCRIPTION
+
+
+def test_submit_portfolio_job_description_allows_a_race_settled_during_submission() -> None:
+    # Submit returns the race's current status, and a race can settle before submit
+    # returns, so the description must not promise `running`.
+    assert "`succeeded`" in SUBMIT_PORTFOLIO_JOB_DESCRIPTION
+    assert "`failed`" in SUBMIT_PORTFOLIO_JOB_DESCRIPTION
+
+
+def test_get_portfolio_job_description_points_to_a_losers_final_state() -> None:
+    # The attempt table is a settlement snapshot, so a loser's final state lives only on
+    # its own solve job, and only while that registry still retains it.
+    assert "get_solve_job" in GET_PORTFOLIO_JOB_DESCRIPTION
+    assert "retained" in GET_PORTFOLIO_JOB_DESCRIPTION
 
 
 SAMPLE_PROBLEM = (

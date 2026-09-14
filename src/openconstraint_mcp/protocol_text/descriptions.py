@@ -658,11 +658,12 @@ SUBMIT_PORTFOLIO_JOB_DESCRIPTION = (
     "exceeds the job registry's running+queued capacity is reported at once as "
     "an MCP error, before any job exists. The attempts then run as ordinary jobs "
     "on the SAME bounded solve registry as `submit_solve_job` (so they count "
-    "against its capacity and also appear in `list_solve_jobs`), and the winner "
-    "is selected when you poll. Returns a PortfolioJobStatus with a "
-    "server-generated opaque `job_id` and `state` `running`; poll with "
-    "`get_portfolio_job(job_id)` — which advances the race and cancels the "
-    "losers once a winner emerges — and stop the whole race early with "
+    "against its capacity and also appear in `list_solve_jobs`), and the race "
+    "settles on its own: the losers are cancelled as soon as a winner emerges. "
+    "Returns a PortfolioJobStatus with a server-generated opaque `job_id` and its "
+    "current `state`: usually `running`, but a race that settles during submission "
+    "is already `succeeded` or `failed`. Poll with `get_portfolio_job(job_id)`, which "
+    "only reads status, and stop the whole race early with "
     "`cancel_portfolio_job(job_id)`. "
     + _REGISTRY_NOTE
     + " "
@@ -672,19 +673,21 @@ SUBMIT_PORTFOLIO_JOB_DESCRIPTION = (
 
 GET_PORTFOLIO_JOB_DESCRIPTION = (
     "Poll a background portfolio job by its `job_id` (from "
-    "`submit_portfolio_job`). This also DRIVES the race: each poll selects a "
-    "winner once one attempt reaches a decisive verdict and cancels the "
-    "still-running losers, so poll until terminal rather than walking away. "
+    "`submit_portfolio_job`). Polling only READS: the race settles on its own — "
+    "the losers are cancelled as soon as one attempt reaches a decisive verdict "
+    "— and a poll never selects a winner or cancels an attempt. "
     "Returns a PortfolioJobStatus: `job_id`, `state`, `per_attempt_timeout_ms`, "
     "`submitted_at_ms`, `started_at_ms`, `finished_at_ms`, `elapsed_ms`, an "
     "optional `result` (the full PortfolioSolveResult), and an optional "
-    "`message`. `state` is one of `running`, `succeeded`, `cancelled`. CONTRACT: "
-    "`result` is present exactly when `state` is `succeeded`, absent for "
-    "`running`/`cancelled` — so branch on `state`, not on `result`. A race that "
-    "found no decisive winner is still `succeeded` (the orchestration completed) "
-    "carrying a PortfolioSolveResult whose `status` is `no_winner`; a "
+    "`message`. `state` is one of `running`, `succeeded`, `failed`, `cancelled`. "
+    "CONTRACT: `result` is present exactly when `state` is `succeeded`, absent for "
+    "`running`/`failed`/`cancelled` — so branch on `state`, not on `result`. A race "
+    "that found no decisive winner is still `succeeded` (the orchestration "
+    "completed) carrying a PortfolioSolveResult whose `status` is `no_winner`; a "
     "per-attempt failure is recorded in that result's attempts table, not as a "
-    "failed job. `cancelled` means the client stopped the race. While "
+    "`failed` job. `failed` means an internal attempt-completion or notification "
+    "error, or that the server could not build the race result "
+    "(`message` says why). `cancelled` means the client stopped the race. While "
     "`running`, only `state` + `elapsed_ms` advance; mid-race statistics are not "
     "provided. PACE polling against the race budget: `per_attempt_timeout_ms` "
     "bounds each attempt, not the whole race — a plan with more attempts than the "
@@ -694,7 +697,12 @@ GET_PORTFOLIO_JOB_DESCRIPTION = (
     "`succeeded` job, present "
     "`result` like a single `solve_minizinc_model`: lead with the winner's "
     "model/solver/seed/status, then the winning solve (solution + the COMPLETE "
-    "`Statistics:` section) and the per-attempt table. The winning FORMULATION "
+    "`Statistics:` section) and the per-attempt table. That table is a snapshot "
+    "from when the race settled: `succeeded` arrives as soon as one attempt is "
+    "decisive, so a loser still being cancelled then shows `running`/`submitted`. "
+    "Read a loser's final state with `get_solve_job(attempts[i].job_id)` while that "
+    "solve job is still retained. "
+    "The winning FORMULATION "
     "is `models[attempts[winner_index].model_index]`. " + _UNKNOWN_JOB_ID_ERROR
 )
 
@@ -702,10 +710,9 @@ CANCEL_PORTFOLIO_JOB_DESCRIPTION = (
     "Request cancellation of a background portfolio job by `job_id`, stopping the race "
     "AND every still-running attempt (each attempt's managed MiniZinc process tree is "
     "terminated). "
-    + _cancellation_idempotent_note("`succeeded`/`cancelled`")
-    + "Returns the PortfolioJobStatus; the job reaches "
-    "`cancelled` (with `result is None`) once the race observes the request — poll "
-    "`get_portfolio_job` to confirm the terminal state. " + _UNKNOWN_JOB_ID_ERROR
+    + _cancellation_idempotent_note("`succeeded`/`failed`/`cancelled`")
+    + "Returns the PortfolioJobStatus, already `cancelled` (with `result is None`) "
+    "for a race that was still running. " + _UNKNOWN_JOB_ID_ERROR
 )
 
 LIST_PORTFOLIO_JOBS_DESCRIPTION = (

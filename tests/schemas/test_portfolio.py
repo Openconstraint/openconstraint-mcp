@@ -362,12 +362,27 @@ def test_portfolio_job_status_rejects_cancelled_carrying_a_result() -> None:
         )
 
 
+def test_portfolio_job_status_failed_has_message_and_no_result() -> None:
+    # `failed` is terminal for a race whose aggregate result could not be built.
+    status: PortfolioJobStatus = PortfolioJobStatus(
+        job_id="pj-f",
+        state="failed",
+        per_attempt_timeout_ms=5000,
+        submitted_at_ms=5,
+        started_at_ms=6,
+        finished_at_ms=7,
+        elapsed_ms=1,
+        message="Could not build the portfolio result: RuntimeError: boom",
+    )
+    assert (status.state, status.result) == ("failed", None)
+
+
 def test_portfolio_job_status_rejects_unknown_state() -> None:
-    # `failed` is not a portfolio job state — winner-selection cannot itself fail.
+    # `timeout` is not a portfolio job state — each attempt reports its own timeout.
     with pytest.raises(ValidationError):
         PortfolioJobStatus(
             job_id="pj-bad3",
-            state="failed",  # type: ignore[arg-type]
+            state="timeout",  # type: ignore[arg-type]
             per_attempt_timeout_ms=5000,
             submitted_at_ms=1,
         )

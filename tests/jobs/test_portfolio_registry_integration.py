@@ -36,12 +36,21 @@ def _portfolio_safe_solvers() -> list[str]:
     return [solver for solver in preferred if solver in available]
 
 
-def test_portfolio_job_races_real_runtime_and_returns_usable_winner_on_poll() -> None:
-    # Submit returns at once (no blocking past an MCP timeout), and polling drives the
-    # real race to a usable PortfolioSolveResult — winner-selection runs on the poll,
-    # with no worker pool. Proves what the mocked unit tests cannot: a portfolio over
-    # the actual managed runtime races the full models x solvers cross-product and
-    # returns a winner whose SolveResult is usable exactly like solve_minizinc_model.
+def _wait_attempt_terminal(registry: JobRegistry, job_id: str, timeout: float = 30.0) -> str:
+    deadline: float = time.monotonic() + timeout
+    state: str = registry.get(job_id).state
+    while state not in _TERMINAL_ATTEMPT_STATES and time.monotonic() < deadline:
+        time.sleep(0.05)
+        state = registry.get(job_id).state
+    return state
+
+
+def test_portfolio_job_races_real_runtime_and_returns_usable_winner() -> None:
+    # Submit returns at once (no blocking past an MCP timeout), and the race settles
+    # on its attempts' own terminal events — the loop below only reads. Proves what the
+    # mocked unit tests cannot: a portfolio over the actual managed runtime races the
+    # full models x solvers cross-product, returns a winner whose SolveResult is usable
+    # exactly like solve_minizinc_model, and no real loser is left running afterwards.
     solvers = _portfolio_safe_solvers()
     if len(solvers) < 2:
         pytest.skip("need >= 2 portfolio-safe solvers in the managed runtime")
@@ -71,13 +80,14 @@ def test_portfolio_job_races_real_runtime_and_returns_usable_winner_on_poll() ->
         assert result.winner.solution is not None
         assert result.winner.stdout
 
-        # The plan is the full models x solvers cross-product; every attempt is
-        # accounted for and terminal (a winner plus terminal/cancelled losers), and
-        # both formulations are represented.
+        # The plan is the full models x solvers cross-product and both formulations
+        # are represented. The race settles on the first decisive attempt, so a loser
+        # may still be running in this snapshot — but its solve job must still end.
         assert len(result.attempts) == len(models) * len(solvers)
         assert {attempt.model_index for attempt in result.attempts} == {0, 1}
         for attempt in result.attempts:
-            assert attempt.state in _TERMINAL_ATTEMPT_STATES
+            assert attempt.job_id is not None
+            assert _wait_attempt_terminal(registry, attempt.job_id) in _TERMINAL_ATTEMPT_STATES
         # The winning attempt names the formulation it ran.
         assert result.attempts[result.winner_index].model_index in (0, 1)
     finally:

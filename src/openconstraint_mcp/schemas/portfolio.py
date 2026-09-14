@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal, cast
+from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -9,11 +9,12 @@ from .job_state import JobState
 from .minizinc import CheckerStatus, SolveResult, SolveStatus
 
 # One portfolio attempt's lifecycle as the portfolio observed it. `submitted`/
-# `running` are non-terminal (the poll budget can return while an attempt is still
-# running); `succeeded`/`timeout`/`failed`/`cancelled` mirror the registry's
-# terminal `JobState`; `rejected` marks an attempt that was never admitted (the
-# atomic `submit_many` makes the happy path admit all or none, so `rejected` is a
-# defensive vocabulary entry, not produced on a returned result).
+# `running` are non-terminal (a race settles on its first decisive attempt without
+# waiting for the losers, so a loser can still be running); `succeeded`/`timeout`/
+# `failed`/`cancelled` mirror the registry's terminal `JobState`; `rejected` marks
+# an attempt that was never admitted (the atomic `submit_many` makes the happy path
+# admit all or none, so `rejected` is a defensive vocabulary entry, not produced on a
+# returned result).
 PortfolioAttemptState = Literal[
     "submitted",
     "running",
@@ -23,13 +24,6 @@ PortfolioAttemptState = Literal[
     "cancelled",
     "rejected",
 ]
-# `submitted`/`running` are the only non-terminal attempt states; everything
-# else — including `rejected`, which marks an attempt that will never run — is
-# final and never changes on a later poll.
-PORTFOLIO_ATTEMPT_TERMINAL_STATES: frozenset[PortfolioAttemptState] = cast(
-    "frozenset[PortfolioAttemptState]",
-    frozenset({"succeeded", "timeout", "failed", "cancelled", "rejected"}),
-)
 # A portfolio's overall outcome. `winner` ⇔ an attempt was selected (its winning
 # `SolveResult` is attached and `winner_index` is set); the winning result's own
 # `status` says whether the win was decisive (a proof/solution) or a best-available
@@ -39,15 +33,15 @@ PortfolioStatus = Literal["winner", "no_winner"]
 
 
 class PortfolioAttempt(BaseModel):
-    """One model/solver/seed attempt in a portfolio race and its final observed state.
+    """One model/solver/seed attempt in a portfolio race, as of when the race settled.
 
-    Carries enough to explain the attempt without re-polling the registry after
-    the portfolio returns: which formulation it ran (`model_index`, a 0-based handle
-    into the caller's `models` list), its `solver`/`seed` (the exact requested or
-    generated seed value, or ``None`` when the portfolio ran unseeded), the
-    portfolio-level `state`,
-    the raw registry `job_state` (``None`` if it was never admitted), and — when a
-    ``SolveResult`` was produced — the `result_status` and `objective`. `message`
+    Records which formulation it ran (`model_index`, a 0-based handle into the
+    caller's `models` list), its `solver`/`seed` (the exact requested or generated
+    seed value, or ``None`` when the portfolio ran unseeded), the portfolio-level
+    `state` and raw registry `job_state` (``None`` if it was never admitted) at
+    settlement, and — when a ``SolveResult`` was produced — the `result_status` and
+    `objective`. A loser not yet stopped at settlement stays `running`/`submitted`;
+    its final outcome is not recorded (see ``PortfolioSolveResult``). `message`
     carries failure/cancel detail; `job_id` is the registry handle (``None`` when
     not admitted). The winning formulation is `models[attempts[winner_index].model_index]`.
     `checker_status` is the attempt's own checker verdict (``None`` when no checker
@@ -99,9 +93,14 @@ class PortfolioSolveResult(BaseModel):
     no attempt produced a usable result. The invariant ``winner present ⇔
     winner_index present ⇔ status == "winner"`` is enforced, so a client can branch
     on `status` and trust the winner fields. `attempts` records every attempt's
-    final state (the winner plus the cancelled/terminal losers) so the loser fates
-    are visible without polling child jobs. `selection_policy` documents how the
-    winner was chosen (e.g. ``"first-decisive-result"``).
+    state as of when the race settled: the winner, the losers that had finished,
+    and any loser not yet stopped (``running``/``submitted``). Remaining attempts
+    are cancelled after settlement; their cleanup does not delay the winner.
+    This snapshot is never refreshed, even on later portfolio polls or when saved
+    to ``experiment-log.json``: ``running`` is the state at settlement, not evidence
+    that a loser is still executing. Final loser outcomes are not tracked here.
+    `selection_policy` documents how the winner was chosen (e.g.
+    ``"first-decisive-result"``).
 
     ``models_sha256``/``data_sha256``/``checker_sha256`` are provenance: sha256 hex
     digests of the exact ``models``/``data``/``checker`` text the race was admitted
@@ -162,14 +161,15 @@ class PortfolioSolveResult(BaseModel):
 
 
 # A background portfolio job's lifecycle. Unlike a single solve job there is no
-# `queued`/`timeout`/`failed`: the race's attempts are admitted to the solve
+# `queued`/`timeout`: the race's attempts are admitted to the solve
 # registry the moment the portfolio is submitted (so a full-queue rejection surfaces
 # synchronously, not as a job), winner-selection is a pure function of the attempts'
-# statuses (it cannot itself fail — a per-attempt failure is captured in the
-# attempts table, and a race with no decisive winner is still a SUCCESSFUL
-# orchestration carrying a `no_winner` PortfolioSolveResult), and only `succeeded`
-# is result-bearing.
-PortfolioJobState = Literal["running", "succeeded", "cancelled"]
+# statuses (a per-attempt failure is captured in the attempts table, and a race with
+# no decisive winner is still a SUCCESSFUL orchestration carrying a `no_winner`
+# PortfolioSolveResult; `failed` means an internal completion, notification, or
+# aggregate-building error), and
+# only `succeeded` is result-bearing.
+PortfolioJobState = Literal["running", "succeeded", "failed", "cancelled"]
 
 
 class PortfolioJobStatus(BaseModel):
@@ -179,10 +179,12 @@ class PortfolioJobStatus(BaseModel):
     one with ``state="running"`` immediately so the race never blocks past a
     synchronous MCP client timeout, and ``get_portfolio_job`` polls it to a terminal
     state. ``result`` (the full ``PortfolioSolveResult``, winner and the
-    cancelled-loser table alike) is present IFF ``state == "succeeded"`` — this is
+    attempt table at settlement alike) is present IFF ``state == "succeeded"`` — this is
     enforced, so a client branches on ``state`` and trusts ``result``'s presence.
-    A ``no_winner`` race is ``succeeded`` (the orchestration completed); ``cancelled``
-    means the client stopped the race. Mid-race statistics are not provided: a
+    A ``no_winner`` race is ``succeeded`` (the orchestration completed); ``failed``
+    means an internal completion/notification error or failure to build the race
+    result (``message`` says why);
+    ``cancelled`` means the client stopped the race. Mid-race statistics are not provided: a
     ``running`` job reports only ``state``, ``elapsed_ms``, and the requested
     ``per_attempt_timeout_ms`` so a client can pace polling against the per-attempt
     budget instead of guessing an interval.

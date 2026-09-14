@@ -535,6 +535,81 @@ def test_shutdown_terminates_an_evicted_unreaped_child(monkeypatch: pytest.Monke
     assert terminated == [unreaped]
 
 
+def test_submit_source_after_shutdown_is_rejected() -> None:
+    registry: CpsatJobRegistry = CpsatJobRegistry()
+    registry.shutdown()
+
+    with pytest.raises(JobRejectedError, match="shutting down"):
+        registry.submit_source("x=1")
+    assert registry.list() == []
+
+
+def test_submit_file_after_shutdown_is_rejected(tmp_path: Path) -> None:
+    script: Path = tmp_path / "model.py"
+    script.write_text("x = 1\n", encoding="utf-8")
+    registry: CpsatJobRegistry = CpsatJobRegistry()
+    registry.shutdown()
+
+    with pytest.raises(JobRejectedError, match="shutting down"):
+        registry.submit_file(script)
+    assert registry.list() == []
+
+
+def test_submit_during_shutdown_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Admission window race: a submit that runs after shutdown has marked the live
+    # jobs (and taken its record snapshot) but before the pool is torn down must be
+    # rejected. Otherwise its record is missing from the snapshot, is never
+    # finalized, and stays `queued` (or starts unflagged and stalls teardown).
+    worker_running: threading.Event = threading.Event()
+    inner_done: threading.Event = threading.Event()
+    inner: list[str | JobRejectedError] = []
+    registry: CpsatJobRegistry = CpsatJobRegistry(max_running_jobs=1, max_queued_jobs=4)
+
+    def _submitting_run(source: str, *, on_start: Any, **kw: Any) -> CpsatPythonResult:
+        on_start(_FakeProc())
+        if inner:
+            return _cpsat_result()
+        worker_running.set()
+        deadline: float = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            with registry._lock:
+                marked: bool = all(r.cancel_requested for r in registry._records.values())
+            if marked:
+                break
+            time.sleep(0.001)
+        try:
+            inner.append(registry.submit_source("x=1"))
+        except JobRejectedError as exc:
+            inner.append(exc)
+        finally:
+            inner_done.set()
+        return _cpsat_result()
+
+    def _terminate_after_inner_submit(proc: Any, **_: Any) -> None:
+        # Pin the inner submit inside the window: shutdown terminates handles before
+        # tearing down the pool, so it cannot reach executor.shutdown until then.
+        inner_done.wait(timeout=3)
+
+    _patch_run_source(monkeypatch, _submitting_run)
+    monkeypatch.setattr(
+        "openconstraint_mcp.pyexec.jobs._terminate_process_tree", _terminate_after_inner_submit
+    )
+
+    registry.submit_source("x=0")
+    assert worker_running.wait(timeout=3)
+    shutdown_done: threading.Event = threading.Event()
+
+    def _run_shutdown() -> None:
+        registry.shutdown()
+        shutdown_done.set()
+
+    threading.Thread(target=_run_shutdown, name="shutdown").start()
+
+    assert shutdown_done.wait(timeout=5), "shutdown hung"
+    assert len(inner) == 1 and isinstance(inner[0], JobRejectedError)
+    assert len(registry.list()) == 1
+
+
 def test_eviction_reaps_a_leader_that_exited_before_eviction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -2562,54 +2562,12 @@ def test_save_verified_model_with_portfolio_result_writes_experiment_log(
     assert summary["winner_solver"] == DEFAULT_SOLVER
     assert summary["winner_model_index"] == 0
     assert summary["attempt_count"] == 1
-    assert summary["terminal_attempt_count"] == 1
-    assert summary["cancelled_attempt_count"] == 0
+    # No per-state counts: the attempt table is a settlement-time snapshot, and losers
+    # are cancelled only after it is built.
+    assert {"terminal_attempt_count", "cancelled_attempt_count"}.isdisjoint(summary)
     assert summary["statuses_seen"] == ["optimal"]
     assert summary["attempt_states_seen"] == ["succeeded"]
     assert summary["selection_policy"] == "first-decisive-result"
-
-
-def test_save_verified_model_portfolio_result_rejected_attempt_counts_as_terminal(
-    fake_minizinc_binary: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    # A `rejected` attempt was never admitted, so it is final — the manifest
-    # summary must count it in `terminal_attempt_count` alongside the registry's
-    # terminal states (see PORTFOLIO_ATTEMPT_TERMINAL_STATES).
-    _fake_check_then_solve(
-        monkeypatch,
-        check=child_result(stdout="", stderr="", returncode=0),
-        solve=child_result(stdout=STREAM_SATISFY, stderr="", returncode=0),
-    )
-    target = tmp_path / "project"
-    rejected_attempt = PortfolioAttempt(
-        index=1,
-        model_index=0,
-        solver=DEFAULT_SOLVER,
-        timeout_ms=5000,
-        state="rejected",
-    )
-    portfolio_result = PortfolioSolveResult(
-        status="winner",
-        winner_index=0,
-        winner=_portfolio_winner_solve_result(),
-        attempts=[_portfolio_attempt(), rejected_attempt],
-        elapsed_ms=150,
-        selection_policy="first-decisive-result",
-        models_sha256=[text_sha256(_SAVE_MODEL)],
-        data_sha256=None,
-        checker_sha256=None,
-        solve_controls=_DEFAULT_PORTFOLIO_CONTROLS,
-    )
-
-    save_verified_model(_SAVE_MODEL, target_dir=target, portfolio_result=portfolio_result)
-
-    manifest = json.loads((target / MANIFEST_FILENAME).read_text())
-    summary = manifest["verification"]["experiment_log"]
-    assert summary["terminal_attempt_count"] == 2
-    assert summary["statuses_seen"] == ["optimal"]
-    assert summary["attempt_states_seen"] == ["rejected", "succeeded"]
 
 
 def test_save_verified_model_portfolio_result_log_hashes_match_saved_artifacts(

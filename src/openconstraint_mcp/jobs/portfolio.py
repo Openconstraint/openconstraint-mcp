@@ -5,9 +5,10 @@ independent solve attempts, admits them atomically through the *existing* regist
 (no new pool, scheduler, or subprocess runner), and selects a winner from the
 attempts' statuses. The background portfolio path (``portfolio_registry``) drives this:
 ``_admit_portfolio`` admits the plan synchronously (fail-fast on a bad plan or a
-full queue) and ``_select_portfolio_outcome`` runs one non-blocking selection pass
-per poll, returning the winning ``SolveResult`` plus metadata explaining what
-happened to every attempt.
+full queue) and routes each attempt's terminal event to the registry's listener,
+which calls ``_build_portfolio_result`` once the race settles (on the first decisive
+attempt, or when every attempt is terminal) — the winning ``SolveResult`` plus
+metadata explaining what happened to every attempt.
 
 Local-first invariants are inherited from the layers below: every attempt runs on
 the managed MiniZinc runtime via the registry's cancellable solve, capabilities are
@@ -22,7 +23,7 @@ helpers, and ``schemas``; it never imports ``server``.
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import NamedTuple
 
 from pydantic import JsonValue
@@ -34,7 +35,7 @@ from ..minizinc.core import (
     validate_solver_capabilities,
 )
 from ..schemas.diagnostics import Diagnostic
-from ..schemas.job_state import TERMINAL_STATES, JobState
+from ..schemas.job_state import JobState
 from ..schemas.minizinc import SolveControls, SolveJobStatus, SolveResult
 from ..schemas.portfolio import (
     PortfolioAttempt,
@@ -58,11 +59,6 @@ _DECISIVE_STATUSES: frozenset[str] = frozenset(
 )
 # How a winner is chosen, surfaced verbatim on the result so a client can record it.
 _SELECTION_POLICY: str = "first-decisive-result"
-# Poll cadence while awaiting cancelled/settling attempts (``_await_all_terminal``).
-_POLL_INTERVAL_SECONDS: float = 0.05
-# Bounded grace for cancelled/poll-expired attempts to reach a terminal state
-# before the final snapshot, so loser fates are reported accurately.
-_CANCEL_SETTLE_SECONDS: float = 5.0
 
 _JOB_TO_ATTEMPT_STATE: dict[JobState, PortfolioAttemptState] = {
     "queued": "submitted",
@@ -77,11 +73,11 @@ _JOB_TO_ATTEMPT_STATE: dict[JobState, PortfolioAttemptState] = {
 class _PortfolioAdmission(NamedTuple):
     """``_admit_portfolio``'s return: the admitted plan plus its provenance.
 
-    ``models_sha256``/``data_sha256``/``checker_sha256``/``solve_controls`` are
+    ``models_sha256``/``data_sha256``/``checker_sha256`` are
     captured here — while the caller's original request values are still in
-    scope — because by the time ``_select_portfolio_outcome``/
-    ``_build_portfolio_result`` run (potentially on a much later poll, via the
-    background ``PortfolioJobRegistry``) those originals are out of scope. They
+    scope — because by the time ``_build_portfolio_result`` runs (when the race
+    settles, via the background ``PortfolioJobRegistry``) those originals
+    are out of scope. They
     must be threaded through unchanged to the eventual ``PortfolioSolveResult``.
     """
 
@@ -91,7 +87,6 @@ class _PortfolioAdmission(NamedTuple):
     models_sha256: list[str]
     data_sha256: str | None
     checker_sha256: str | None
-    solve_controls: PortfolioSolveControls
 
 
 def _admit_portfolio(
@@ -104,8 +99,9 @@ def _admit_portfolio(
     seed_count: int,
     per_attempt_timeout_ms: int,
     solve_controls: PortfolioSolveControls,
+    on_attempt_terminal: Callable[[int, SolveJobStatus], None],
+    on_attempt_error: Callable[[int, str], None],
     seeds: list[int] | None = None,
-    pin_attempts: bool = False,
 ) -> _PortfolioAdmission:
     """Validate the plan and admit its attempts atomically; return a ``_PortfolioAdmission``.
 
@@ -114,8 +110,10 @@ def _admit_portfolio(
     ``JobRejectedError`` for an over-capacity batch is raised HERE, before any
     attempt runs — so ``PortfolioJobRegistry.submit`` fails fast on a bad plan or a
     full queue instead of recording a background job that instantly fails. On return
-    the attempts are already admitted to ``registry`` (running or queued);
-    ``_select_portfolio_outcome`` polls them to a winner. The returned
+    the attempts are already admitted to ``registry`` (running or queued), and each
+    attempt's terminal status reaches ``on_attempt_terminal`` with its plan index —
+    possibly before this function returns. Internal completion/listener errors reach
+    ``on_attempt_error`` instead, so the owner can fail the race. The returned
     ``models_sha256``/``data_sha256``/``checker_sha256`` are provenance hashes of the
     exact ``models``/``data``/``checker`` text this call admitted (see
     ``PortfolioSolveResult``).
@@ -161,10 +159,14 @@ def _admit_portfolio(
                 extra_args=build_solve_extra_args(solver, attempt_controls),
             )
         )
-    job_ids = registry.submit_many(requests, pin=pin_attempts)
-    models_sha256 = [text_sha256(model) for model in models]
-    data_sha256 = text_sha256(data) if data is not None else None
-    checker_sha256 = text_sha256(checker) if checker is not None else None
+    # Hash before admitting: submit_many must be the last step that can fail, or a
+    # failure after it would leave admitted attempts that no portfolio record owns.
+    models_sha256: list[str] = [text_sha256(model) for model in models]
+    data_sha256: str | None = text_sha256(data) if data is not None else None
+    checker_sha256: str | None = text_sha256(checker) if checker is not None else None
+    job_ids: list[str] = registry.submit_many(
+        requests, on_terminal=on_attempt_terminal, on_terminal_error=on_attempt_error
+    )
     return _PortfolioAdmission(
         start=start,
         job_ids=job_ids,
@@ -172,7 +174,6 @@ def _admit_portfolio(
         models_sha256=models_sha256,
         data_sha256=data_sha256,
         checker_sha256=checker_sha256,
-        solve_controls=solve_controls,
     )
 
 
@@ -196,50 +197,6 @@ def _resolve_plan_seeds(
     return list(seeds), True
 
 
-def _select_portfolio_outcome(
-    registry: JobRegistry,
-    job_ids: Sequence[str],
-    plan: Sequence[tuple[int, str, int | None]],
-    start: float,
-    models_sha256: list[str],
-    data_sha256: str | None,
-    checker_sha256: str | None,
-    solve_controls: PortfolioSolveControls,
-) -> PortfolioSolveResult | None:
-    """One non-blocking selection pass over the admitted attempts (collect-on-poll).
-
-    Reads each attempt's current status ONCE (no loop). Returns ``None`` while the
-    race is undecided — no attempt has a decisive verdict and at least one is still
-    non-terminal. Once an attempt is decisive, cancels the still-running losers,
-    settles to a terminal snapshot, and returns the winner's ``PortfolioSolveResult``;
-    if every attempt is terminal without a decisive verdict, returns the
-    best-available (or ``no_winner``) result. This is the background portfolio job's
-    whole engine — driven by client polling, it needs no worker thread of its own.
-    ``models_sha256``/``data_sha256``/``checker_sha256``/``solve_controls`` are the
-    provenance ``_admit_portfolio`` captured at admission time; they are threaded
-    through unchanged to ``_build_portfolio_result``.
-    """
-    statuses = [registry.get(job_id) for job_id in job_ids]
-    winner_index = _first_decisive_index(statuses)
-    if winner_index is None and not all(s.state in TERMINAL_STATES for s in statuses):
-        return None
-    if winner_index is not None:
-        for job_id, status in zip(job_ids, statuses, strict=True):
-            if status.state not in TERMINAL_STATES:
-                registry.cancel(job_id)
-        statuses = _await_all_terminal(registry, job_ids)
-    return _build_portfolio_result(
-        plan,
-        statuses,
-        winner_index,
-        start,
-        models_sha256,
-        data_sha256,
-        checker_sha256,
-        solve_controls,
-    )
-
-
 def _build_portfolio_result(
     plan: Sequence[tuple[int, str, int | None]],
     statuses: Sequence[SolveJobStatus],
@@ -250,9 +207,10 @@ def _build_portfolio_result(
     checker_sha256: str | None,
     solve_controls: PortfolioSolveControls,
 ) -> PortfolioSolveResult:
-    """Build the winner-led ``PortfolioSolveResult`` from a terminal attempt snapshot.
+    """Build the winner-led ``PortfolioSolveResult`` from the snapshot the race settled on.
 
-    Called by ``_select_portfolio_outcome`` once the race is decided. With no
+    Called by the portfolio registry on the first decisive attempt (losers still
+    running are passed as they are) or once every attempt is terminal. With no
     decisive ``winner_index``, falls back to the best available terminal attempt (or
     ``no_winner`` when none produced a usable result); the model enforces
     ``winner present ⇔ status=="winner"``. ``models_sha256``/``data_sha256``/
@@ -338,16 +296,9 @@ def _validate_plan_capabilities(
         validate_solver_capabilities(solver, capabilities, plan_controls)
 
 
-def _await_all_terminal(registry: JobRegistry, job_ids: Sequence[str]) -> list[SolveJobStatus]:
-    """Snapshot every attempt once all are terminal (bounded by the settle grace)."""
-    deadline = time.monotonic() + _CANCEL_SETTLE_SECONDS
-    while True:
-        statuses = [registry.get(job_id) for job_id in job_ids]
-        if all(status.state in TERMINAL_STATES for status in statuses):
-            return statuses
-        if time.monotonic() >= deadline:
-            return statuses
-        time.sleep(_POLL_INTERVAL_SECONDS)
+def _is_decisive(status: SolveJobStatus) -> bool:
+    """Whether an attempt snapshot carries a verdict that ends the race."""
+    return status.result is not None and status.result.status in _DECISIVE_STATUSES
 
 
 def _first_decisive_index(statuses: Sequence[SolveJobStatus]) -> int | None:
@@ -355,9 +306,9 @@ def _first_decisive_index(statuses: Sequence[SolveJobStatus]) -> int | None:
 
     Follows the documented ``first-decisive-result`` policy: among the attempts that
     are decisive in this snapshot, the smallest ``finished_at_ms`` wins, with the
-    plan-order index breaking a same-millisecond tie. A single collect-on-poll
-    snapshot can reveal several decisive attempts at once (multiple finished within
-    one client poll), so taking the lowest index would misreport a later finisher as
+    plan-order index breaking a same-millisecond tie. Two decisive attempts' terminal
+    events can arrive out of finish order, and the final snapshot can hold several
+    decisive attempts, so taking the lowest index would misreport a later finisher as
     the winner. ``finished_at_ms`` is stamped on every result-bearing terminal
     attempt, so it is non-None for any decisive candidate (the sentinel is defensive
     only, never the deciding value).
@@ -365,7 +316,7 @@ def _first_decisive_index(statuses: Sequence[SolveJobStatus]) -> int | None:
     decisive = [
         (status.finished_at_ms, index)
         for index, status in enumerate(statuses)
-        if status.result is not None and status.result.status in _DECISIVE_STATUSES
+        if _is_decisive(status)
     ]
     if not decisive:
         return None

@@ -120,8 +120,9 @@ class _CpsatJobRecord:
 class CpsatJobRegistry:
     """A bounded, single-owned registry of background CP-SAT Python jobs.
 
-    Mirrors ``JobRegistry`` (MiniZinc) in structure and contract. Supports two
-    submission flavors:
+    Mirrors ``JobRegistry`` (MiniZinc) in structure and contract, except that a job
+    admitted while a running slot is free reports ``running`` at once instead of
+    staying ``queued`` until a worker starts it. Supports two submission flavors:
     - ``submit_source`` — inline Python source (same as ``run_cpsat_python``).
     - ``submit_file`` — local script path (same as ``run_cpsat_python_file``).
 
@@ -156,6 +157,8 @@ class CpsatJobRegistry:
         # that live child — so the handle is stashed here for shutdown to sweep.
         self._unreaped_orphans: list[Popen[str]] = []
         self._in_flight = 0
+        # Set by shutdown(); admission rejects once closed.
+        self._closed: bool = False
         self._executor = ThreadPoolExecutor(
             max_workers=max_running_jobs, thread_name_prefix="cpsat-job"
         )
@@ -174,7 +177,7 @@ class CpsatJobRegistry:
         Validates ``script_timeout_ms`` (positive gate) and the optional checker args
         up front, then admits under the lock. Returns immediately; raises
         ``ValueError`` on bad args or ``JobRejectedError`` when the bounded
-        queue is full.
+        queue is full or shutdown has begun.
         """
         if script_timeout_ms <= 0:
             raise ValueError("script_timeout_ms must be positive")
@@ -188,6 +191,7 @@ class CpsatJobRegistry:
             checker_timeout_ms=checker_timeout_ms,
         )
         with self._lock:
+            self._require_open()
             if self._in_flight >= self._max_running + self._max_queued:
                 raise JobRejectedError(self._queue_full_message())
             return self._admit_locked(request)
@@ -211,7 +215,7 @@ class CpsatJobRegistry:
         ``ValueError`` synchronously and no job record is created — either would
         otherwise surface only when the queued child was spawned, long after this
         call returned a ``job_id``. Raises ``JobRejectedError`` when the queue is
-        full.
+        full or shutdown has begun.
 
         ``args`` becomes the child's ``sys.argv[1:]``; it is snapshotted here at
         admission, so mutating the caller's list while the job sits queued
@@ -247,6 +251,7 @@ class CpsatJobRegistry:
             args=tuple(args) if args is not None else None,
         )
         with self._lock:
+            self._require_open()
             if self._in_flight >= self._max_running + self._max_queued:
                 raise JobRejectedError(self._queue_full_message())
             return self._admit_locked(request)
@@ -283,6 +288,10 @@ class CpsatJobRegistry:
     def shutdown(self) -> None:
         """Terminate running children and tear down the worker pool (lifespan exit)."""
         with self._lock:
+            # Close admission in the SAME acquisition as the snapshot below, so every
+            # job is either in the snapshot (and marked) or rejected — none can be
+            # admitted after the snapshot and stranded by the pool teardown.
+            self._closed = True
             for record in self._records.values():
                 if record.state not in TERMINAL_STATES:
                     record.cancel_requested = True
@@ -309,6 +318,13 @@ class CpsatJobRegistry:
         self._executor.shutdown(wait=True, cancel_futures=True)
 
     # --- internals (assume the caller holds the lock unless noted) -------------
+
+    def _require_open(self) -> None:
+        # Caller holds the lock. The single admission gate for shutdown.
+        if self._closed:
+            raise JobRejectedError(
+                "CP-SAT job registry is shutting down; no new jobs are accepted."
+            )
 
     def _queue_full_message(self) -> str:
         return (
