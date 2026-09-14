@@ -428,6 +428,53 @@ def test_submit_beyond_running_capacity_enqueues(monkeypatch: pytest.MonkeyPatch
         registry.shutdown()
 
 
+@pytest.mark.parametrize("batch", [False, True])
+def test_job_waiting_for_terminal_listener_starts_timing_only_on_worker(
+    monkeypatch: pytest.MonkeyPatch, batch: bool
+) -> None:
+    listener_entered: threading.Event = threading.Event()
+    release_listener: threading.Event = threading.Event()
+    started: threading.Event = threading.Event()
+    release_solve: threading.Event = threading.Event()
+    clock_ms: list[int] = [1000]
+
+    def _solve(model: str, *, on_start: Any, **kw: Any) -> SolveResult:
+        if model == "second":
+            started.set()
+            release_solve.wait(timeout=5)
+        return _solve_result()
+
+    def _listener(index: int, status: SolveJobStatus) -> None:
+        listener_entered.set()
+        release_listener.wait(timeout=5)
+
+    _patch_solve(monkeypatch, _solve)
+    monkeypatch.setattr("openconstraint_mcp.jobs.registry.now_ms", lambda: clock_ms[0])
+    registry: JobRegistry = JobRegistry(max_running_jobs=1, max_queued_jobs=0)
+    try:
+        registry.submit_many([_request()], on_terminal=_listener)
+        assert listener_entered.wait(timeout=3)
+        job_id: str
+        if batch:
+            (job_id,) = registry.submit_many([_request("second")])
+        else:
+            job_id = registry.submit(model="second")
+        clock_ms[0] = 1750
+        queued: SolveJobStatus = registry.get(job_id)
+        assert not started.is_set()
+        assert (queued.state, queued.started_at_ms, queued.elapsed_ms) == ("queued", None, None)
+
+        release_listener.set()
+        assert started.wait(timeout=3)
+        clock_ms[0] = 1800
+        running: SolveJobStatus = registry.get(job_id)
+        assert (running.state, running.started_at_ms, running.elapsed_ms) == ("running", 1750, 50)
+    finally:
+        release_listener.set()
+        release_solve.set()
+        registry.shutdown()
+
+
 def test_submit_beyond_queue_capacity_rejects_without_starting_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

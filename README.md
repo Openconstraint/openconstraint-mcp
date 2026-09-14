@@ -259,8 +259,10 @@ expose, each in an inline-source and a path-based form, plus background solve
 jobs, solver portfolios, registry bounds, and progress notifications. See
 [docs/mcp-tools.md](https://github.com/Openconstraint/openconstraint-mcp/blob/master/docs/mcp-tools.md).
 
-Background portfolios report internal completion errors as `failed` with a
-`job_failed` diagnostic and cancel remaining attempts best-effort.
+Background MiniZinc jobs remain `queued` until a worker starts them; elapsed
+time excludes waiting for a worker. Background portfolios report internal
+completion errors as `failed` with a `job_failed` diagnostic and cancel
+remaining attempts best-effort.
 
 ## CP-SAT Python execution path
 

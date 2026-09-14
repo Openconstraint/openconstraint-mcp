@@ -511,8 +511,11 @@ no LLM, no telemetry).
   non-positive timeout, a bad `parallel`/`num_solutions`) are reported
   synchronously **before any job exists**. Returns a `SolveJobStatus` with a
   server-generated opaque `job_id` and an initial `state` of `"queued"` or
-  `"running"`. Admission is **bounded**: at most a fixed number of jobs run at
-  once, further submits sit `"queued"` up to a fixed cap, and a submit beyond
+  `"running"`. A job stays `"queued"` until a worker starts it; `started_at_ms`
+  and `elapsed_ms` remain `null` while queued, including while a worker is
+  finishing the previous job's completion listener. Admission is **bounded**:
+  at most a fixed number of jobs run at once, further submits sit `"queued"`
+  up to a fixed cap, and a submit beyond
   that is **rejected with an MCP error** (retry once a running job finishes)
   rather than growing the queue unboundedly.
 - **`get_solve_job`** — poll a job by `job_id`. This is the OS-independent way

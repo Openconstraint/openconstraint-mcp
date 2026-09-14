@@ -104,9 +104,9 @@ class JobRegistry:
     All record mutation happens under ``_lock``; the critical sections are kept
     trivial. A worker writes only its own record. The bounded pool caps concurrent
     running solves (and thus live MiniZinc subprocesses); a single ``in_flight``
-    counter (running + queued) enforces the queue bound, so admission is exactly
-    D1.3's three cases: ``in_flight < max_running`` runs now, ``< max_running +
-    max_queued`` queues, otherwise rejects.
+    counter (running + queued) enforces the admission bound of ``max_running +
+    max_queued``. Admitted jobs stay queued until a worker starts them, including
+    while a finishing worker is still notifying its terminal listener.
     """
 
     def __init__(
@@ -340,13 +340,11 @@ class JobRegistry:
         # primitive shared by submit (one) and submit_many (a batch under one lock).
         job_id = uuid4().hex
         now = now_ms()
-        runs_now = self._in_flight < self._max_running
         record = _JobRecord(
             job_id=job_id,
             request=request,
             submitted_at_ms=now,
-            state="running" if runs_now else "queued",
-            started_at_ms=now if runs_now else None,
+            state="queued",
             on_terminal=on_terminal,
             on_terminal_error=on_terminal_error,
             batch_index=batch_index,
