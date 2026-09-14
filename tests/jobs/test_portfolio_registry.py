@@ -724,6 +724,72 @@ def test_completion_error_cancels_remaining_attempts(monkeypatch: pytest.MonkeyP
         job_registry.shutdown()
 
 
+def test_completion_error_does_not_cancel_the_failed_attempt(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The failed attempt is already terminal: cancelling it only rebuilds the status whose
+    # construction just failed, logging the same error a second time.
+    _patch_solve(monkeypatch, lambda *args, **kwargs: _solve_result("optimal"))
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=1)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+
+    def _broken(*args: Any) -> Any:
+        raise RuntimeError("snapshot exploded")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(job_registry, "_to_status", _broken)
+            job_id: str = portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
+            attempt_id: str = _admitted(portfolios._records[job_id]).job_ids[0]
+            future: Future[None] | None = job_registry._records[attempt_id].future
+            assert future is not None
+            future.result(timeout=3)
+
+        cancel_failures: list[str] = [
+            record.getMessage()
+            for record in caplog.records
+            if record.getMessage().startswith("could not cancel portfolio attempt")
+        ]
+        assert cancel_failures == []
+    finally:
+        job_registry.shutdown()
+
+
+def test_completion_error_teardown_does_not_occupy_the_failing_attempts_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Like a decided race's loser cleanup: on a 2-worker pool with the other attempt still
+    # running, an unrelated job admitted as `running` can only run on the failing
+    # attempt's worker, so the running attempt's teardown must happen elsewhere.
+    loser_release: threading.Event = threading.Event()
+    teardown_started: threading.Event = threading.Event()
+    teardown_may_finish: threading.Event = threading.Event()
+
+    def _slow_terminate(proc: Any, **kwargs: Any) -> None:
+        teardown_started.set()
+        teardown_may_finish.wait(timeout=10)
+
+    def _broken_snapshot(*args: Any) -> Any:
+        raise RuntimeError("snapshot exploded")
+
+    _patch_decisive_winner_over_running_loser(monkeypatch, loser_release)
+    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _slow_terminate)
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=2)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+    monkeypatch.setattr(portfolios, "_settlement_snapshot", _broken_snapshot)
+    try:
+        portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat", "org.gecode.gecode"])
+        assert teardown_started.wait(timeout=3)
+
+        unrelated_id: str = job_registry.submit(model="solve satisfy;", solver="cp-sat")
+
+        assert _wait_solve_terminal(job_registry, unrelated_id, timeout=2.0) == "succeeded"
+    finally:
+        teardown_may_finish.set()
+        loser_release.set()
+        job_registry.shutdown()
+
+
 def test_completion_error_portfolios_are_evicted(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_solve(monkeypatch, lambda *args, **kwargs: _solve_result("optimal"))
 

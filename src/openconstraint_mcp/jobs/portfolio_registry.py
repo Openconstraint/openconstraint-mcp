@@ -13,7 +13,8 @@ the job finalizes ``succeeded`` at once, and those losers are cancelled afterwar
 With no decisive attempt it settles once every attempt is terminal (``succeeded``
 with the best-available result, or ``failed`` if the aggregate cannot be built).
 An internal completion/listener error ends a running race as ``failed`` through
-the attempt registry's separate error callback, then cancels remaining attempts.
+the attempt registry's separate error callback, then stops the other non-terminal
+attempts the same way a settled race stops its losers.
 ``get``/``list`` only read, so a never-polled race still finishes.
 
 The listener runs on the finishing attempt's worker thread (or synchronously inside
@@ -303,8 +304,16 @@ class PortfolioJobRegistry:
             self._finalize(
                 record, "failed", None, f"Could not complete portfolio attempt {index}: {message}"
             )
-        # Outside record.lock: queued cancellation invokes the listeners inline.
-        self._cancel_attempts(_admitted(record).job_ids)
+            # Not the failed attempt: it is already terminal, and cancelling it would only
+            # rebuild the status whose construction may be what failed.
+            remaining: list[str] = [
+                job_id
+                for attempt_index, job_id in enumerate(_admitted(record).job_ids)
+                if attempt_index != index and attempt_index not in record.statuses
+            ]
+        # Without snapshots it is unknown which attempts are still queued, so every one
+        # is first offered to the non-blocking drop.
+        self._stop_attempts(queued=remaining, running=[])
 
     def _on_attempt_terminal(
         self, record: _PortfolioRecord, index: int, status: SolveJobStatus
@@ -328,25 +337,29 @@ class PortfolioJobRegistry:
                 elif attempt.state not in TERMINAL_STATES:
                     running_losers.append(attempt.job_id)
             self._settle(record, snapshot)
-        # Queued losers on this thread, before it returns: it is the finishing attempt's
+        self._stop_attempts(queued=queued_losers, running=running_losers)
+
+    def _stop_attempts(self, *, queued: Sequence[str], running: Sequence[str]) -> None:
+        # Caller must NOT hold record.lock: a drop runs its listener synchronously.
+        # Queued attempts on this thread, before it returns: it is the finishing attempt's
         # pool worker, which takes the next queued item at once. Dropping one never
-        # blocks; one another worker has started meanwhile joins the running losers.
-        # Not under record.lock: a drop runs this listener synchronously.
-        for job_id in queued_losers:
+        # blocks; one another worker has started meanwhile joins the running attempts.
+        to_cancel: list[str] = list(running)
+        for job_id in queued:
             try:
                 dropped: bool = self._registry.cancel_if_queued(job_id)
             except ValueError:
                 continue  # evicted, which only happens to a terminal record
             if not dropped:
-                running_losers.append(job_id)
-        if running_losers:
-            # Not on this thread: admission already counts its slot free, and a loser's
-            # process-tree teardown can take seconds. Daemon, because
-            # JobRegistry.shutdown stops any loser this thread has not reached.
+                to_cancel.append(job_id)
+        if to_cancel:
+            # Not on this thread: admission already counts its slot free, and a running
+            # attempt's process-tree teardown can take seconds. Daemon, because
+            # JobRegistry.shutdown stops any attempt this thread has not reached.
             try:
                 threading.Thread(
                     target=self._cancel_attempts,
-                    args=(running_losers,),
+                    args=(to_cancel,),
                     name="portfolio-cancel-losers",
                     daemon=True,
                 ).start()
@@ -356,7 +369,7 @@ class PortfolioJobRegistry:
                 _logger.exception(
                     "could not start portfolio cancellation thread; cancelling inline"
                 )
-                self._cancel_attempts(running_losers)
+                self._cancel_attempts(to_cancel)
 
     def _settlement_snapshot(self, record: _PortfolioRecord) -> Sequence[SolveJobStatus] | None:
         # Caller holds record.lock. Returns the attempt statuses to settle on, or None
