@@ -641,6 +641,10 @@ still running are cancelled right after; with no decisive attempt it finalizes
 once every attempt is terminal. That keeps submit non-blocking without cloning
 the job machinery.
 
+Running losers are normally cancelled on a separate thread. If that thread
+cannot start, the finishing worker cancels them itself; the settled result is
+preserved, but that worker remains occupied until cancellation returns.
+
 - **`submit_portfolio_job`** — admit a portfolio race as a background job. Takes
   `models`, `solvers`, optional shared `data`/`checker`, `seed_count`, `seeds`,
   `per_attempt_timeout_ms`, and the non-seed controls (see

@@ -342,12 +342,20 @@ class PortfolioJobRegistry:
             # Not on this thread: admission already counts its slot free, and a loser's
             # process-tree teardown can take seconds. Daemon, because
             # JobRegistry.shutdown stops any loser this thread has not reached.
-            threading.Thread(
-                target=self._cancel_attempts,
-                args=(running_losers,),
-                name="portfolio-cancel-losers",
-                daemon=True,
-            ).start()
+            try:
+                threading.Thread(
+                    target=self._cancel_attempts,
+                    args=(running_losers,),
+                    name="portfolio-cancel-losers",
+                    daemon=True,
+                ).start()
+            except RuntimeError:
+                # Thread exhaustion must not skip cleanup: the race is already
+                # terminal, so _on_attempt_error would ignore this failure.
+                _logger.exception(
+                    "could not start portfolio cancellation thread; cancelling inline"
+                )
+                self._cancel_attempts(running_losers)
 
     def _settlement_snapshot(self, record: _PortfolioRecord) -> Sequence[SolveJobStatus] | None:
         # Caller holds record.lock. Returns the attempt statuses to settle on, or None
@@ -366,8 +374,10 @@ class PortfolioJobRegistry:
             try:
                 snapshot.append(self._registry.get(job_id))
             except ValueError:
-                # Evicted: the solve registry evicts only terminal records, so this
-                # attempt finished and its own event is still on the way. Settle then.
+                # These IDs were admitted here; only terminal records are evicted.
+                # JobRegistry._complete keeps the record/status through notification
+                # even after eviction. Wait for that event; completion/listener
+                # failures instead reach _on_attempt_error and end a running race.
                 return None
         return snapshot
 
@@ -402,8 +412,9 @@ class PortfolioJobRegistry:
             try:
                 self._registry.cancel(job_id)
             except ValueError:
-                # Unknown job_id: the solve registry evicts only terminal records, so
-                # this attempt already finished and there is nothing to stop.
+                # These IDs were admitted here; a missing record was evicted after
+                # becoming terminal. Skipping cancellation does not depend on its
+                # terminal event having arrived (unlike _settlement_snapshot).
                 continue
             except Exception:
                 # Logged, not raised: one attempt's failed teardown must not leave the

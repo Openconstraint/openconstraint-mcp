@@ -14,6 +14,7 @@ import logging
 import threading
 import time
 import weakref
+from collections.abc import Callable
 from concurrent.futures import Future
 from typing import Any
 
@@ -966,6 +967,44 @@ def test_loser_teardown_does_not_occupy_the_winners_worker(
         assert _wait_solve_terminal(job_registry, unrelated_id, timeout=2.0) == "succeeded"
     finally:
         teardown_may_finish.set()
+        loser_release.set()
+        job_registry.shutdown()
+
+
+def test_cancel_thread_start_failure_still_stops_running_loser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loser_release: threading.Event = threading.Event()
+    _patch_decisive_winner_over_running_loser(monkeypatch, loser_release)
+    original_start: Callable[[threading.Thread], None] = threading.Thread.start
+
+    def _start(thread: threading.Thread) -> None:
+        if thread.name == "portfolio-cancel-losers":
+            raise RuntimeError("can't start new thread")
+        original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", _start)
+    monkeypatch.setattr(
+        "openconstraint_mcp.jobs.registry._terminate_process_tree",
+        lambda proc: loser_release.set(),
+    )
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=2)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
+    try:
+        job_id: str = portfolios.submit(
+            models=["solve satisfy;"], solvers=["cp-sat", "org.gecode.gecode"]
+        )
+        winner_id, loser_id = portfolios._records[job_id].attempt_job_ids
+        future: Future[None] | None = job_registry._records[winner_id].future
+        assert future is not None
+        future.result(timeout=3)
+
+        assert job_registry._records[loser_id].cancel_requested
+        assert _wait_solve_terminal(job_registry, loser_id) == "cancelled"
+        final: PortfolioJobStatus = portfolios.get(job_id)
+        assert final.state == "succeeded"
+        assert final.result is not None and final.result.winner_index == 0
+    finally:
         loser_release.set()
         job_registry.shutdown()
 

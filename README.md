@@ -262,7 +262,8 @@ jobs, solver portfolios, registry bounds, and progress notifications. See
 Background MiniZinc jobs remain `queued` until a worker starts them; elapsed
 time excludes waiting for a worker. Background portfolios report internal
 completion errors as `failed` with a `job_failed` diagnostic and cancel
-remaining attempts best-effort.
+remaining attempts best-effort. If a loser cancellation thread cannot start,
+cleanup runs on the finishing worker instead.
 
 ## CP-SAT Python execution path
 
