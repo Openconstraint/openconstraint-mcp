@@ -9,14 +9,17 @@ and without a background worker pool of its own.
 
 from __future__ import annotations
 
+import gc
+import logging
 import threading
 import time
+import weakref
 from concurrent.futures import Future
 from typing import Any
 
 import pytest
 
-from openconstraint_mcp.jobs.portfolio_registry import PortfolioJobRegistry
+from openconstraint_mcp.jobs.portfolio_registry import PortfolioJobRegistry, _PortfolioRecord
 from openconstraint_mcp.jobs.registry import JobRegistry
 from openconstraint_mcp.schemas.minizinc import SolveResult
 from openconstraint_mcp.schemas.portfolio import (
@@ -729,6 +732,50 @@ def test_completion_error_portfolios_are_evicted(monkeypatch: pytest.MonkeyPatch
         _poll(portfolios, second_id)
         with pytest.raises(ValueError, match="unknown portfolio job_id"):
             portfolios.get(first_id)
+    finally:
+        job_registry.shutdown()
+
+
+@pytest.mark.parametrize("completion_path", ["success", "snapshot_error", "listener_error"])
+def test_retained_attempt_does_not_keep_evicted_portfolio_alive(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    completion_path: str,
+) -> None:
+    # Pytest's log handlers retain exception tracebacks, which would independently
+    # keep the failed portfolio alive and obscure the callback retention check.
+    caplog.set_level(logging.CRITICAL, logger="openconstraint_mcp.jobs")
+    _patch_solve(monkeypatch, lambda *args, **kwargs: _solve_result("optimal"))
+    job_registry: JobRegistry = JobRegistry(max_running_jobs=1, max_retained_terminal=2)
+    portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry, max_retained_terminal=1)
+
+    def _broken(*args: Any) -> Any:
+        raise RuntimeError("completion exploded")
+
+    try:
+        with monkeypatch.context() as patch:
+            if completion_path == "snapshot_error":
+                patch.setattr(job_registry, "_to_status", _broken)
+            elif completion_path == "listener_error":
+                patch.setattr(portfolios, "_on_attempt_terminal", _broken)
+            first_id: str = portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
+            first_ref: weakref.ReferenceType[_PortfolioRecord] = weakref.ref(
+                portfolios._records[first_id]
+            )
+            attempt_id: str = portfolios._records[first_id].attempt_job_ids[0]
+            future: Future[None] | None = job_registry._records[attempt_id].future
+            assert future is not None
+            future.result(timeout=3)
+
+        second_id: str = portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
+        _poll(portfolios, second_id)
+        # Finish the worker callbacks before checking collection. Shutdown retains
+        # terminal records, so the first attempt still owns any uncleared callbacks.
+        job_registry.shutdown()
+        assert first_id not in portfolios._records
+        assert job_registry.get(attempt_id).state == "succeeded"
+        gc.collect()
+        assert first_ref() is None
     finally:
         job_registry.shutdown()
 

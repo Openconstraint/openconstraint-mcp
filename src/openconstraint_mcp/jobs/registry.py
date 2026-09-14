@@ -450,10 +450,18 @@ class JobRegistry:
             except Exception as exc:  # noqa: BLE001 - completion boundary
                 error = exception_summary(exc)
                 _logger.exception("completion failed for job %s", record.job_id)
-        if error is not None:
-            self._notify_terminal_error(record, error)
-        elif status is not None:
-            self._notify_terminal(record, status)
+        try:
+            if error is not None:
+                self._notify_terminal_error(record, error)
+            elif status is not None:
+                self._notify_terminal(record, status)
+        finally:
+            # Both callbacks can capture a portfolio and its winner output. Keep
+            # them through error reporting, then release those references even
+            # while this terminal attempt remains retained in the registry.
+            with self._lock:
+                record.on_terminal = None
+                record.on_terminal_error = None
         return status
 
     def _notify_terminal(self, record: _JobRecord, status: SolveJobStatus) -> None:

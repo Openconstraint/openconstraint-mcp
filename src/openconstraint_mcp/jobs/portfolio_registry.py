@@ -204,6 +204,9 @@ class PortfolioJobRegistry:
                 free_search=False, parallel=None, all_solutions=False, num_solutions=None
             )
         )
+        # Include admission validation in the job's elapsed time, matching the
+        # result's monotonic timer started at entry to _admit_portfolio. Stamping
+        # after admission would exclude that work only from the job's elapsed time.
         now: int = now_ms()
         record: _PortfolioRecord = _PortfolioRecord(
             job_id=uuid4().hex,
