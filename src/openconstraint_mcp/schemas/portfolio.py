@@ -169,7 +169,8 @@ class PortfolioSolveResult(BaseModel):
 # synchronously, not as a job), winner-selection is a pure function of the attempts'
 # statuses (a per-attempt failure is captured in the attempts table, and a race with
 # no decisive winner is still a SUCCESSFUL orchestration carrying a `no_winner`
-# PortfolioSolveResult; `failed` means only that building that aggregate raised), and
+# PortfolioSolveResult; `failed` means an internal completion, notification, or
+# aggregate-building error), and
 # only `succeeded` is result-bearing.
 PortfolioJobState = Literal["running", "succeeded", "failed", "cancelled"]
 
@@ -184,7 +185,8 @@ class PortfolioJobStatus(BaseModel):
     cancelled-loser table alike) is present IFF ``state == "succeeded"`` — this is
     enforced, so a client branches on ``state`` and trusts ``result``'s presence.
     A ``no_winner`` race is ``succeeded`` (the orchestration completed); ``failed``
-    means the server could not build the race result (``message`` says why);
+    means an internal completion/notification error or failure to build the race
+    result (``message`` says why);
     ``cancelled`` means the client stopped the race. Mid-race statistics are not provided: a
     ``running`` job reports only ``state``, ``elapsed_ms``, and the requested
     ``per_attempt_timeout_ms`` so a client can pace polling against the per-attempt
