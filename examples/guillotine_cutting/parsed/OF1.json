@@ -1,0 +1,89 @@
+{
+  "name": "OF1",
+  "provenance": {
+    "source": "https://site.unibo.it/operations-research/en/research/2dpacklib/of.zip/@@download/file/OF.zip (OF/OF/OF1.ins2D)",
+    "citation": "M. Iori, V.L. de Lima, S. Martello, M. Monaci. 2DPackLib: a two-dimensional cutting and packing library. Optimization Letters 16(2):471-480, 2022",
+    "license": "NOASSERTION"
+  },
+  "published_optimum": {
+    "value": 2737,
+    "problem_class": "stage-unrestricted unweighted 2DSLOPP",
+    "source": "S. Polyakovskiy, A. Dehghan, J. Mcgregor, P.J. Stuckey. Mixed-integer and constraint programming models for the two-dimensional guillotine cutting problem. European Journal of Operational Research 331:48-61, 2026, Table 2"
+  },
+  "sheet": {
+    "width": 70,
+    "height": 40
+  },
+  "products": [
+    {
+      "id": "1",
+      "width": 29,
+      "height": 5,
+      "max_quantity": 1,
+      "profit": 145
+    },
+    {
+      "id": "2",
+      "width": 9,
+      "height": 39,
+      "max_quantity": 4,
+      "profit": 351
+    },
+    {
+      "id": "3",
+      "width": 55,
+      "height": 9,
+      "max_quantity": 1,
+      "profit": 495
+    },
+    {
+      "id": "4",
+      "width": 31,
+      "height": 15,
+      "max_quantity": 1,
+      "profit": 465
+    },
+    {
+      "id": "5",
+      "width": 11,
+      "height": 16,
+      "max_quantity": 2,
+      "profit": 176
+    },
+    {
+      "id": "6",
+      "width": 23,
+      "height": 21,
+      "max_quantity": 3,
+      "profit": 483
+    },
+    {
+      "id": "7",
+      "width": 29,
+      "height": 14,
+      "max_quantity": 4,
+      "profit": 406
+    },
+    {
+      "id": "8",
+      "width": 16,
+      "height": 19,
+      "max_quantity": 3,
+      "profit": 304
+    },
+    {
+      "id": "9",
+      "width": 9,
+      "height": 36,
+      "max_quantity": 2,
+      "profit": 324
+    },
+    {
+      "id": "10",
+      "width": 22,
+      "height": 4,
+      "max_quantity": 2,
+      "profit": 88
+    }
+  ]
+}

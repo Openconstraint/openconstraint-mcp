@@ -1,0 +1,68 @@
+{
+  "name": "CGCUT1",
+  "provenance": {
+    "source": "https://site.unibo.it/operations-research/en/research/2dpacklib/cgcut.zip/@@download/file/CGCUT.zip (CGCUT/CGCUT/CGCUT1.ins2D)",
+    "citation": "M. Iori, V.L. de Lima, S. Martello, M. Monaci. 2DPackLib: a two-dimensional cutting and packing library. Optimization Letters 16(2):471-480, 2022",
+    "license": "NOASSERTION"
+  },
+  "published_optimum": {
+    "value": 244,
+    "problem_class": "stage-unrestricted weighted 2DSLOPP",
+    "source": "S. Polyakovskiy, A. Dehghan, J. Mcgregor, P.J. Stuckey. Mixed-integer and constraint programming models for the two-dimensional guillotine cutting problem. European Journal of Operational Research 331:48-61, 2026, Table 2"
+  },
+  "sheet": {
+    "width": 15,
+    "height": 10
+  },
+  "products": [
+    {
+      "id": "1",
+      "width": 8,
+      "height": 4,
+      "max_quantity": 2,
+      "profit": 66
+    },
+    {
+      "id": "2",
+      "width": 3,
+      "height": 7,
+      "max_quantity": 1,
+      "profit": 35
+    },
+    {
+      "id": "3",
+      "width": 8,
+      "height": 2,
+      "max_quantity": 3,
+      "profit": 24
+    },
+    {
+      "id": "4",
+      "width": 3,
+      "height": 4,
+      "max_quantity": 5,
+      "profit": 17
+    },
+    {
+      "id": "5",
+      "width": 3,
+      "height": 3,
+      "max_quantity": 2,
+      "profit": 11
+    },
+    {
+      "id": "6",
+      "width": 3,
+      "height": 2,
+      "max_quantity": 2,
+      "profit": 8
+    },
+    {
+      "id": "7",
+      "width": 2,
+      "height": 1,
+      "max_quantity": 1,
+      "profit": 2
+    }
+  ]
+}

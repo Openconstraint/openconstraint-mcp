@@ -1,0 +1,139 @@
+Two-dimensional guillotine cutting. One rectangular sheet with integer width W
+and height H is cut into pieces of several product sizes. Each product has an
+integer width and height, a fixed orientation (no piece is ever rotated), a
+maximum quantity, and a profit per piece. Choose how many pieces of each
+product to cut, from 0 up to its maximum, and where to place them, to maximize
+total profit. Unused sheet is allowed.
+
+Every cut is a guillotine cut: a straight cut from one edge of the current
+rectangle to the opposite edge, splitting it into two rectangles. The number of
+cutting stages is unlimited, so the cut direction may change at every level.
+
+parsed/polarizing_film.json -- polarizing film restocking
+---------------------------------------------------------
+
+Authored for the openconstraint-site case page
+/cases/two-dimensional-guillotine-cutting; not derived from a benchmark
+(license CC0-1.0). It was written as JSON, so it has no raw form in data/; it
+sits in parsed/ with the converted benchmark instances, where the scripts read
+every instance. One 12 x 8 sheet of polarizing film is cut into panels for
+five products. The film's polarization direction is why no piece may be
+rotated.
+
+  id   width x height   max quantity   profit
+  P1       2 x 5              1           14
+  P2       5 x 5              1           20
+  P3       2 x 3              3            9
+  P4       7 x 3              3           29
+  P5       5 x 4              2           15
+
+The optimal profit is 99: two P4, one P1 and three P3 -- 6 pieces using 70 of
+the 96 units of film and leaving 26 unused. The most profitable pattern is not
+the one that covers the most film: patterns that use the whole sheet exist (for
+example P1 + P2 + P4 + 2 x P5, all 96 units), but none earns more than 93.
+model.py proves 99 optimal in under a second on one worker.
+
+The comparison pattern from shelf_packing.py follows one rule: take pieces in
+descending profit per unit area (up to each product's maximum, ties in input
+order); put each on the first shelf where it fits under the shelf height and in
+the remaining width, otherwise open a new shelf on top at the piece's height,
+and skip the piece if that would exceed the sheet height. It earns 70 (three
+P3, one P1, one P4; 49 units used), 29 below the optimum. Shelves come off the
+sheet with horizontal cuts and pieces come off each shelf with vertical cuts,
+so the pattern is guillotine by construction.
+
+Benchmark instances from 2DPackLib
+----------------------------------
+
+data/CGCUT1.ins2D, data/OF1.ins2D and data/OF2.ins2D are the original files,
+unchanged, from 2DPackLib
+(https://site.unibo.it/operations-research/en/research/2dpacklib; archives
+CGCUT.zip and OF.zip). The page asks users to cite M. Iori, V.L. de Lima,
+S. Martello, M. Monaci, "2DPackLib: a two-dimensional cutting and packing
+library", Optimization Letters 16(2):471-480, 2022; it states no licence.
+CGCUT comes from Christofides & Whitlock (1977), OF from Oliveira & Ferreira
+(1990).
+
+parse_instance.py converts each file into this example's JSON format in
+parsed/ (parsed/CGCUT1.json, parsed/OF1.json, parsed/OF2.json), so the model and
+checker only read JSON:
+
+    uv run examples/guillotine_cutting/parse_instance.py CGCUT1.ins2D
+
+All three match this example's scope: minimum demand 0 for every item, a
+maximum number of copies, a profit per copy, fixed orientation. Published
+optima for unlimited-stage guillotine cutting (Polyakovskiy, Dehghan, Mcgregor
+& Stuckey, EJOR 331 (2026), Table 2), recorded in each parsed file:
+
+  instance   sheet     items   total copies   published optimum
+  CGCUT1     15 x 10      7         16               244   (weighted)
+  OF1        70 x 40     10         23              2737   (profit = area)
+  OF2        70 x 40     10         24              2690   (profit = area)
+
+The current model does NOT reproduce these. Measured with a time limit added
+outside the script: CGCUT1 finds 244 within 120 s but cannot prove it (bound
+still 260 after 30 s on 8 workers); OF1 reaches 2658 and OF2 2576 after 60 s,
+with bounds 4780 and 5104. They are kept here as the target for improving the
+model. model.py reads them by file name, e.g. `model.py CGCUT1.json`, but has no
+time limit of its own, so such a run does not stop by itself.
+
+Model (model.py)
+----------------
+
+The model decides the cut tree itself rather than just piece coordinates. It
+has a list of node slots, node 0 being the sheet. A used node is either a cut
+(direction and position) that splits its rectangle into two child rectangles,
+or a leaf holding exactly one piece at its bottom-left corner; whatever the
+leaf has beyond the piece is waste. Every other used node is linked to one
+child slot of an earlier cut, and every cut has both children. A full binary
+tree with n pieces has 2n - 1 nodes, so n is bounded by the products that fit
+the sheet: n <= min(total maximum quantity, sheet area // smallest piece area).
+A layout that no guillotine cut sequence can produce has no such tree, so it
+cannot be expressed. An empty selection (profit 0) stays feasible, which is
+the optimum when no product fits.
+
+Region coordinates keep the full domains 0..W and 0..H: waste can be thinner
+than the smallest piece, so a tighter bound such as W - min width would remove
+valid patterns. Speedups that lose no optimal solution: cut offsets are
+restricted to sums of piece sizes within the quantity limits (normal
+patterns); used nodes come first and are numbered breadth-first; and the first
+child of a cut never cuts in the same direction as its parent.
+
+Output
+------
+
+Both scripts print the standard CP-SAT stdout envelope: status, objective,
+best_objective_bound, and solution. solution.pieces lists each piece as
+{product, x, y, width, height} with the origin at the sheet's bottom-left
+corner. solution.cuts lists each cut as {rect, direction, position}: the
+rectangle it splits, "vertical" or "horizontal", and the absolute x or y of
+the cut. Cuts are listed parents first, and the list includes the cuts that
+trim each piece out of its leaf, so every final rectangle is exactly one piece
+or waste.
+
+results/optimal.json and results/shelf_packing.json are the committed stdout
+of the two scripts, regenerated from the repository root with:
+
+    uv run examples/guillotine_cutting/model.py > examples/guillotine_cutting/results/optimal.json
+    uv run examples/guillotine_cutting/shelf_packing.py > examples/guillotine_cutting/results/shelf_packing.json
+
+CP-SAT may choose a different layout among tied optima on another ortools
+version or seed (these were produced with ortools 9.15.6755, seed 42); the
+objective does not change.
+
+Checker (checker.py)
+--------------------
+
+checker.py reads the instance from the checker payload's `problem` field,
+which must be the instance JSON text (as ../job_shop/checker.py does), so it
+grades whichever instance was solved. It never solves; it grades the one
+answer it is given: known product ids with the product's width and height in
+the fixed orientation, every piece inside the sheet, no overlaps, quantity
+limits, the objective against the recomputed profit, and guillotine-ness. It
+decides guillotine-ness from the piece rectangles alone: find a full-length
+straight line that crosses no piece and leaves pieces on both sides, split
+there, and repeat on both halves. If the solution also carries a cut tree, the
+checker replays it from the sheet and requires every piece to be one leaf, but
+the tree is never used as the proof. Its details report the recomputed profit,
+pieces per product, sheet, used, and unused area, and whether the layout is
+guillotine.
