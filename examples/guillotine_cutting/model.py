@@ -237,30 +237,45 @@ def solve(instance: ProblemInstance, time_limit_seconds: float | None = None) ->
 
         # A cut lies strictly inside its rectangle, at a normal offset from its
         # left (vertical cut) or bottom (horizontal cut) edge.
+        # x_offsets lists allowed distances from the rectangle's left edge.
+        # This Python if checks whether the list is nonempty while building the
+        # model; only_enforce_if activates the constraints for a chosen cut direction.
         if x_offsets:
+            # x_offset (singular) is the solver's choice from x_offsets (the list).
             x_offset: cp_model.IntVar = model.new_int_var_from_domain(
                 cp_model.Domain.from_values(x_offsets), f"x_offset_{k}"
             )
             # position is the cut's absolute x: this node's own left edge (x1,
             # already absolute) plus a normal offset relative to that edge.
+            # Example: x1 = 10 and x_offset = 30 put the cut at position = 40.
+            # These constraints apply only when is_cut = 1 and vertical = 1.
             model.add(node.position == node.x1 + x_offset).only_enforce_if(
                 [node.is_cut, node.vertical]
             )
             model.add(node.position < node.x2).only_enforce_if([node.is_cut, node.vertical])
         else:
+            # No allowed x offsets: this node cannot make a vertical cut.
             model.add(node.vertical == 0)
+
+        # y_offsets plays the same role for distances from the bottom edge.
         if y_offsets:
+            # y_offset is the solver's choice from that list for a horizontal cut.
             y_offset: cp_model.IntVar = model.new_int_var_from_domain(
                 cp_model.Domain.from_values(y_offsets), f"y_offset_{k}"
             )
             # Same idea on the y axis: absolute cut y = this node's bottom edge
             # (y1, already absolute) plus a normal offset from that edge.
+            # These constraints apply only when is_cut = 1 and vertical = 0;
+            # ~node.vertical means "not vertical" (a horizontal cut).
             model.add(node.position == node.y1 + y_offset).only_enforce_if(
                 [node.is_cut, ~node.vertical]
             )
             model.add(node.position < node.y2).only_enforce_if([node.is_cut, ~node.vertical])
         else:
+            # No allowed y offsets: any cut at this node must be vertical.
             model.add(node.vertical == 1).only_enforce_if(node.is_cut)
+
+        # ~node.is_cut means "not a cut": force the unused cut position to 0.
         model.add(node.position == 0).only_enforce_if(~node.is_cut)
 
         # A leaf rectangle is at least as large as its piece; the rest is waste.
