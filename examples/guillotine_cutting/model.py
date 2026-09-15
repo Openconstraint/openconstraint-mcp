@@ -155,14 +155,33 @@ def trim_cuts(leaf: Rect, product: Product) -> list[Cut]:
     return cuts
 
 
+def max_placeable_pieces(fitting: list[Product], sheet_area: int) -> int:
+    """Upper bound on how many pieces (any mix of types) fit the sheet's area,
+    respecting each product's max_quantity.
+
+    Exact for the relaxation that keeps only the area and quantity constraints
+    and drops geometry: filling with the smallest-area products first, up to
+    their quota, before larger ones, is optimal (an exchange argument -- while
+    a smaller product still has quota left, swapping it in for an already-used
+    larger one never decreases the count)."""
+    remaining: int = sheet_area
+    count: int = 0
+    for product in sorted(fitting, key=lambda item: item.width * item.height):
+        area: int = product.width * product.height
+        take: int = min(product.max_quantity, remaining // area)
+        count += take
+        remaining -= take * area
+    return count
+
+
 def solve(instance: ProblemInstance, time_limit_seconds: float | None = None) -> Solution:
     sheet_width: int = instance.sheet_width
     sheet_height: int = instance.sheet_height
     products: list[Product] = instance.products
 
     # A full binary cut tree with n pieces as leaves has 2n - 1 nodes. Bound n by
-    # the pieces that fit the sheet at all, and by how many of the smallest could
-    # share its area. With nothing to place, one (unused) root slot remains.
+    # max_placeable_pieces over the pieces that fit the sheet at all. With
+    # nothing to place, one (unused) root slot remains.
     fitting: list[Product] = [
         product
         for product in products
@@ -170,14 +189,7 @@ def solve(instance: ProblemInstance, time_limit_seconds: float | None = None) ->
         and product.height <= sheet_height
         and product.max_quantity > 0
     ]
-    max_pieces: int = 0
-    if fitting:
-        smallest_area: int = min(product.width * product.height for product in fitting)
-        max_pieces = min(
-            sum(product.max_quantity for product in fitting),
-            sheet_width * sheet_height // smallest_area,
-        )
-        
+    max_pieces: int = max_placeable_pieces(fitting, sheet_width * sheet_height)
     num_nodes: int = max(1, 2 * max_pieces - 1)
 
     x_offsets: list[int] = normal_offsets(
@@ -200,6 +212,7 @@ def solve(instance: ProblemInstance, time_limit_seconds: float | None = None) ->
             y1=model.new_int_var(0, sheet_height, f"y1_{k}"),
             x2=model.new_int_var(0, sheet_width, f"x2_{k}"),
             y2=model.new_int_var(0, sheet_height, f"y2_{k}"),
+            # nodes[k].holds[i] == 1 means: piece type products[i] is placed in node (region) k
             holds=[model.new_bool_var(f"holds_{k}_{product.id}") for product in products],
         )
         nodes.append(node)
