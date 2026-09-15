@@ -83,8 +83,8 @@ class Node(NamedTuple):
     """CP-SAT variables of one node slot in the cut tree."""
 
     used: cp_model.IntVar
-    is_cut: cp_model.IntVar
-    vertical: cp_model.IntVar
+    is_cut: cp_model.IntVar  # 1: keep cutting, two children follow (see `links`). 0: a leaf, done.
+    vertical: cp_model.IntVar  # cut direction; only meaningful when is_cut (vertical <= is_cut)
     position: cp_model.IntVar
     x1: cp_model.IntVar
     y1: cp_model.IntVar
@@ -205,7 +205,9 @@ def solve(instance: ProblemInstance, time_limit_seconds: float | None = None) ->
     for k in range(num_nodes):
         node: Node = Node(
             used=model.new_bool_var(f"used_{k}"),
+            # when is_cut= 0 the node is final product and 1 the node is pattern can be cut again
             is_cut=model.new_bool_var(f"is_cut_{k}"),
+            # α/β cut
             vertical=model.new_bool_var(f"vertical_{k}"),
             position=model.new_int_var(0, max(sheet_width, sheet_height), f"position_{k}"),
             x1=model.new_int_var(0, sheet_width, f"x1_{k}"),
@@ -219,6 +221,7 @@ def solve(instance: ProblemInstance, time_limit_seconds: float | None = None) ->
 
         # A used node is exactly one of: a cut, or a leaf holding one piece.
         model.add(sum(node.holds) + node.is_cut == node.used)
+        # 
         model.add(node.vertical <= node.is_cut)
 
         # A cut lies strictly inside its rectangle, at a normal offset from its
