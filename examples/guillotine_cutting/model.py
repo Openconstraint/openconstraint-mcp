@@ -209,9 +209,20 @@ def solve(instance: ProblemInstance, time_limit_seconds: float | None = None) ->
             is_cut=model.new_bool_var(f"is_cut_{k}"),
             # α/β cut
             vertical=model.new_bool_var(f"vertical_{k}"),
+            # A cut line needs only one coordinate: vertical selects the axis,
+            # and the rectangle's boundaries supply the endpoints:
+            #   vertical = 1: x = position, from (position, y1) to (position, y2).
+            #   vertical = 0: y = position, from (x1, position) to (x2, position).
+            # position is measured from the whole sheet's origin (0, 0).
+            # Example: in a rectangle from (10, 20) to (70, 60), a vertical cut
+            # at position = 40 runs from (40, 20) to (40, 60), which is 30 units
+            # from this rectangle's left edge (position - x1 = 40 - 10).
+            # position is 0 when this node is not a cut.
             position=model.new_int_var(0, max(sheet_width, sheet_height), f"position_{k}"),
+            # Bottom-left corner of this node's rectangle, in sheet coordinates.
             x1=model.new_int_var(0, sheet_width, f"x1_{k}"),
             y1=model.new_int_var(0, sheet_height, f"y1_{k}"),
+            # Top-right corner; rectangle width = x2 - x1, height = y2 - y1.
             x2=model.new_int_var(0, sheet_width, f"x2_{k}"),
             y2=model.new_int_var(0, sheet_height, f"y2_{k}"),
             # nodes[k].holds[i] == 1 means: piece type products[i] is placed in node (region) k
@@ -221,7 +232,7 @@ def solve(instance: ProblemInstance, time_limit_seconds: float | None = None) ->
 
         # A used node is exactly one of: a cut, or a leaf holding one piece.
         model.add(sum(node.holds) + node.is_cut == node.used)
-        # 
+        # if is_cut is 0, means it is final product and no need to cut, so, node.vertical must be less than equal to 0.
         model.add(node.vertical <= node.is_cut)
 
         # A cut lies strictly inside its rectangle, at a normal offset from its
@@ -230,6 +241,8 @@ def solve(instance: ProblemInstance, time_limit_seconds: float | None = None) ->
             x_offset: cp_model.IntVar = model.new_int_var_from_domain(
                 cp_model.Domain.from_values(x_offsets), f"x_offset_{k}"
             )
+            # position is the cut's absolute x: this node's own left edge (x1,
+            # already absolute) plus a normal offset relative to that edge.
             model.add(node.position == node.x1 + x_offset).only_enforce_if(
                 [node.is_cut, node.vertical]
             )
@@ -240,6 +253,8 @@ def solve(instance: ProblemInstance, time_limit_seconds: float | None = None) ->
             y_offset: cp_model.IntVar = model.new_int_var_from_domain(
                 cp_model.Domain.from_values(y_offsets), f"y_offset_{k}"
             )
+            # Same idea on the y axis: absolute cut y = this node's bottom edge
+            # (y1, already absolute) plus a normal offset from that edge.
             model.add(node.position == node.y1 + y_offset).only_enforce_if(
                 [node.is_cut, ~node.vertical]
             )
