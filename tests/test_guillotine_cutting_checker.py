@@ -75,11 +75,11 @@ def test_accepts_committed_optimal_payload() -> None:
 def test_optimal_payload_details_report_profit_counts_and_areas() -> None:
     details = _checker.check_payload(_committed_payload("optimal.json"))["details"]
     assert details == {
-        "recomputed_profit": 99,
-        "pieces_per_product": {"P1": 1, "P2": 0, "P3": 3, "P4": 2, "P5": 0},
+        "recomputed_profit": 110,
+        "pieces_per_product": {"P1": 3, "P2": 1, "P3": 0, "P4": 0, "P5": 0},
         "sheet_area": 96,
-        "used_area": 70,
-        "unused_area": 26,
+        "used_area": 88,
+        "unused_area": 8,
         "guillotine": True,
         "cut_tree_checked": True,
     }
@@ -90,7 +90,7 @@ def test_accepts_committed_shelf_packing_payload() -> None:
     assert (result["status"], result["errors"], result["details"]["recomputed_profit"]) == (
         "accepted",
         [],
-        70,
+        81,
     )
 
 

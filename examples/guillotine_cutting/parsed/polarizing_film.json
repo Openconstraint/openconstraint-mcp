@@ -9,10 +9,10 @@
     "height": 8
   },
   "products": [
-    {"id": "P1", "width": 2, "height": 5, "max_quantity": 1, "profit": 14},
-    {"id": "P2", "width": 5, "height": 5, "max_quantity": 1, "profit": 20},
-    {"id": "P3", "width": 2, "height": 3, "max_quantity": 3, "profit": 9},
-    {"id": "P4", "width": 7, "height": 3, "max_quantity": 3, "profit": 29},
-    {"id": "P5", "width": 5, "height": 4, "max_quantity": 2, "profit": 15}
+    {"id": "P1", "width": 4, "height": 6, "max_quantity": 3, "profit": 31},
+    {"id": "P2", "width": 8, "height": 2, "max_quantity": 2, "profit": 17},
+    {"id": "P3", "width": 2, "height": 3, "max_quantity": 2, "profit": 7},
+    {"id": "P4", "width": 7, "height": 5, "max_quantity": 2, "profit": 50},
+    {"id": "P5", "width": 3, "height": 6, "max_quantity": 1, "profit": 21}
   ]
 }

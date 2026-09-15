@@ -3,7 +3,7 @@
 Not an optimizer. It builds one feasible pattern with a rule a person could
 follow by hand, so its profit can be set against model.py's optimum:
 
-    Take pieces in descending profit per unit area (up to each product's maximum,
+    Take pieces in descending profit per piece (up to each product's maximum,
     ties in input order); put each on the first shelf where it fits under the
     shelf height and in the remaining width, otherwise open a new shelf on top at
     the piece's height, and skip the piece if that would exceed the sheet height.
@@ -18,7 +18,6 @@ Run from the repository root:
 
 import json
 import sys
-from fractions import Fraction
 from pathlib import Path
 from typing import Any, Literal
 
@@ -101,10 +100,7 @@ def parse_input(raw: dict[str, Any]) -> ProblemInstance:
 def solve(instance: ProblemInstance) -> Solution:
     sheet_width: int = instance.sheet_width
     sheet_height: int = instance.sheet_height
-    order: list[Product] = sorted(
-        instance.products,
-        key=lambda product: -Fraction(product.profit, product.width * product.height),
-    )
+    order: list[Product] = sorted(instance.products, key=lambda product: -product.profit)
 
     shelf_y: list[int] = []
     shelf_height: list[int] = []

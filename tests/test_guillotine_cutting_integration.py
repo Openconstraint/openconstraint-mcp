@@ -32,9 +32,9 @@ _EXAMPLE_DIR = Path(__file__).parent.parent / "examples" / "guillotine_cutting"
     ("script_name", "expected_status", "expected_objective"),
     [
         # model.py proves the optimum in well under a second single-worker.
-        ("model.py", "optimal", 99),
+        ("model.py", "optimal", 110),
         # The shelf rule's pattern, documented in problem.txt.
-        ("shelf_packing.py", "feasible", 70),
+        ("shelf_packing.py", "feasible", 81),
     ],
 )
 async def test_polarizing_film_script_and_checker_reach_an_accepted_verdict(

@@ -21,26 +21,26 @@ five products. The film's polarization direction is why no piece may be
 rotated.
 
   id   width x height   max quantity   profit
-  P1       2 x 5              1           14
-  P2       5 x 5              1           20
-  P3       2 x 3              3            9
-  P4       7 x 3              3           29
-  P5       5 x 4              2           15
+  P1       4 x 6              3           31
+  P2       8 x 2              2           17
+  P3       2 x 3              2            7
+  P4       7 x 5              2           50
+  P5       3 x 6              1           21
 
-The optimal profit is 99: two P4, one P1 and three P3 -- 6 pieces using 70 of
-the 96 units of film and leaving 26 unused. The most profitable pattern is not
-the one that covers the most film: patterns that use the whole sheet exist (for
-example P1 + P2 + P4 + 2 x P5, all 96 units), but none earns more than 93.
-model.py proves 99 optimal in under a second on one worker.
+The optimal profit is 110: three P1 and one P2 -- 4 pieces using 88 of the 96
+units of film and leaving 8 unused. model.py proves 110 optimal in under a
+second on one worker.
 
 The comparison pattern from shelf_packing.py follows one rule: take pieces in
-descending profit per unit area (up to each product's maximum, ties in input
+descending profit per piece (up to each product's maximum, ties in input
 order); put each on the first shelf where it fits under the shelf height and in
 the remaining width, otherwise open a new shelf on top at the piece's height,
-and skip the piece if that would exceed the sheet height. It earns 70 (three
-P3, one P1, one P4; 49 units used), 29 below the optimum. Shelves come off the
-sheet with horizontal cuts and pieces come off each shelf with vertical cuts,
-so the pattern is guillotine by construction.
+and skip the piece if that would exceed the sheet height. It earns 81 (one P4,
+two P3, one P2; 63 units used), 29 below the optimum. No piece it skips fits
+anywhere in the film it leaves unused. The loss comes from the order alone: the
+same rule reaches 110 when it takes P1 first. Shelves come off the sheet with
+horizontal cuts and pieces come off each shelf with vertical cuts, so the
+pattern is guillotine by construction.
 
 Benchmark instances from 2DPackLib
 ----------------------------------
