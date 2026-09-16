@@ -153,9 +153,12 @@ class BackgroundJobRegistry[ResultT, StatusT, RecordT: JobRecord[Any, Any, Any]]
 
         A no-op on an already-terminal job. Cancellation before the worker starts
         is handled by ``Future.cancel``; for a running job the live handle's process
-        tree is terminated and the worker records the ``cancelled`` state. If the
-        handle is not yet recorded (a cancel that races process startup), the
-        ``_on_start`` hook terminates as soon as it captures the handle.
+        tree is terminated and the worker finalizes under its own backend outcome
+        policy — MiniZinc always reaches ``cancelled``, while CP-SAT reaches it only
+        when the terminated run still produced a result and reports ``failed`` when
+        that run raises instead. If the handle is not yet recorded (a cancel that
+        races process startup), the ``_on_start`` hook terminates as soon as it
+        captures the handle.
         """
         with self._lock:
             record = self._require_record(job_id)

@@ -247,6 +247,9 @@ class CpsatJobRegistry(
             state="running" if runs_now else "queued",
             started_at_ms=now if runs_now else None,
         )
+        # Publish before submit, deliberately the reverse of the MiniZinc registry (which
+        # submits first so a raising submit leaks no slot); `_publish_locked` carries no
+        # shared ordering guarantee.
         self._publish_locked(record)
         record.future = self._executor.submit(self._run_job, job_id)
         return job_id
