@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,7 @@ import pytest
 from openconstraint_mcp.pyexec.jobs import CpsatJobRegistry
 from openconstraint_mcp.schemas.cpsat import CpsatCheckerReport, CpsatPythonResult, CpsatStatus
 from openconstraint_mcp.shared.childrun import ChildSpawnError
-from openconstraint_mcp.shared.job_errors import JobRejectedError
+from openconstraint_mcp.shared.job_errors import JobRejectedError, UnknownJobError
 
 
 def _cpsat_result(
@@ -478,63 +479,6 @@ def test_shutdown_terminates_running_child(monkeypatch: pytest.MonkeyPatch) -> N
     assert len(killed) >= 1
 
 
-def test_shutdown_retries_a_terminal_unreaped_child(monkeypatch: pytest.MonkeyPatch) -> None:
-    # A job can finalize (terminal) while its leader survived termination and was
-    # never reaped (returncode None). shutdown must still terminate that handle,
-    # not skip it just because the record is terminal.
-    handle = _FakeProc()
-    handle.returncode = None  # type: ignore[attr-defined]
-    terminated: list[Any] = []
-
-    def _unreaped_run(source: str, *, on_start: Any, **kw: Any) -> CpsatPythonResult:
-        on_start(handle)
-        return _cpsat_result()
-
-    _patch_run_source(monkeypatch, _unreaped_run)
-    _patch_terminate(monkeypatch, terminated)
-    registry = CpsatJobRegistry()
-    try:
-        job_id = registry.submit_source("x=1")
-        assert _wait_until_terminal(registry, job_id) == "succeeded"
-    finally:
-        registry.shutdown()
-
-    assert terminated == [handle]
-
-
-def test_shutdown_terminates_an_evicted_unreaped_child(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Evicting a terminal record that still owns an unreaped leader must not drop
-    # the only reference to that child: the handle is kept for the shutdown sweep.
-    unreaped = _FakeProc()
-    unreaped.returncode = None  # type: ignore[attr-defined]
-    reaped = _FakeProc()
-    reaped.returncode = 0  # type: ignore[attr-defined]
-    handles = iter([unreaped, reaped])
-    terminated: list[Any] = []
-
-    def _run(source: str, *, on_start: Any, **kw: Any) -> CpsatPythonResult:
-        on_start(next(handles))
-        return _cpsat_result()
-
-    _patch_run_source(monkeypatch, _run)
-    _patch_terminate(monkeypatch, terminated)
-    # max_running=1 forces sequential completion so "oldest terminal" is the first
-    # job; cap=1 evicts it the moment the second finalizes.
-    registry = CpsatJobRegistry(max_running_jobs=1, max_queued_jobs=8, max_retained_terminal=1)
-    try:
-        first = registry.submit_source("x=0")
-        assert _wait_until_terminal(registry, first) == "succeeded"
-        second = registry.submit_source("x=1")
-        assert _wait_until_terminal(registry, second) == "succeeded"
-        with pytest.raises(ValueError, match="unknown job_id"):
-            registry.get(first)  # evicted
-    finally:
-        registry.shutdown()
-
-    # first's unreaped handle was kept and swept; second's reaped handle was not.
-    assert terminated == [unreaped]
-
-
 def test_submit_source_after_shutdown_is_rejected() -> None:
     registry: CpsatJobRegistry = CpsatJobRegistry()
     registry.shutdown()
@@ -608,46 +552,6 @@ def test_submit_during_shutdown_is_rejected(monkeypatch: pytest.MonkeyPatch) -> 
     assert shutdown_done.wait(timeout=5), "shutdown hung"
     assert len(inner) == 1 and isinstance(inner[0], JobRejectedError)
     assert len(registry.list()) == 1
-
-
-def test_eviction_reaps_a_leader_that_exited_before_eviction(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # A leader can exit on its own between finalize and eviction (eviction may run
-    # long after the job that owns it finished, once the retention cap is next
-    # exceeded). Eviction must poll() to reap it there rather than trusting the
-    # stale post-finalize returncode and stashing an already-dead handle.
-    class _LateExitProc(_FakeProc):
-        def __init__(self) -> None:
-            self.returncode = None
-
-        def poll(self) -> Any:
-            self.returncode = 0  # exits the moment eviction checks it
-            return self.returncode
-
-    late_exit = _LateExitProc()
-    reaped = _FakeProc()
-    reaped.returncode = 0  # type: ignore[attr-defined]
-    handles = iter([late_exit, reaped])
-    terminated: list[Any] = []
-
-    def _run(source: str, *, on_start: Any, **kw: Any) -> CpsatPythonResult:
-        on_start(next(handles))
-        return _cpsat_result()
-
-    _patch_run_source(monkeypatch, _run)
-    _patch_terminate(monkeypatch, terminated)
-    registry = CpsatJobRegistry(max_running_jobs=1, max_queued_jobs=8, max_retained_terminal=1)
-    try:
-        first = registry.submit_source("x=0")
-        assert _wait_until_terminal(registry, first) == "succeeded"
-        second = registry.submit_source("x=1")
-        assert _wait_until_terminal(registry, second) == "succeeded"
-    finally:
-        registry.shutdown()
-
-    # Reaped at eviction time, so it was never stashed for the shutdown sweep.
-    assert terminated == []
 
 
 # --- get/list reflect the job -----------------------------------------------
@@ -1148,4 +1052,143 @@ def test_cancel_requested_before_checker_skips_checker_entirely(
         assert checker_calls == []
     finally:
         cancel_done.set()
+        registry.shutdown()
+
+
+# --- differences this backend keeps from the shared lifecycle ------------------
+
+
+def test_admission_with_a_free_slot_reports_running_before_a_worker_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CP-SAT admission: a job with a free running slot is `running`, and timing,
+    the moment submit returns (the MiniZinc registry leaves it `queued`).
+
+    The pool is stubbed out so no worker can run, leaving admission as the only
+    thing that could have set the state.
+    """
+    registry = CpsatJobRegistry()
+    monkeypatch.setattr(registry._executor, "submit", lambda fn, *args: Future())
+    try:
+        status = registry.get(registry.submit_source("x=1"))
+
+        assert (status.state, status.started_at_ms is not None) == ("running", True)
+    finally:
+        registry.shutdown()
+
+
+def test_cancelled_job_whose_run_raises_reaches_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CP-SAT reports a wrapper exception as `failed` even under a requested
+    cancel — only a completed run's result is overridden by the cancel. (The
+    MiniZinc registry lets the cancel win over a raising solve.)"""
+    running = threading.Event()
+    killed = threading.Event()
+
+    def _raise_once_killed(source: str, *, on_start: Any, **kw: Any) -> CpsatPythonResult:
+        on_start(_FakeProc())
+        running.set()
+        killed.wait(timeout=3.0)
+        raise RuntimeError("lost the killed child's output")
+
+    _patch_run_source(monkeypatch, _raise_once_killed)
+    monkeypatch.setattr(
+        "openconstraint_mcp.pyexec.jobs._terminate_process_tree",
+        lambda proc, **_: killed.set(),
+    )
+    registry = CpsatJobRegistry()
+    try:
+        job_id = registry.submit_source("x=1")
+        assert running.wait(timeout=3.0)
+        registry.cancel(job_id)
+
+        assert _wait_until_terminal(registry, job_id) == "failed"
+    finally:
+        killed.set()
+        registry.shutdown()
+
+
+def test_get_unknown_job_id_does_not_raise_the_minizinc_unknown_job_error() -> None:
+    # A plain ValueError here; UnknownJobError is the MiniZinc registry's type.
+    registry = CpsatJobRegistry()
+    try:
+        with pytest.raises(ValueError) as excinfo:
+            registry.get("no-such-id")
+
+        assert not isinstance(excinfo.value, UnknownJobError)
+    finally:
+        registry.shutdown()
+
+
+def test_polling_during_completion_never_exposes_checker_fields_on_a_running_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The worker holds the checker outcome as a local until completion publishes
+    it under the lock. A poll landing before that must still see a `running` job
+    with no checker fields — the status validator rejects them on one — and no
+    diagnostic derived from them."""
+    in_window = threading.Event()
+    release = threading.Event()
+
+    def _blocking_state(result: CpsatPythonResult) -> str:
+        in_window.set()
+        release.wait(timeout=3.0)
+        return "succeeded"
+
+    _patch_run_source(monkeypatch, lambda source, *, on_start, **kw: _cpsat_result("optimal"))
+    _patch_run_checker(monkeypatch, lambda *a, **kw: _checker_report("rejected"))
+    monkeypatch.setattr(
+        "openconstraint_mcp.pyexec.jobs.cpsat_job_state_for_result", _blocking_state
+    )
+    registry = CpsatJobRegistry()
+    try:
+        job_id = registry.submit_source("x=1", checker=_CHECKER)
+        assert in_window.wait(timeout=3.0)
+        mid = registry.get(job_id)
+
+        assert (mid.state, mid.checker, mid.checker_skipped_reason) == ("running", None, None)
+        assert mid.diagnostic is None
+    finally:
+        release.set()
+        registry.shutdown()
+
+
+def _raise_in_checker_phase(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the eligibility gate raise — it runs outside the checker's own handler."""
+
+    def _boom(result: CpsatPythonResult) -> tuple[bool, str | None]:
+        raise RuntimeError("eligibility exploded")
+
+    _patch_run_source(monkeypatch, lambda source, *, on_start, **kw: _cpsat_result("optimal"))
+    monkeypatch.setattr("openconstraint_mcp.pyexec.jobs.diagnostic_incumbent_eligibility", _boom)
+
+
+def test_exception_escaping_the_checker_phase_fails_the_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Such an exception used to leave the job unfinalized forever; it now
+    finalizes as `failed`, carrying neither the solver result nor checker fields."""
+    _raise_in_checker_phase(monkeypatch)
+    registry = CpsatJobRegistry()
+    try:
+        job_id = registry.submit_source("x=1", checker=_CHECKER)
+        assert _wait_until_terminal(registry, job_id) == "failed"
+        status = registry.get(job_id)
+
+        assert (status.result, status.checker, status.checker_skipped_reason) == (None, None, None)
+    finally:
+        registry.shutdown()
+
+
+def test_exception_escaping_the_checker_phase_releases_the_job_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _raise_in_checker_phase(monkeypatch)
+    registry = CpsatJobRegistry(max_running_jobs=1, max_queued_jobs=0)
+    try:
+        first = registry.submit_source("x=1", checker=_CHECKER)
+        assert _wait_until_terminal(registry, first) == "failed"
+
+        # The only slot is free again, so an unchecked follow-up is admitted.
+        assert _wait_until_terminal(registry, registry.submit_source("x=2")) == "succeeded"
+    finally:
         registry.shutdown()

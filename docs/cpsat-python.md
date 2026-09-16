@@ -844,7 +844,9 @@ On a result-bearing terminal state the job status carries at most one of:
 
 - `checker` — the `CpsatCheckerReport` (`accepted` / `rejected` / `error` /
   `timeout`). A checker infrastructure fault becomes a `status="error"` report
-  on the completed job; it never discards the solver result or fails the job.
+  on the completed job; it never discards the solver result or fails the job —
+  an exception raised outside that handler (such as the incumbent-eligibility
+  gate) does finalize the job as `failed` with no result.
 - `checker_skipped_reason` — set when the supplied checker did not run (for
   example `status='infeasible'` or an empty solution).
 
