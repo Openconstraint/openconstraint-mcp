@@ -232,7 +232,8 @@ def solve(instance: ProblemInstance, time_limit_seconds: float | None = None) ->
 
         # A used node is exactly one of: a cut, or a leaf holding one piece.
         model.add(sum(node.holds) + node.is_cut == node.used)
-        # if is_cut is 0, means it is final product and no need to cut, so, node.vertical must be less than equal to 0.
+        # if is_cut is 0, means it is final product and no need to cut,
+        # so, node.vertical must be less than equal to 0.
         model.add(node.vertical <= node.is_cut)
 
         # A cut lies strictly inside its rectangle, at a normal offset from its
