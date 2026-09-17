@@ -29,7 +29,7 @@ from ..schemas.cpsat import (
     cpsat_job_state_for_result,
 )
 from ..schemas.diagnostics import Diagnostic, wrapper_job_diagnostic
-from ..schemas.job_state import JobState
+from ..schemas.job_state import RESULT_BEARING_STATES, JobState
 from ..shared.job_errors import exception_summary, now_ms
 from ..shared.job_registry import BackgroundJobRegistry, JobRecord
 from ..shared.proc import terminate_process_tree as _terminate_process_tree
@@ -300,7 +300,10 @@ class CpsatJobRegistry(
         # carries a result (deliberately asymmetric with the checker-fault rule,
         # which preserves the solver result). A wrapper exception carries no result,
         # and still reports `failed` even under a requested cancel.
-        if record.cancel_requested and result is not None:
+        # Keyed off the state, not off `result is not None`: `_complete` is a shared
+        # base-class entry point (worker, cancel, shutdown), so only the base's own
+        # `result present ⇔ state ∈ RESULT_BEARING_STATES` invariant is guaranteed here.
+        if record.cancel_requested and state in RESULT_BEARING_STATES:
             state, result, message = "cancelled", None, "Cancelled by client"
         return super()._finalize(record, state, result, message)
 
@@ -333,6 +336,9 @@ class CpsatJobRegistry(
             # its own handler does not catch) fails the job rather than leaving it
             # unfinalized forever.
             report, skipped_reason = self._run_checker_phase(job_id, record, result)
+            # Inside the boundary as well: an exception from the state mapping would
+            # otherwise leave the record `running` forever and leak its in-flight slot.
+            state: JobState = cpsat_job_state_for_result(result)
         except Exception as exc:  # noqa: BLE001 - worker boundary: never leak; record as failed
             self._complete(record, "failed", None, exception_summary(exc))
             return
@@ -340,7 +346,7 @@ class CpsatJobRegistry(
         # writes the terminal state and result, so no poll sees it on a running job.
         self._complete(
             record,
-            cpsat_job_state_for_result(result),
+            state,
             result,
             None,
             lambda rec: rec.set_checker_outcome(report, skipped_reason),

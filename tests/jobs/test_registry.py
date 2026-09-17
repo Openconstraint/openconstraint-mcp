@@ -219,6 +219,27 @@ def test_runner_exception_reaches_failed_with_none_result(
         registry.shutdown()
 
 
+def test_exception_from_the_state_mapping_fails_the_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The result -> JobState mapping runs inside the worker's boundary too: a
+    raise there finalizes `failed` instead of leaving the record `running` forever
+    and leaking its in-flight slot."""
+
+    def _boom(result: SolveResult) -> str:
+        raise RuntimeError("state mapping exploded")
+
+    _patch_solve(monkeypatch, lambda model, *, on_start, **kw: _solve_result())
+    monkeypatch.setattr("openconstraint_mcp.jobs.registry.job_state_for_result", _boom)
+    registry = JobRegistry()
+    try:
+        job_id = registry.submit(model="solve satisfy;")
+
+        assert _wait_until_terminal(registry, job_id) == "failed"
+    finally:
+        registry.shutdown()
+
+
 def test_cancel_running_job_reaches_cancelled_and_terminates_handle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

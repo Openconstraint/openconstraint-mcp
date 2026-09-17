@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from openconstraint_mcp.pyexec.jobs import CpsatJobRegistry
+from openconstraint_mcp.pyexec.jobs import CpsatJobRegistry, _CpsatJobRecord
 from openconstraint_mcp.schemas.cpsat import CpsatCheckerReport, CpsatPythonResult, CpsatStatus
 from openconstraint_mcp.shared.childrun import ChildSpawnError
 from openconstraint_mcp.shared.job_errors import JobRejectedError, UnknownJobError
@@ -1191,4 +1191,54 @@ def test_exception_escaping_the_checker_phase_releases_the_job_slot(
         # The only slot is free again, so an unchecked follow-up is admitted.
         assert _wait_until_terminal(registry, registry.submit_source("x=2")) == "succeeded"
     finally:
+        registry.shutdown()
+
+
+def test_exception_from_the_state_mapping_fails_the_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The result -> JobState mapping runs inside the worker's boundary too: a
+    raise there finalizes `failed` instead of leaving the record `running` forever
+    and leaking its in-flight slot."""
+
+    def _boom(result: CpsatPythonResult) -> str:
+        raise RuntimeError("state mapping exploded")
+
+    _patch_run_source(monkeypatch, lambda source, *, on_start, **kw: _cpsat_result("optimal"))
+    monkeypatch.setattr("openconstraint_mcp.pyexec.jobs.cpsat_job_state_for_result", _boom)
+    registry = CpsatJobRegistry()
+    try:
+        job_id = registry.submit_source("x=1")
+
+        assert _wait_until_terminal(registry, job_id) == "failed"
+    finally:
+        registry.shutdown()
+
+
+def test_cancel_wins_for_a_result_bearing_state_carrying_no_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cancel rewrite keys off the finalizing state, not the result payload.
+    `_complete` is a shared base-class entry point (worker, cancel, shutdown), so
+    the only guarantee at this override is the base's `result present <=> state in
+    RESULT_BEARING_STATES` — a result-bearing finalize loses to a requested cancel
+    however it was reached."""
+    release = threading.Event()
+
+    def _blocking_solver(source: str, *, on_start: Any, **kw: Any) -> CpsatPythonResult:
+        release.wait(timeout=3.0)
+        return _cpsat_result("optimal")
+
+    _patch_run_source(monkeypatch, _blocking_solver)
+    registry = CpsatJobRegistry()
+    try:
+        job_id = registry.submit_source("x=1")
+        record: _CpsatJobRecord = registry._records[job_id]
+        record.cancel_requested = True
+        registry._complete(record, "succeeded", None, None)
+        status = registry.get(job_id)
+
+        assert (status.state, status.result) == ("cancelled", None)
+    finally:
+        release.set()
         registry.shutdown()

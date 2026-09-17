@@ -278,7 +278,10 @@ class JobRegistry(BackgroundJobRegistry[SolveResult, SolveJobStatus, _JobRecord]
                 extra_args=request.extra_args,
                 on_start=lambda proc: self._on_start(job_id, proc),
             )
+            # Inside the boundary as well: an exception from the state mapping would
+            # otherwise leave the record `running` forever and leak its in-flight slot.
+            state: JobState = job_state_for_result(result)
         except Exception as exc:  # noqa: BLE001 - worker boundary: never leak; record as failed
             self._complete(record, "failed", None, exception_summary(exc))
             return
-        self._complete(record, job_state_for_result(result), result, None)
+        self._complete(record, state, result, None)
