@@ -44,8 +44,9 @@ Run from the repository root:
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
 from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -57,8 +58,13 @@ from scorer import Breakdown, score  # noqa: E402
 HERE: Path = Path(__file__).parent / "parsed"
 
 
-@dataclass(frozen=True)
-class Case:
+class FrozenModel(BaseModel):
+    """Base for the immutable records passed across this script's function boundary."""
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+
+class Case(FrozenModel):
     """One instance's three gates, and the published roster they grade against.
 
     Parameterised rather than duplicated so a new rule cannot be added to the

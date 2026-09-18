@@ -362,6 +362,34 @@ def test_list_returns_one_entry_per_submitted_portfolio(
         job_registry.shutdown()
 
 
+def test_two_submitted_records_get_independent_locks(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A `PrivateAttr(threading.Lock())` (a fixed instance, rather than a
+    # default_factory) would share one lock across every record: holding the first
+    # record's lock would then also block acquiring the second, unrelated record's.
+    def _fake_solve(model: str, *, solver: str, on_start: Any, **kw: Any) -> SolveResult:
+        on_start(_FakeProc())
+        return _solve_result("optimal", solver=solver)
+
+    _patch_solve(monkeypatch, _fake_solve)
+
+    job_registry = JobRegistry(max_running_jobs=4)
+    portfolios = PortfolioJobRegistry(job_registry)
+    try:
+        first_id = portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
+        second_id = portfolios.submit(models=["solve satisfy;"], solvers=["cp-sat"])
+        first_record = portfolios._records[first_id]
+        second_record = portfolios._records[second_id]
+
+        assert first_record._lock is not second_record._lock
+
+        with first_record._lock:
+            acquired = second_record._lock.acquire(blocking=False)
+            assert acquired is True
+            second_record._lock.release()
+    finally:
+        job_registry.shutdown()
+
+
 def test_get_unknown_job_id_raises() -> None:
     job_registry = JobRegistry()
     portfolios = PortfolioJobRegistry(job_registry)
@@ -375,9 +403,9 @@ def test_get_unknown_job_id_raises() -> None:
 def test_list_does_not_observe_partially_finalized_record(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # _finalize sets state='succeeded' before result, under record.lock. A list()
+    # _finalize sets state='succeeded' before result, under record._lock. A list()
     # that skips that lock can read the transient state='succeeded' with result=None
-    # and trip the PortfolioJobStatus validator. Holding record.lock in exactly that
+    # and trip the PortfolioJobStatus validator. Holding record._lock in exactly that
     # transient state proves list() WAITS for the lock rather than reading through it.
     def _fake_solve(model: str, *, solver: str, on_start: Any, **kw: Any) -> SolveResult:
         on_start(_FakeProc())
@@ -415,7 +443,7 @@ def test_list_does_not_observe_partially_finalized_record(
             except BaseException as exc:  # noqa: BLE001 - capture the validator crash
                 errors.append(exc)
 
-        with record.lock:
+        with record._lock:
             # The transient inconsistent state that _finalize passes through.
             record.state = "succeeded"
             record.result = None
@@ -554,7 +582,7 @@ def test_get_has_no_side_effects_on_a_running_race(monkeypatch: pytest.MonkeyPat
 
 def test_attempt_finishing_during_submit_is_counted(monkeypatch: pytest.MonkeyPatch) -> None:
     # submit_many is wrapped to return only after the attempt's listener has probed
-    # record.lock, so the event is delivered while submit is still admitting the record.
+    # record._lock, so the event is delivered while submit is still admitting the record.
     # (A terminal solve state alone is not enough: the listener runs after it.) The
     # probe must find the lock held; otherwise early events could see an empty record.
     listener_entered: threading.Event = threading.Event()
@@ -562,9 +590,9 @@ def test_attempt_finishing_during_submit_is_counted(monkeypatch: pytest.MonkeyPa
     original_listener: _AttemptListener = PortfolioJobRegistry._on_attempt_terminal
 
     def _spy_listener(self: PortfolioJobRegistry, record: Any, index: int, status: Any) -> None:
-        acquired: bool = record.lock.acquire(blocking=False)
+        acquired: bool = record._lock.acquire(blocking=False)
         if acquired:
-            record.lock.release()
+            record._lock.release()
         lock_held_at_event.append(not acquired)
         listener_entered.set()
         original_listener(self, record, index, status)

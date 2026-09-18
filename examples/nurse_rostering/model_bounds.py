@@ -61,12 +61,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from ortools.sat.python import cp_model, cp_model_helper
+from pydantic import BaseModel, ConfigDict, Field
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -95,9 +95,16 @@ REQUEST_NAMES: dict[tuple[bool, bool], str] = {
 }
 
 
-@dataclass
-class PenaltyTerm:
+class FrozenModel(BaseModel):
+    """Base for the immutable records passed across this script's function boundary."""
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+
+class PenaltyTerm(FrozenModel):
     """One penalty contribution, tagged so the objective can be broken down."""
+
+    model_config = ConfigDict(frozen=True, strict=True, arbitrary_types_allowed=True)
 
     group: str  # "rule", "cover" or "request"
     key: str  # the <Label>, cover type, or request family
@@ -105,19 +112,17 @@ class PenaltyTerm:
     weight: int
 
 
-@dataclass
-class Solution:
+class Solution(FrozenModel):
     status: str
     objective: int | None = None
     best_objective_bound: float | None = None
     wall_time: float = 0.0
-    roster: dict[str, list[str]] = field(default_factory=dict)
-    breakdown: dict[str, dict[str, int]] = field(default_factory=dict)
+    roster: dict[str, list[str]] = Field(default_factory=dict)
+    breakdown: dict[str, dict[str, int]] = Field(default_factory=dict)
     proof: str | None = None
 
 
-@dataclass(frozen=True)
-class Options:
+class Options(FrozenModel):
     """Everything the command line settles before any modelling happens."""
 
     instance_path: Path
@@ -624,26 +629,25 @@ def solve(parsed: tuple[Instance, Options]) -> Solution:
         cp_model.INFEASIBLE: "infeasible",
         cp_model.UNKNOWN: "unknown",
     }
-    solution: Solution = Solution(
-        status=status_map.get(status, "error"), wall_time=solver.wall_time
-    )
+    mapped_status: str = status_map.get(status, "error")
 
+    proof: str | None = None
     if options.prove is not None:
         # INFEASIBLE means something different under --prove than it does
         # anywhere else in this file, and saying so here keeps a reader from
         # reporting a successful proof as a failed solve.
-        solution.proof = {
+        proof = {
             "infeasible": f"proved: no roster costs less than {options.prove}",
             "optimal": f"DISPROVED: a roster cheaper than {options.prove} exists",
             "feasible": f"DISPROVED: a roster cheaper than {options.prove} exists",
-        }.get(solution.status, f"inconclusive within the time limit ({solution.status})")
+        }.get(mapped_status, f"inconclusive within the time limit ({mapped_status})")
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return solution
+        return Solution(status=mapped_status, wall_time=solver.wall_time, proof=proof)
 
-    solution.objective = int(round(solver.objective_value))
-    solution.best_objective_bound = float(solver.best_objective_bound)
-    solution.roster = {
+    objective: int = int(round(solver.objective_value))
+    best_objective_bound: float = float(solver.best_objective_bound)
+    roster: dict[str, list[str]] = {
         employee.id: [
             next(
                 (s for s in instance.shift_types if solver.value(builder.x[employee.id, day, s])),
@@ -663,8 +667,16 @@ def solve(parsed: tuple[Instance, Options]) -> Solution:
         cost: int = solver.value(term.expression) * term.weight
         if cost:
             breakdown[term.group][term.key] = breakdown[term.group].get(term.key, 0) + cost
-    solution.breakdown = breakdown
-    return solution
+
+    return Solution(
+        status=mapped_status,
+        wall_time=solver.wall_time,
+        proof=proof,
+        objective=objective,
+        best_objective_bound=best_objective_bound,
+        roster=roster,
+        breakdown=breakdown,
+    )
 
 
 def _pin_roster(builder: RosterModel, instance: Instance, path: Path) -> None:

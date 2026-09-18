@@ -23,8 +23,8 @@ attempt). It drops queued losers itself, before that worker can pick one up; run
 losers, and any queued loser another worker started first, are cancelled on a
 short-lived thread instead: a process-tree teardown can take seconds, and the
 finishing worker's slot is already counted free by admission. Lock order is
-``record.lock``, then this registry's ``_lock`` or the ``JobRegistry`` lock. While
-holding ``record.lock`` the portfolio never calls a ``JobRegistry`` method that can
+``record._lock``, then this registry's ``_lock`` or the ``JobRegistry`` lock. While
+holding ``record._lock`` the portfolio never calls a ``JobRegistry`` method that can
 run a listener on the calling thread (``cancel``, ``cancel_if_queued``,
 ``shutdown``); ``submit_many`` and ``get`` are safe there because they never run a
 listener.
@@ -47,7 +47,7 @@ from _thread import LockType
 from collections.abc import Sequence
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from ..minizinc.core import DEFAULT_SOLVE_TIMEOUT_MS
 from ..schemas.diagnostics import wrapper_job_diagnostic
@@ -78,11 +78,11 @@ _logger: logging.Logger = logging.getLogger(__name__)
 
 
 class _PortfolioRecord(BaseModel):
-    """Mutable per-portfolio-job state, guarded by ``lock``.
+    """Mutable per-portfolio-job state, guarded by ``_lock``.
 
     ``submit`` creates the record before admission, so an attempt event that arrives
     before admission returns has a record to wait on: ``admission`` stays ``None``
-    until ``submit``, still holding ``lock``, sets it, and only then registers the
+    until ``submit``, still holding ``_lock``, sets it, and only then registers the
     record where ``get``/``list``/``cancel`` can find it. ``statuses`` caches each
     attempt's terminal snapshot by plan index while the race runs and is emptied when
     it finalizes (only the built ``result`` is kept); once terminal,
@@ -103,20 +103,25 @@ class _PortfolioRecord(BaseModel):
     elapsed_ms: int | None = None
     result: PortfolioSolveResult | None = None
     message: str | None = None
-    # _thread.LockType, not threading.Lock: on 3.12 the latter is a factory
-    # function, which Pydantic cannot check and warns about at class creation.
-    lock: LockType = Field(default_factory=threading.Lock)
+    # A private attribute, not a model field: this is synchronization machinery,
+    # not record data, so Pydantic never validates, serializes, or dumps it, and
+    # it is excluded from the model's representation. _thread.LockType, not
+    # threading.Lock: on 3.12 the latter is a factory function, which Pydantic
+    # cannot check and warns about at class creation. The default_factory is
+    # required — a fixed `PrivateAttr(threading.Lock())` would share one lock
+    # instance across every record.
+    _lock: LockType = PrivateAttr(default_factory=threading.Lock)
 
 
 def _admitted(record: _PortfolioRecord) -> _PortfolioAdmission:
-    # Every reader holds record.lock or found the record registered, and submit sets
+    # Every reader holds record._lock or found the record registered, and submit sets
     # admission before it releases that lock or registers the record.
     assert record.admission is not None
     return record.admission
 
 
 def _pending_attempt_ids(record: _PortfolioRecord) -> list[str]:
-    # Caller holds record.lock. Attempts that have not reported a terminal status.
+    # Caller holds record._lock. Attempts that have not reported a terminal status.
     return [
         job_id
         for index, job_id in enumerate(_admitted(record).job_ids)
@@ -224,10 +229,10 @@ class PortfolioJobRegistry:
             per_attempt_timeout_ms=per_attempt_timeout_ms,
             solve_controls=controls,
         )
-        # Hold record.lock across admission: an attempt can finish before submit_many
+        # Hold record._lock across admission: an attempt can finish before submit_many
         # returns, and its event must wait until ``admission`` is set. A rejected plan
         # admits nothing and fires no listener, so the record is simply dropped.
-        with record.lock:
+        with record._lock:
             record.admission = _admit_portfolio(
                 self._registry,
                 models=models,
@@ -253,13 +258,13 @@ class PortfolioJobRegistry:
         """Read a portfolio job's status; never selects a winner or cancels anything."""
         with self._lock:
             record = self._require_record(job_id)
-        with record.lock:
+        with record._lock:
             return _to_status(record)
 
     def cancel(self, job_id: str) -> PortfolioJobStatus:
         """Stop a running portfolio race and its attempts; a no-op once terminal.
 
-        Finalizes the job ``cancelled`` (no aggregate result) under ``record.lock``,
+        Finalizes the job ``cancelled`` (no aggregate result) under ``record._lock``,
         then — outside it, since dropping a queued attempt runs its listener on this
         thread — drops every queued attempt and cancels the ones already running. Their
         late events are ignored. Cancelling an already-terminal job returns its status
@@ -267,7 +272,7 @@ class PortfolioJobRegistry:
         """
         with self._lock:
             record = self._require_record(job_id)
-        with record.lock:
+        with record._lock:
             if record.state != "running":
                 return _to_status(record)
             # Read before _finalize, which drops the cached statuses.
@@ -284,13 +289,13 @@ class PortfolioJobRegistry:
         # under ITS OWN lock — _finalize mutates state before result, so a lockless
         # read could catch the transient state='succeeded' with result=None and trip
         # the PortfolioJobStatus validator. Per-record locking is taken WITHOUT the
-        # registry lock held, so it never inverts _finalize's record.lock -> _lock
+        # registry lock held, so it never inverts _finalize's record._lock -> _lock
         # order (no deadlock).
         with self._lock:
             records = list(self._records.values())
         statuses: list[PortfolioJobStatus] = []
         for record in records:
-            with record.lock:
+            with record._lock:
                 statuses.append(_to_status(record))
         return statuses
 
@@ -305,7 +310,7 @@ class PortfolioJobRegistry:
 
     def _on_attempt_error(self, record: _PortfolioRecord, index: int, message: str) -> None:
         # Independent of attempt snapshots: their construction may be what failed.
-        with record.lock:
+        with record._lock:
             if record.state != "running":
                 return
             # Read before _finalize, which drops the cached statuses. Not the failed
@@ -329,7 +334,7 @@ class PortfolioJobRegistry:
         # registry's lock).
         queued_losers: list[str] = []
         running_losers: list[str] = []
-        with record.lock:
+        with record._lock:
             if record.state != "running":
                 # Intentional: loser cleanup continues after settlement, but its
                 # terminal events do not refresh the result's attempt snapshot.
@@ -347,7 +352,7 @@ class PortfolioJobRegistry:
         self._stop_attempts(queued=queued_losers, running=running_losers)
 
     def _drop_queued(self, job_ids: Sequence[str]) -> Sequence[str]:
-        # Caller must NOT hold record.lock: a drop runs its listener synchronously.
+        # Caller must NOT hold record._lock: a drop runs its listener synchronously.
         # Drops every attempt no worker has started (never blocking) and returns the
         # ones a worker already took, which still need a real cancel.
         not_dropped: list[str] = []
@@ -361,7 +366,7 @@ class PortfolioJobRegistry:
         return not_dropped
 
     def _stop_attempts(self, *, queued: Sequence[str], running: Sequence[str]) -> None:
-        # Caller must NOT hold record.lock: a drop runs its listener synchronously.
+        # Caller must NOT hold record._lock: a drop runs its listener synchronously.
         # Queued attempts on this thread, before it returns: it is the finishing attempt's
         # pool worker, which takes the next queued item at once. Dropping one never
         # blocks; one another worker has started meanwhile joins the running attempts.
@@ -386,7 +391,7 @@ class PortfolioJobRegistry:
                 self._cancel_attempts(to_cancel)
 
     def _settlement_snapshot(self, record: _PortfolioRecord) -> Sequence[SolveJobStatus] | None:
-        # Caller holds record.lock. Returns the attempt statuses to settle on, or None
+        # Caller holds record._lock. Returns the attempt statuses to settle on, or None
         # while the race is undecided. Once a decisive status is cached the race does
         # not wait for the losers: each uncached attempt is read as it is right now.
         job_ids: list[str] = _admitted(record).job_ids
@@ -411,7 +416,7 @@ class PortfolioJobRegistry:
         return snapshot
 
     def _settle(self, record: _PortfolioRecord, statuses: Sequence[SolveJobStatus]) -> None:
-        # Caller holds record.lock. The winner is computed over the whole snapshot, so
+        # Caller holds record._lock. The winner is computed over the whole snapshot, so
         # a decisive attempt whose event arrived out of finish order still honors the
         # earliest-finish rule.
         try:
@@ -437,7 +442,7 @@ class PortfolioJobRegistry:
         self._finalize(record, "succeeded", result, None)
 
     def _cancel_attempts(self, job_ids: Sequence[str]) -> None:
-        # Caller must NOT hold record.lock (see _on_attempt_terminal).
+        # Caller must NOT hold record._lock (see _on_attempt_terminal).
         for job_id in job_ids:
             try:
                 self._registry.cancel(job_id)
@@ -458,7 +463,7 @@ class PortfolioJobRegistry:
         result: PortfolioSolveResult | None,
         message: str | None,
     ) -> None:
-        # Caller holds record.lock. Records the terminal state and registers the job
+        # Caller holds record._lock. Records the terminal state and registers the job
         # for retention eviction under the registry lock.
         now = now_ms()
         record.state = state
