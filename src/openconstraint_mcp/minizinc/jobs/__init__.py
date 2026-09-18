@@ -1,1 +1,1 @@
-"""Server-owned background job registries."""
+"""MiniZinc backend's background job registries."""

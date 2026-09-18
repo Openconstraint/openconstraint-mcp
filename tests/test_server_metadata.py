@@ -12,7 +12,7 @@ import pytest
 from mcp.server.mcpserver import MCPServer
 from pydantic import ValidationError
 
-from openconstraint_mcp.jobs.registry import JobRegistry
+from openconstraint_mcp.minizinc.jobs.registry import JobRegistry
 from openconstraint_mcp.protocol_text.descriptions import (
     MCP_SERVER_INSTRUCTIONS,
     MCP_SERVER_INSTRUCTIONS_CORE,
@@ -188,7 +188,7 @@ async def test_lifespan_teardown_shuts_down_the_server_registry(
     # proves create_mcp_server() bound the teardown to its registry.
     calls: list[bool] = []
     monkeypatch.setattr(
-        "openconstraint_mcp.jobs.registry.JobRegistry.shutdown",
+        "openconstraint_mcp.minizinc.jobs.registry.JobRegistry.shutdown",
         lambda self: calls.append(True),
     )
     server = create_mcp_server()

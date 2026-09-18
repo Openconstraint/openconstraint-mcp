@@ -1,6 +1,6 @@
 """The bounded background-job lifecycle, owned once and shared by both registries.
 
-``jobs.registry.JobRegistry`` (MiniZinc solves) and ``pyexec.jobs.CpsatJobRegistry``
+``minizinc.jobs.registry.JobRegistry`` (MiniZinc solves) and ``pyexec.jobs.CpsatJobRegistry``
 (CP-SAT Python) admit work into a fixed ``ThreadPoolExecutor``, poll it, cancel it,
 retain it FIFO, and tear it down at shutdown. That lifecycle lives here, so a fix
 to it lands once. Each backend keeps only what genuinely differs: its request,

@@ -9,8 +9,8 @@ from typing import Any
 
 import pytest
 
-from openconstraint_mcp.jobs.registry import JobRegistry, SolveRequest, _JobRecord
 from openconstraint_mcp.minizinc.core import build_solve_extra_args, prepare_solve_args
+from openconstraint_mcp.minizinc.jobs.registry import JobRegistry, SolveRequest, _JobRecord
 from openconstraint_mcp.schemas.minizinc import (
     SolveControls,
     SolveJobStatus,
@@ -102,7 +102,7 @@ def _never_terminate_for_real(monkeypatch: pytest.MonkeyPatch) -> None:
     assert termination re-patch a recorder over this via ``_patch_terminate``.
     """
     monkeypatch.setattr(
-        "openconstraint_mcp.jobs.registry._terminate_process_tree",
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
         lambda proc, **kwargs: None,
     )
 
@@ -119,14 +119,17 @@ def _wait_until_terminal(registry: JobRegistry, job_id: str, timeout: float = 3.
 
 
 def _patch_solve(monkeypatch: pytest.MonkeyPatch, fake: Any) -> None:
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.run_prepared_solve", fake)
+    monkeypatch.setattr("openconstraint_mcp.minizinc.jobs.registry.run_prepared_solve", fake)
 
 
 def _patch_terminate(monkeypatch: pytest.MonkeyPatch, recorder: list[Any]) -> None:
     def _fake_terminate(proc: Any, **kwargs: Any) -> None:
         recorder.append(proc)
 
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _fake_terminate,
+    )
 
 
 def test_submit_returns_job_id(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -230,7 +233,7 @@ def test_exception_from_the_state_mapping_fails_the_job(
         raise RuntimeError("state mapping exploded")
 
     _patch_solve(monkeypatch, lambda model, *, on_start, **kw: _solve_result())
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.job_state_for_result", _boom)
+    monkeypatch.setattr("openconstraint_mcp.minizinc.jobs.registry.job_state_for_result", _boom)
     registry = JobRegistry()
     try:
         job_id = registry.submit(model="solve satisfy;")
@@ -261,7 +264,10 @@ def test_cancel_running_job_reaches_cancelled_and_terminates_handle(
         release.set()  # the "process" dying unblocks the solve
 
     _patch_solve(monkeypatch, _blocking_solve)
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _fake_terminate,
+    )
 
     registry = JobRegistry()
     try:
@@ -292,7 +298,7 @@ def test_cancelled_running_job_whose_solve_then_raises_reaches_cancelled(
 
     _patch_solve(monkeypatch, _solve_raising_once_killed)
     monkeypatch.setattr(
-        "openconstraint_mcp.jobs.registry._terminate_process_tree",
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
         lambda proc, **kwargs: killed.set(),
     )
     registry: JobRegistry = JobRegistry()
@@ -585,7 +591,7 @@ def test_job_waiting_for_terminal_listener_starts_timing_only_on_worker(
 
     _patch_solve(monkeypatch, _solve)
     monkeypatch.setattr("openconstraint_mcp.shared.job_registry.now_ms", lambda: clock_ms[0])
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.now_ms", lambda: clock_ms[0])
+    monkeypatch.setattr("openconstraint_mcp.minizinc.jobs.registry.now_ms", lambda: clock_ms[0])
     registry: JobRegistry = JobRegistry(max_running_jobs=1, max_queued_jobs=0)
     try:
         registry.submit_many([_request()], on_terminal=_listener)
@@ -731,7 +737,10 @@ def test_shutdown_terminates_a_running_child(monkeypatch: pytest.MonkeyPatch) ->
         release.set()  # let the blocked worker unwind so shutdown can join it
 
     _patch_solve(monkeypatch, _blocking_solve)
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _fake_terminate,
+    )
 
     registry = JobRegistry()
     registry.submit(model="solve satisfy;")
@@ -757,7 +766,10 @@ def test_shutdown_finalizes_a_queued_job_as_cancelled(monkeypatch: pytest.Monkey
         release.set()  # unblock the running worker so shutdown can join the pool
 
     _patch_solve(monkeypatch, _blocking_solve)
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _fake_terminate,
+    )
 
     registry = JobRegistry(max_running_jobs=1, max_queued_jobs=4)
     registry.submit(model="solve satisfy;")  # occupies the only worker
@@ -807,7 +819,10 @@ def test_shutdown_terminates_a_child_launched_after_its_handle_snapshot(
         terminated.append(proc)
 
     _patch_solve(monkeypatch, _racing_solve)
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _fake_terminate,
+    )
 
     job_id = registry.submit(model="solve satisfy;")
     assert worker_running.wait(timeout=3)
@@ -882,7 +897,8 @@ def test_submit_during_shutdown_is_rejected(monkeypatch: pytest.MonkeyPatch) -> 
 
     _patch_solve(monkeypatch, _submitting_solve)
     monkeypatch.setattr(
-        "openconstraint_mcp.jobs.registry._terminate_process_tree", _terminate_after_inner_submit
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _terminate_after_inner_submit,
     )
 
     registry.submit(model="solve satisfy;")
@@ -1019,7 +1035,10 @@ def test_on_terminal_fires_once_for_job_cancelled_while_running(
     def _fake_terminate(proc: Any, **kwargs: Any) -> None:
         release.set()  # the "process" dying unblocks the solve
 
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _fake_terminate,
+    )
     events, listener = _recording_listener()
     registry: JobRegistry = JobRegistry()
     try:
@@ -1044,7 +1063,10 @@ def test_on_terminal_fires_once_for_queued_job_at_shutdown(
     def _fake_terminate(proc: Any, **kwargs: Any) -> None:
         release.set()  # unblock the running worker so shutdown can join the pool
 
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _fake_terminate,
+    )
     events, listener = _recording_listener()
     registry: JobRegistry = JobRegistry(max_running_jobs=1, max_queued_jobs=4)
     try:
@@ -1175,7 +1197,8 @@ def test_snapshot_error_notifies_owner_once_outside_lock(
 
     _patch_solve(monkeypatch, _solve)
     monkeypatch.setattr(
-        "openconstraint_mcp.jobs.registry._terminate_process_tree", lambda proc: release.set()
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        lambda proc: release.set(),
     )
     monkeypatch.setattr(registry, "_to_status", _snapshot)
     try:
@@ -1214,7 +1237,10 @@ def test_shutdown_finalizes_every_queued_job_when_the_listener_raises(
     def _fake_terminate(proc: Any, **kwargs: Any) -> None:
         release.set()  # unblock the running worker so shutdown can join the pool
 
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _fake_terminate,
+    )
     registry: JobRegistry = JobRegistry(max_running_jobs=1, max_queued_jobs=4)
     registry.submit(model="solve satisfy;")  # occupies the only worker
     assert started.wait(timeout=3)
@@ -1251,7 +1277,7 @@ def test_cancel_returns_the_cancelled_status_when_the_listener_raises(
 def test_listener_exception_on_the_worker_thread_is_logged(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    caplog.set_level(logging.ERROR, logger="openconstraint_mcp.jobs.registry")
+    caplog.set_level(logging.ERROR, logger="openconstraint_mcp.minizinc.jobs.registry")
     _patch_solve(monkeypatch, lambda model, *, on_start, **kw: _solve_result())
     registry: JobRegistry = JobRegistry()
     try:
@@ -1263,7 +1289,7 @@ def test_listener_exception_on_the_worker_thread_is_logged(
     logged: list[str] = [
         str(record.exc_info[1])
         for record in caplog.records
-        if record.name == "openconstraint_mcp.jobs.registry" and record.exc_info
+        if record.name == "openconstraint_mcp.minizinc.jobs.registry" and record.exc_info
     ]
     assert logged == ["listener exploded"]
 

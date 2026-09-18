@@ -309,7 +309,7 @@ def test_submit_solve_job_translates_queue_full_with_cause(
     def _raise(self: object, **kwargs: object) -> str:
         raise boom
 
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.JobRegistry.submit", _raise)
+    monkeypatch.setattr("openconstraint_mcp.minizinc.jobs.registry.JobRegistry.submit", _raise)
     fn = _tool_fn("submit_solve_job")
 
     with pytest.raises(ToolError) as exc_info:

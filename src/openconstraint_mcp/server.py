@@ -16,8 +16,6 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import CallToolResult, TextContent
 from pydantic import BaseModel, JsonValue, StrictInt
 
-from .jobs.portfolio_registry import PortfolioJobRegistry
-from .jobs.registry import JobRegistry
 from .minizinc.core import (
     DEFAULT_CHECK_TIMEOUT_MS,
     DEFAULT_INSPECT_TIMEOUT_MS,
@@ -36,6 +34,8 @@ from .minizinc.core import (
     solve_model_path,
 )
 from .minizinc.core import find_unsat_core as _find_unsat_core
+from .minizinc.jobs.portfolio_registry import PortfolioJobRegistry
+from .minizinc.jobs.registry import JobRegistry
 from .protocol_text import status
 from .protocol_text.descriptions import (
     AUTO_TUNE_CONSTRAINT_PROBLEM_PROMPT_DESCRIPTION,

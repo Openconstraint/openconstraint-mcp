@@ -11,7 +11,7 @@ Layering: imports ``pyexec.core`` (executor), ``pyexec.checker`` (optional
 checker adapter), ``pyexec.eligibility`` (shared diagnostic-incumbent gate),
 ``schemas`` (output models), ``proc`` (tree-kill), ``job_errors`` (shared
 rejection error + job-registry primitives), ``job_registry`` (the shared
-lifecycle). Never imports ``minizinc``, ``runtime``, ``server``, or ``jobs``.
+lifecycle). Never imports ``minizinc``, ``runtime``, or ``server``.
 """
 
 from __future__ import annotations

@@ -12,8 +12,9 @@ Bounded admission, cancel, FIFO retention and shutdown all live in
 submission entry points (one job, or an atomic batch for a portfolio), and the
 worker that runs a prepared solve.
 
-Layering: this is a server-layer module — it imports the ``minizinc`` solve
-machinery and ``schemas``; it never imports ``server``.
+Layering: part of the ``minizinc`` backend — it imports this package's solve
+machinery (``minizinc.core``), ``schemas``, and ``shared`` leaves; it is imported
+only by ``server``.
 """
 
 from __future__ import annotations
@@ -25,27 +26,28 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
-# jobs reuses core's solve helpers (validation, arg-building, process teardown)
-# rather than re-implementing them.
-from ..minizinc.core import (
-    DEFAULT_SOLVE_TIMEOUT_MS,
-    DEFAULT_SOLVER,
-    prepare_solve_args,
-    run_prepared_solve,
-    validate_model_and_timeout,
-)
-from ..schemas.diagnostics import Diagnostic, wrapper_job_diagnostic
-from ..schemas.job_state import JobState
-from ..schemas.minizinc import (
+from ...schemas.diagnostics import Diagnostic, wrapper_job_diagnostic
+from ...schemas.job_state import JobState
+from ...schemas.minizinc import (
     DEFAULT_SOLVE_CONTROLS,
     SolveControls,
     SolveJobStatus,
     SolveResult,
     job_state_for_result,
 )
-from ..shared.job_errors import JobRejectedError, UnknownJobError, exception_summary, now_ms
-from ..shared.job_registry import BackgroundJobRegistry, JobRecord
-from ..shared.proc import terminate_process_tree as _terminate_process_tree
+from ...shared.job_errors import JobRejectedError, UnknownJobError, exception_summary, now_ms
+from ...shared.job_registry import BackgroundJobRegistry, JobRecord
+from ...shared.proc import terminate_process_tree as _terminate_process_tree
+
+# minizinc.jobs reuses core's solve helpers (validation, arg-building, process
+# teardown) rather than re-implementing them.
+from ..core import (
+    DEFAULT_SOLVE_TIMEOUT_MS,
+    DEFAULT_SOLVER,
+    prepare_solve_args,
+    run_prepared_solve,
+    validate_model_and_timeout,
+)
 
 
 class SolveRequest(BaseModel):

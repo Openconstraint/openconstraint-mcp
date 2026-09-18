@@ -19,8 +19,8 @@ import time
 
 import pytest
 
-from openconstraint_mcp.jobs.registry import JobRegistry
 from openconstraint_mcp.minizinc.core import solve_model
+from openconstraint_mcp.minizinc.jobs.registry import JobRegistry
 from openconstraint_mcp.schemas.minizinc import SolveJobStatus
 
 pytestmark = [pytest.mark.integration, pytest.mark.usefixtures("require_real_runtime")]
