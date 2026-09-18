@@ -572,11 +572,11 @@ class _ToolRegistrar(Protocol):
     ) -> Callable[[_F], _F]: ...
 
 
-def _tool_registrar(mcp: MCPServer[Any], *, is_core: bool) -> _ToolRegistrar:
+def _tool_registrar(mcp: MCPServer[Any], *, is_core_profile: bool) -> _ToolRegistrar:
     """Build the `tool` decorator `create_mcp_server`'s registration functions use.
 
     `full_only` is declared at each call site instead of checked against a name
-    set far from the tools it names: under `is_core`, `full_only=True` returns
+    set far from the tools it names: under `is_core_profile`, `full_only=True` returns
     the identity decorator, so the tool is never registered — not registered
     then removed — and the tools that follow it keep their position. A new tool
     is core unless it is registered with `full_only=True`, and the core
@@ -586,7 +586,7 @@ def _tool_registrar(mcp: MCPServer[Any], *, is_core: bool) -> _ToolRegistrar:
     def _tool(
         *, description: str, name: str | None = None, full_only: bool = False
     ) -> Callable[[_F], _F]:
-        if is_core and full_only:
+        if is_core_profile and full_only:
             return _identity
         return mcp.tool(name=name, description=description)
 
@@ -1281,7 +1281,7 @@ def _register_tabular_tools(tool: _ToolRegistrar) -> None:
 
 
 def _register_prompts(
-    mcp: MCPServer[Any], *, is_core: bool, solve_constraint_problem_prompt: str
+    mcp: MCPServer[Any], *, is_core_profile: bool, solve_constraint_problem_prompt: str
 ) -> None:
     """Register the backend-neutral prompt, then the 3 full-only detailed prompts."""
 
@@ -1294,7 +1294,7 @@ def _register_prompts(
     def solve_constraint_problem(problem: str) -> str:
         return solve_constraint_problem_prompt.format(problem=problem)
 
-    if is_core:
+    if is_core_profile:
         # Every full-only tool above was registered with `full_only=True`, so
         # `tool` skipped it via the identity decorator and never registered it
         # — nothing to remove here. Only the backend-neutral
@@ -1342,28 +1342,32 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
     if toolset not in _VALID_TOOLSETS:
         valid = ", ".join(repr(t) for t in _VALID_TOOLSETS)
         raise ValueError(f"toolset must be one of {valid}; got {toolset!r}")
-    is_core = toolset == "core"
+    is_core_profile = toolset == "core"
 
     # Core hides the tools/prompts these three descriptions cross-reference, so
     # it advertises portfolio/prompt/save-free description variants; the server
     # instructions likewise name only the core tools. Full keeps every string
     # unchanged.
-    instructions = MCP_SERVER_INSTRUCTIONS_CORE if is_core else MCP_SERVER_INSTRUCTIONS
+    instructions = MCP_SERVER_INSTRUCTIONS_CORE if is_core_profile else MCP_SERVER_INSTRUCTIONS
     solve_minizinc_model_desc = (
-        SOLVE_MINIZINC_MODEL_DESCRIPTION_CORE if is_core else SOLVE_MINIZINC_MODEL_DESCRIPTION
+        SOLVE_MINIZINC_MODEL_DESCRIPTION_CORE
+        if is_core_profile
+        else SOLVE_MINIZINC_MODEL_DESCRIPTION
     )
     run_cpsat_python_desc = (
-        RUN_CPSAT_PYTHON_DESCRIPTION_CORE if is_core else RUN_CPSAT_PYTHON_DESCRIPTION
+        RUN_CPSAT_PYTHON_DESCRIPTION_CORE if is_core_profile else RUN_CPSAT_PYTHON_DESCRIPTION
     )
     run_cpsat_python_file_desc = (
-        RUN_CPSAT_PYTHON_FILE_DESCRIPTION_CORE if is_core else RUN_CPSAT_PYTHON_FILE_DESCRIPTION
+        RUN_CPSAT_PYTHON_FILE_DESCRIPTION_CORE
+        if is_core_profile
+        else RUN_CPSAT_PYTHON_FILE_DESCRIPTION
     )
     # The backend-neutral prompt is served by both profiles, so its spliced
     # CP-SAT output-contract fragment follows the same split: core exposes no
     # checker-capable CP-SAT tool, so its variant does not say the server runs
     # the checker you supply.
     solve_constraint_problem_prompt = (
-        SOLVE_CONSTRAINT_PROBLEM_PROMPT_CORE if is_core else SOLVE_CONSTRAINT_PROBLEM_PROMPT
+        SOLVE_CONSTRAINT_PROBLEM_PROMPT_CORE if is_core_profile else SOLVE_CONSTRAINT_PROBLEM_PROMPT
     )
 
     # The single server-owned job registry (D1.1): one instance per server,
@@ -1404,7 +1408,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         website_url=_homepage_url(),
         lifespan=_make_lifespan(registry, cpsat_registry, child_tracker),
     )
-    tool: _ToolRegistrar = _tool_registrar(mcp, is_core=is_core)
+    tool: _ToolRegistrar = _tool_registrar(mcp, is_core_profile=is_core_profile)
 
     _register_runtime_tools(tool)
     _register_minizinc_tools(
@@ -1421,7 +1425,9 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
     )
     _register_tabular_tools(tool)
     _register_prompts(
-        mcp, is_core=is_core, solve_constraint_problem_prompt=solve_constraint_problem_prompt
+        mcp,
+        is_core_profile=is_core_profile,
+        solve_constraint_problem_prompt=solve_constraint_problem_prompt,
     )
 
     return mcp
