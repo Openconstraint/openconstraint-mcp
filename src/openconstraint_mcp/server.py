@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from importlib import metadata
 from pathlib import Path
-from typing import Annotated, Any, Literal, ParamSpec, TypeVar, cast
+from typing import Annotated, Any, Literal, ParamSpec, Protocol, TypeVar, cast
 
 from anyio import to_thread
 from mcp.server.mcpserver import Context, MCPServer
@@ -153,40 +153,8 @@ _PACKAGE_NAME = "openconstraint-mcp"
 Toolset = Literal["core", "full"]
 _VALID_TOOLSETS: tuple[Toolset, ...] = ("core", "full")
 
-# Every tool the core profile removes after registration. Static (not derived via
-# `asyncio.run(mcp.list_tools())`, which raises inside the running event loop the
-# tests build the server in). Two nets guard drift: `remove_tool()` raises
-# `ToolError` on an unknown name, so a renamed/deleted tool breaks core
-# construction loudly, and the exact-set tests catch a new tool leaking into
-# core. MAINTENANCE RULE: a newly registered tool must be added here unless it is
-# deliberately core.
-_FULL_ONLY_TOOL_NAMES = frozenset(
-    {
-        "inspect_minizinc_model",
-        "find_unsat_core",
-        "save_verified_minizinc_model",
-        "inspect_minizinc_files",
-        "find_unsat_core_files",
-        "submit_solve_job",
-        "get_solve_job",
-        "cancel_solve_job",
-        "list_solve_jobs",
-        "submit_portfolio_job",
-        "get_portfolio_job",
-        "cancel_portfolio_job",
-        "list_portfolio_jobs",
-        "submit_cpsat_python_job",
-        "submit_cpsat_python_file_job",
-        "get_cpsat_python_job",
-        "cancel_cpsat_python_job",
-        "list_cpsat_python_jobs",
-        "run_cpsat_python_file_checked",
-        "run_cpsat_python_experiment",
-        "save_verified_cpsat_python",
-        "load_tabular_data",
-        "write_tabular_result",
-    }
-)
+# A new tool is core unless it is registered with `full_only=True`, and the
+# core exact-set test fails if one leaks.
 
 
 def _homepage_url() -> str | None:
@@ -589,96 +557,63 @@ def _run_cpsat_python_file_checked_with_replay(
         )
 
 
-def create_mcp_server(toolset: str = "full") -> MCPServer:
-    """Build a fresh MCPServer for the given ``toolset``.
+_F = TypeVar("_F", bound=Callable[..., Any])
 
-    ``full`` (the default, for internal callers and existing tests) registers
-    every tool and all four prompts. ``core`` registers the same surface, then
-    removes every tool in ``_FULL_ONLY_TOOL_NAMES`` and skips the three detailed
-    backend-specific prompts, so the advertised ``tools/list`` payload is the
-    eight core tools only and the advertised ``prompts/list`` payload is
-    ``solve_constraint_problem`` only. The user-facing ``stdio`` default is
-    ``core``, enforced by ``run_stdio`` and the CLI.
-    An unknown value is rejected before any server object is built.
+
+def _identity[F: Callable[..., Any]](fn: F) -> F:
+    return fn
+
+
+class _ToolRegistrar(Protocol):
+    """Callable shape `_tool_registrar` returns; mirrors `MCPServer.tool`."""
+
+    def __call__(
+        self, *, description: str, name: str | None = None, full_only: bool = False
+    ) -> Callable[[_F], _F]: ...
+
+
+def _tool_registrar(mcp: MCPServer[Any], *, is_core_profile: bool) -> _ToolRegistrar:
+    """Build the `tool` decorator `create_mcp_server`'s registration functions use.
+
+    `full_only` is declared at each call site instead of checked against a name
+    set far from the tools it names: under `is_core_profile`, `full_only=True` returns
+    the identity decorator, so the tool is never registered — not registered
+    then removed — and the tools that follow it keep their position. A new tool
+    is core unless it is registered with `full_only=True`, and the core
+    exact-set test fails if one leaks.
     """
-    if toolset not in _VALID_TOOLSETS:
-        valid = ", ".join(repr(t) for t in _VALID_TOOLSETS)
-        raise ValueError(f"toolset must be one of {valid}; got {toolset!r}")
-    is_core = toolset == "core"
 
-    # Core hides the tools/prompts these three descriptions cross-reference, so
-    # it advertises portfolio/prompt/save-free description variants; the server
-    # instructions likewise name only the core tools. Full keeps every string
-    # unchanged.
-    instructions = MCP_SERVER_INSTRUCTIONS_CORE if is_core else MCP_SERVER_INSTRUCTIONS
-    solve_minizinc_model_desc = (
-        SOLVE_MINIZINC_MODEL_DESCRIPTION_CORE if is_core else SOLVE_MINIZINC_MODEL_DESCRIPTION
-    )
-    run_cpsat_python_desc = (
-        RUN_CPSAT_PYTHON_DESCRIPTION_CORE if is_core else RUN_CPSAT_PYTHON_DESCRIPTION
-    )
-    run_cpsat_python_file_desc = (
-        RUN_CPSAT_PYTHON_FILE_DESCRIPTION_CORE if is_core else RUN_CPSAT_PYTHON_FILE_DESCRIPTION
-    )
-    # The backend-neutral prompt is served by both profiles, so its spliced
-    # CP-SAT output-contract fragment follows the same split: core exposes no
-    # checker-capable CP-SAT tool, so its variant does not say the server runs
-    # the checker you supply.
-    solve_constraint_problem_prompt = (
-        SOLVE_CONSTRAINT_PROBLEM_PROMPT_CORE if is_core else SOLVE_CONSTRAINT_PROBLEM_PROMPT
-    )
+    def _tool(
+        *, description: str, name: str | None = None, full_only: bool = False
+    ) -> Callable[[_F], _F]:
+        if is_core_profile and full_only:
+            return _identity
+        return mcp.tool(name=name, description=description)
 
-    # The single server-owned job registry (D1.1): one instance per server,
-    # captured by the job-tool closures and torn down by the lifespan. This is
-    # the deliberate, bounded exception to "no global mutable state". The three
-    # bounds default to today's values and are overridable via env vars (a
-    # malformed value fails fast at boot, naming the variable).
-    registry = JobRegistry(
-        max_running_jobs=_env_int("OPENCONSTRAINT_MCP_MAX_RUNNING_JOBS", 4, minimum=1),
-        max_queued_jobs=_env_int("OPENCONSTRAINT_MCP_MAX_QUEUED_JOBS", 16, minimum=0),
-        max_retained_terminal=_env_int("OPENCONSTRAINT_MCP_MAX_RETAINED_TERMINAL", 64, minimum=1),
-    )
-    # The server-owned background-portfolio registry: it drives the SAME `registry`
-    # for attempts and selects a winner from their terminal events, so it owns no
-    # worker pool and cannot starve the attempt pool. Retention of finished portfolio
-    # records is bounded; the dominant capacity bound is the solve registry's.
-    portfolios = PortfolioJobRegistry(registry)
-    # The server-owned CP-SAT background-job registry (the deliberate, bounded
-    # exception to "no global mutable state", like `registry`): parallel to the
-    # MiniZinc registry but for CP-SAT Python jobs. Bounds are independently
-    # overridable via CP-SAT-prefixed env vars; defaults match the MiniZinc values.
-    cpsat_registry = CpsatJobRegistry(
-        max_running_jobs=_env_int("OPENCONSTRAINT_MCP_CPSAT_MAX_RUNNING_JOBS", 4, minimum=1),
-        max_queued_jobs=_env_int("OPENCONSTRAINT_MCP_CPSAT_MAX_QUEUED_JOBS", 16, minimum=0),
-        max_retained_terminal=_env_int(
-            "OPENCONSTRAINT_MCP_CPSAT_MAX_RETAINED_TERMINAL", 64, minimum=1
-        ),
-    )
-    # The server-owned tracker of in-flight SYNCHRONOUS-tool children (the
-    # bounded "no global mutable state" exception, like `registry`): the sync
-    # MiniZinc/CP-SAT tools register their child while it runs so the lifespan can
-    # terminate it on teardown instead of orphaning it. Background-job children
-    # are handled by `registry.shutdown()` / `cpsat_registry.shutdown()`.
-    child_tracker = ChildProcessTracker()
-    mcp: MCPServer[Any] = MCPServer(
-        "openconstraint-mcp",
-        instructions=instructions,
-        website_url=_homepage_url(),
-        lifespan=_make_lifespan(registry, cpsat_registry, child_tracker),
-    )
+    return _tool
 
-    @mcp.tool(description=CHECK_RUNTIME_DESCRIPTION)
+
+def _register_runtime_tools(tool: _ToolRegistrar) -> None:
+    """Register the two core runtime-introspection tools."""
+
+    @tool(description=CHECK_RUNTIME_DESCRIPTION)
     def check_runtime() -> RuntimeStatus:
         return get_runtime_status()
 
-    @mcp.tool(description=LIST_AVAILABLE_SOLVERS_DESCRIPTION)
+    @tool(description=LIST_AVAILABLE_SOLVERS_DESCRIPTION)
     # Narrower than the default: this tool takes no user arguments, so a
     # ValueError would be a real bug, not an actionable user message.
     @_as_mcp_error(RuntimeMissingError, MiniZincExecutionError)
     def list_available_solvers() -> Annotated[CallToolResult, SolverList]:
         return _wrap_result(list_solvers(), format_solver_list_content)
 
-    @mcp.tool(description=solve_minizinc_model_desc)
+
+def _register_minizinc_tools(
+    tool: _ToolRegistrar, *, child_tracker: ChildProcessTracker, solve_minizinc_model_desc: str
+) -> None:
+    """Register the 9 MiniZinc model and file tools (check/inspect/solve/unsat-core/save)."""
+
+    @tool(description=solve_minizinc_model_desc)
     @_as_mcp_error()
     async def solve_minizinc_model(
         model: str,
@@ -716,7 +651,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         )
         return _wrap_result(result, format_solve_result_content)
 
-    @mcp.tool(description=CHECK_MINIZINC_MODEL_DESCRIPTION)
+    @tool(description=CHECK_MINIZINC_MODEL_DESCRIPTION)
     @_as_mcp_error()
     async def check_minizinc_model(
         model: str,
@@ -738,7 +673,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
             ),
         )
 
-    @mcp.tool(description=INSPECT_MINIZINC_MODEL_DESCRIPTION)
+    @tool(description=INSPECT_MINIZINC_MODEL_DESCRIPTION, full_only=True)
     @_as_mcp_error()
     async def inspect_minizinc_model(
         model: str,
@@ -760,7 +695,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
             ),
         )
 
-    @mcp.tool(description=FIND_UNSAT_CORE_DESCRIPTION)
+    @tool(description=FIND_UNSAT_CORE_DESCRIPTION, full_only=True)
     @_as_mcp_error()
     async def find_unsat_core(
         model: str,
@@ -776,7 +711,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
             ),
         )
 
-    @mcp.tool(description=SAVE_VERIFIED_MINIZINC_MODEL_DESCRIPTION)
+    @tool(description=SAVE_VERIFIED_MINIZINC_MODEL_DESCRIPTION, full_only=True)
     @_as_mcp_error()
     async def save_verified_minizinc_model(
         model: str,
@@ -821,7 +756,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         )
         return _wrap_result(result, format_save_result_content)
 
-    @mcp.tool(description=CHECK_MINIZINC_FILES_DESCRIPTION)
+    @tool(description=CHECK_MINIZINC_FILES_DESCRIPTION)
     @_as_mcp_error()
     async def check_minizinc_files(
         model_path: str,
@@ -843,7 +778,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
             ),
         )
 
-    @mcp.tool(description=INSPECT_MINIZINC_FILES_DESCRIPTION)
+    @tool(description=INSPECT_MINIZINC_FILES_DESCRIPTION, full_only=True)
     @_as_mcp_error()
     async def inspect_minizinc_files(
         model_path: str,
@@ -865,7 +800,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
             ),
         )
 
-    @mcp.tool(description=SOLVE_MINIZINC_FILES_DESCRIPTION)
+    @tool(description=SOLVE_MINIZINC_FILES_DESCRIPTION)
     @_as_mcp_error()
     async def solve_minizinc_files(
         model_path: str,
@@ -903,7 +838,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         )
         return _wrap_result(result, format_solve_result_content)
 
-    @mcp.tool(description=FIND_UNSAT_CORE_FILES_DESCRIPTION)
+    @tool(description=FIND_UNSAT_CORE_FILES_DESCRIPTION, full_only=True)
     @_as_mcp_error()
     async def find_unsat_core_files(
         model_path: str,
@@ -923,7 +858,11 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
             ),
         )
 
-    @mcp.tool(description=SUBMIT_SOLVE_JOB_DESCRIPTION)
+
+def _register_solve_job_tools(tool: _ToolRegistrar, *, registry: JobRegistry) -> None:
+    """Register the 4 background MiniZinc solve-job tools."""
+
+    @tool(description=SUBMIT_SOLVE_JOB_DESCRIPTION, full_only=True)
     # Validation raises ValueError; a full bounded queue raises JobRejectedError
     # (a direct RuntimeError subclass, NOT in the default caught set). A gated
     # control (free_search/parallel/random_seed/all_solutions) makes admission
@@ -959,25 +898,31 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         )
         return registry.get(job_id)
 
-    @mcp.tool(description=GET_SOLVE_JOB_DESCRIPTION)
+    @tool(description=GET_SOLVE_JOB_DESCRIPTION, full_only=True)
     # An unknown job_id is the only domain error (ValueError); the registry reads
     # touch no runtime, so the narrower caught set is honest.
     @_as_mcp_error(ValueError)
     def get_solve_job(job_id: str) -> SolveJobStatus:
         return registry.get(job_id)
 
-    @mcp.tool(description=CANCEL_SOLVE_JOB_DESCRIPTION)
+    @tool(description=CANCEL_SOLVE_JOB_DESCRIPTION, full_only=True)
     @_as_mcp_error(ValueError)
     def cancel_solve_job(job_id: str) -> SolveJobStatus:
         return registry.cancel(job_id)
 
-    @mcp.tool(description=LIST_SOLVE_JOBS_DESCRIPTION)
+    @tool(description=LIST_SOLVE_JOBS_DESCRIPTION, full_only=True)
     # Takes no arguments and only reads the registry, so no domain exception is
     # reachable — nothing to translate.
     def list_solve_jobs() -> list[SolveJobStatus]:
         return registry.list()
 
-    @mcp.tool(description=SUBMIT_PORTFOLIO_JOB_DESCRIPTION)
+
+def _register_portfolio_job_tools(
+    tool: _ToolRegistrar, *, portfolios: PortfolioJobRegistry
+) -> None:
+    """Register the 4 background portfolio-job tools."""
+
+    @tool(description=SUBMIT_PORTFOLIO_JOB_DESCRIPTION, full_only=True)
     # Admission runs plan validation, the capability gate, and an atomic batch
     # admission synchronously — so it can raise the runtime/binary triad (resolving
     # a gated control), a plan ValueError, or JobRejectedError when the batch exceeds
@@ -1013,27 +958,32 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         )
         return portfolios.get(job_id)
 
-    @mcp.tool(description=GET_PORTFOLIO_JOB_DESCRIPTION)
+    @tool(description=GET_PORTFOLIO_JOB_DESCRIPTION, full_only=True)
     # An unknown job_id is the only domain error (ValueError); the registry reads
     # touch no runtime, so the narrower caught set is honest.
     @_as_mcp_error(ValueError)
     def get_portfolio_job(job_id: str) -> PortfolioJobStatus:
         return portfolios.get(job_id)
 
-    @mcp.tool(description=CANCEL_PORTFOLIO_JOB_DESCRIPTION)
+    @tool(description=CANCEL_PORTFOLIO_JOB_DESCRIPTION, full_only=True)
     @_as_mcp_error(ValueError)
     def cancel_portfolio_job(job_id: str) -> PortfolioJobStatus:
         return portfolios.cancel(job_id)
 
-    @mcp.tool(description=LIST_PORTFOLIO_JOBS_DESCRIPTION)
+    @tool(description=LIST_PORTFOLIO_JOBS_DESCRIPTION, full_only=True)
     # Takes no arguments and only reads the registry, so no domain exception is
     # reachable — nothing to translate.
     def list_portfolio_jobs() -> list[PortfolioJobStatus]:
         return portfolios.list()
 
-    @mcp.tool(
+
+def _register_cpsat_job_tools(tool: _ToolRegistrar, *, cpsat_registry: CpsatJobRegistry) -> None:
+    """Register the 5 background CP-SAT Python job tools."""
+
+    @tool(
         name="submit_cpsat_python_job",
         description=SUBMIT_CPSAT_PYTHON_JOB_DESCRIPTION,
+        full_only=True,
     )
     @_as_mcp_error(ValueError, JobRejectedError)
     def submit_cpsat_python_job(
@@ -1052,9 +1002,10 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         )
         return cpsat_registry.get(job_id)
 
-    @mcp.tool(
+    @tool(
         name="submit_cpsat_python_file_job",
         description=SUBMIT_CPSAT_PYTHON_FILE_JOB_DESCRIPTION,
+        full_only=True,
     )
     @_as_mcp_error(ValueError, JobRejectedError)
     def submit_cpsat_python_file_job(
@@ -1077,21 +1028,39 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         )
         return cpsat_registry.get(job_id)
 
-    @mcp.tool(name="get_cpsat_python_job", description=GET_CPSAT_PYTHON_JOB_DESCRIPTION)
+    @tool(name="get_cpsat_python_job", description=GET_CPSAT_PYTHON_JOB_DESCRIPTION, full_only=True)
     @_as_mcp_error(ValueError)
     def get_cpsat_python_job(job_id: str) -> CpsatPythonJobStatus:
         return cpsat_registry.get(job_id)
 
-    @mcp.tool(name="cancel_cpsat_python_job", description=CANCEL_CPSAT_PYTHON_JOB_DESCRIPTION)
+    @tool(
+        name="cancel_cpsat_python_job",
+        description=CANCEL_CPSAT_PYTHON_JOB_DESCRIPTION,
+        full_only=True,
+    )
     @_as_mcp_error(ValueError)
     def cancel_cpsat_python_job(job_id: str) -> CpsatPythonJobStatus:
         return cpsat_registry.cancel(job_id)
 
-    @mcp.tool(name="list_cpsat_python_jobs", description=LIST_CPSAT_PYTHON_JOBS_DESCRIPTION)
+    @tool(
+        name="list_cpsat_python_jobs",
+        description=LIST_CPSAT_PYTHON_JOBS_DESCRIPTION,
+        full_only=True,
+    )
     def list_cpsat_python_jobs() -> list[CpsatPythonJobStatus]:
         return cpsat_registry.list()
 
-    @mcp.tool(name="run_cpsat_python", description=run_cpsat_python_desc)
+
+def _register_cpsat_run_tools(
+    tool: _ToolRegistrar,
+    *,
+    child_tracker: ChildProcessTracker,
+    run_cpsat_python_desc: str,
+    run_cpsat_python_file_desc: str,
+) -> None:
+    """Register the 5 synchronous CP-SAT Python run/save tools."""
+
+    @tool(name="run_cpsat_python", description=run_cpsat_python_desc)
     @_as_mcp_error(ValueError)
     async def run_cpsat_python_tool(
         source: str,
@@ -1114,7 +1083,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
             ),
         )
 
-    @mcp.tool(name="run_cpsat_python_file", description=run_cpsat_python_file_desc)
+    @tool(name="run_cpsat_python_file", description=run_cpsat_python_file_desc)
     @_as_mcp_error(ValueError)
     async def run_cpsat_python_file_tool(
         script_path: str,
@@ -1141,9 +1110,10 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         await _status_finished(ctx, status.CPSAT_PYTHON_STAGES)
         return result
 
-    @mcp.tool(
+    @tool(
         name="run_cpsat_python_file_checked",
         description=RUN_CPSAT_PYTHON_FILE_CHECKED_DESCRIPTION,
+        full_only=True,
     )
     @_as_mcp_error(ValueError)
     async def run_cpsat_python_file_checked_tool(
@@ -1179,8 +1149,10 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         await _status_finished(ctx, status.CPSAT_PYTHON_CHECKED_STAGES)
         return result
 
-    @mcp.tool(
-        name="run_cpsat_python_experiment", description=RUN_CPSAT_PYTHON_EXPERIMENT_DESCRIPTION
+    @tool(
+        name="run_cpsat_python_experiment",
+        description=RUN_CPSAT_PYTHON_EXPERIMENT_DESCRIPTION,
+        full_only=True,
     )
     @_as_mcp_error(ValueError)
     async def run_cpsat_python_experiment_tool(
@@ -1212,7 +1184,11 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         )
         return _wrap_result(result, format_cpsat_experiment_content)
 
-    @mcp.tool(name="save_verified_cpsat_python", description=SAVE_VERIFIED_CPSAT_PYTHON_DESCRIPTION)
+    @tool(
+        name="save_verified_cpsat_python",
+        description=SAVE_VERIFIED_CPSAT_PYTHON_DESCRIPTION,
+        full_only=True,
+    )
     @_as_mcp_error(ValueError)
     async def save_verified_cpsat_python_tool(
         source: str,
@@ -1251,10 +1227,14 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
             ),
         )
 
+
+def _register_tabular_tools(tool: _ToolRegistrar) -> None:
+    """Register the 2 tabular data read/write tools."""
+
     # The tabular tools take no solver and touch no managed runtime, so a
     # ValueError is the only domain exception they raise (every rejection —
     # bad path, non-scalar cell, refused to overwrite — is one).
-    @mcp.tool(name="load_tabular_data", description=LOAD_TABULAR_DATA_DESCRIPTION)
+    @tool(name="load_tabular_data", description=LOAD_TABULAR_DATA_DESCRIPTION, full_only=True)
     @_as_mcp_error(ValueError)
     async def load_tabular_data(
         path: str,
@@ -1275,7 +1255,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         )
         return _wrap_result(result, format_tabular_data_content)
 
-    @mcp.tool(name="write_tabular_result", description=WRITE_TABULAR_RESULT_DESCRIPTION)
+    @tool(name="write_tabular_result", description=WRITE_TABULAR_RESULT_DESCRIPTION, full_only=True)
     @_as_mcp_error(ValueError)
     async def write_tabular_result(
         headers: list[str],
@@ -1299,6 +1279,12 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
             )
         )
 
+
+def _register_prompts(
+    mcp: MCPServer[Any], *, is_core_profile: bool, solve_constraint_problem_prompt: str
+) -> None:
+    """Register the backend-neutral prompt, then the 3 full-only detailed prompts."""
+
     # Registered ABOVE the core early return, so both profiles expose it: this
     # is the one backend-neutral prompt, and it names core tools only.
     @mcp.prompt(
@@ -1308,18 +1294,14 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
     def solve_constraint_problem(problem: str) -> str:
         return solve_constraint_problem_prompt.format(problem=problem)
 
-    if is_core:
-        # Finalize the core profile before any client connects: drop every
-        # full-only tool and register only the backend-neutral
-        # `solve_constraint_problem` prompt above. The three detailed prompts
-        # below stay full-only because they reference save, portfolio,
+    if is_core_profile:
+        # Every full-only tool above was registered with `full_only=True`, so
+        # `tool` skipped it via the identity decorator and never registered it
+        # — nothing to remove here. Only the backend-neutral
+        # `solve_constraint_problem` prompt above is core; the three detailed
+        # prompts below stay full-only because they reference save, portfolio,
         # experiment, inspection, and job tools core hides.
-        # remove_tool() raises ToolError on an unknown name, so a rename or
-        # deletion upstream breaks core construction loudly instead of silently
-        # drifting.
-        for name in _FULL_ONLY_TOOL_NAMES:
-            mcp.remove_tool(name)
-        return mcp
+        return
 
     @mcp.prompt(
         name="minizinc_solution_workflow",
@@ -1341,6 +1323,112 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
     )
     def auto_tune_constraint_problem_prompt(problem: str) -> str:
         return AUTO_TUNE_CONSTRAINT_PROBLEM_PROMPT.format(problem=problem)
+
+
+def create_mcp_server(toolset: str = "full") -> MCPServer:
+    """Build a fresh MCPServer for the given ``toolset``.
+
+    ``full`` (the default, for internal callers and existing tests) registers
+    every tool and all four prompts. ``core`` registers only the tools whose
+    call sites do not pass ``full_only=True`` and skips the three detailed
+    backend-specific prompts, so the advertised ``tools/list`` payload is the
+    eight core tools only and the advertised ``prompts/list`` payload is
+    ``solve_constraint_problem`` only. A new tool is core unless it is
+    registered with ``full_only=True``, and the core exact-set test fails if
+    one leaks. The user-facing ``stdio`` default is ``core``, enforced by
+    ``run_stdio`` and the CLI.
+    An unknown value is rejected before any server object is built.
+    """
+    if toolset not in _VALID_TOOLSETS:
+        valid = ", ".join(repr(t) for t in _VALID_TOOLSETS)
+        raise ValueError(f"toolset must be one of {valid}; got {toolset!r}")
+    is_core_profile = toolset == "core"
+
+    # Core hides the tools/prompts these three descriptions cross-reference, so
+    # it advertises portfolio/prompt/save-free description variants; the server
+    # instructions likewise name only the core tools. Full keeps every string
+    # unchanged.
+    instructions = MCP_SERVER_INSTRUCTIONS_CORE if is_core_profile else MCP_SERVER_INSTRUCTIONS
+    solve_minizinc_model_desc = (
+        SOLVE_MINIZINC_MODEL_DESCRIPTION_CORE
+        if is_core_profile
+        else SOLVE_MINIZINC_MODEL_DESCRIPTION
+    )
+    run_cpsat_python_desc = (
+        RUN_CPSAT_PYTHON_DESCRIPTION_CORE if is_core_profile else RUN_CPSAT_PYTHON_DESCRIPTION
+    )
+    run_cpsat_python_file_desc = (
+        RUN_CPSAT_PYTHON_FILE_DESCRIPTION_CORE
+        if is_core_profile
+        else RUN_CPSAT_PYTHON_FILE_DESCRIPTION
+    )
+    # The backend-neutral prompt is served by both profiles, so its spliced
+    # CP-SAT output-contract fragment follows the same split: core exposes no
+    # checker-capable CP-SAT tool, so its variant does not say the server runs
+    # the checker you supply.
+    solve_constraint_problem_prompt = (
+        SOLVE_CONSTRAINT_PROBLEM_PROMPT_CORE if is_core_profile else SOLVE_CONSTRAINT_PROBLEM_PROMPT
+    )
+
+    # The single server-owned job registry (D1.1): one instance per server,
+    # captured by the job-tool closures and torn down by the lifespan. This is
+    # the deliberate, bounded exception to "no global mutable state". The three
+    # bounds default to today's values and are overridable via env vars (a
+    # malformed value fails fast at boot, naming the variable).
+    registry = JobRegistry(
+        max_running_jobs=_env_int("OPENCONSTRAINT_MCP_MAX_RUNNING_JOBS", 4, minimum=1),
+        max_queued_jobs=_env_int("OPENCONSTRAINT_MCP_MAX_QUEUED_JOBS", 16, minimum=0),
+        max_retained_terminal=_env_int("OPENCONSTRAINT_MCP_MAX_RETAINED_TERMINAL", 64, minimum=1),
+    )
+    # The server-owned background-portfolio registry: it drives the SAME `registry`
+    # for attempts and selects a winner from their terminal events, so it owns no
+    # worker pool and cannot starve the attempt pool. Retention of finished portfolio
+    # records is bounded; the dominant capacity bound is the solve registry's.
+    portfolios = PortfolioJobRegistry(registry)
+    # The server-owned CP-SAT background-job registry (the deliberate, bounded
+    # exception to "no global mutable state", like `registry`): parallel to the
+    # MiniZinc registry but for CP-SAT Python jobs. Bounds are independently
+    # overridable via CP-SAT-prefixed env vars; defaults match the MiniZinc values.
+    cpsat_registry = CpsatJobRegistry(
+        max_running_jobs=_env_int("OPENCONSTRAINT_MCP_CPSAT_MAX_RUNNING_JOBS", 4, minimum=1),
+        max_queued_jobs=_env_int("OPENCONSTRAINT_MCP_CPSAT_MAX_QUEUED_JOBS", 16, minimum=0),
+        max_retained_terminal=_env_int(
+            "OPENCONSTRAINT_MCP_CPSAT_MAX_RETAINED_TERMINAL", 64, minimum=1
+        ),
+    )
+    # The server-owned tracker of in-flight SYNCHRONOUS-tool children (the
+    # bounded "no global mutable state" exception, like `registry`): the sync
+    # MiniZinc/CP-SAT tools register their child while it runs so the lifespan can
+    # terminate it on teardown instead of orphaning it. Background-job children
+    # are handled by `registry.shutdown()` / `cpsat_registry.shutdown()`.
+    child_tracker = ChildProcessTracker()
+    mcp: MCPServer[Any] = MCPServer(
+        "openconstraint-mcp",
+        instructions=instructions,
+        website_url=_homepage_url(),
+        lifespan=_make_lifespan(registry, cpsat_registry, child_tracker),
+    )
+    tool: _ToolRegistrar = _tool_registrar(mcp, is_core_profile=is_core_profile)
+
+    _register_runtime_tools(tool)
+    _register_minizinc_tools(
+        tool, child_tracker=child_tracker, solve_minizinc_model_desc=solve_minizinc_model_desc
+    )
+    _register_solve_job_tools(tool, registry=registry)
+    _register_portfolio_job_tools(tool, portfolios=portfolios)
+    _register_cpsat_job_tools(tool, cpsat_registry=cpsat_registry)
+    _register_cpsat_run_tools(
+        tool,
+        child_tracker=child_tracker,
+        run_cpsat_python_desc=run_cpsat_python_desc,
+        run_cpsat_python_file_desc=run_cpsat_python_file_desc,
+    )
+    _register_tabular_tools(tool)
+    _register_prompts(
+        mcp,
+        is_core_profile=is_core_profile,
+        solve_constraint_problem_prompt=solve_constraint_problem_prompt,
+    )
 
     return mcp
 

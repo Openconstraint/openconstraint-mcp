@@ -347,6 +347,62 @@ async def test_full_profile_retains_the_current_thirty_one_tool_set() -> None:
     assert len(FULL_TOOL_NAMES) == 31
 
 
+# Characterization tests, pinned before the registration refactor: registration
+# order is registrar call order, and the identity decorator core uses must skip
+# a tool without reordering the ones that follow it.
+@pytest.mark.asyncio
+async def test_full_profile_registers_tools_in_this_order() -> None:
+    tools = await create_mcp_server("full").list_tools()
+    assert [tool.name for tool in tools] == [
+        "check_runtime",
+        "list_available_solvers",
+        "solve_minizinc_model",
+        "check_minizinc_model",
+        "inspect_minizinc_model",
+        "find_unsat_core",
+        "save_verified_minizinc_model",
+        "check_minizinc_files",
+        "inspect_minizinc_files",
+        "solve_minizinc_files",
+        "find_unsat_core_files",
+        "submit_solve_job",
+        "get_solve_job",
+        "cancel_solve_job",
+        "list_solve_jobs",
+        "submit_portfolio_job",
+        "get_portfolio_job",
+        "cancel_portfolio_job",
+        "list_portfolio_jobs",
+        "submit_cpsat_python_job",
+        "submit_cpsat_python_file_job",
+        "get_cpsat_python_job",
+        "cancel_cpsat_python_job",
+        "list_cpsat_python_jobs",
+        "run_cpsat_python",
+        "run_cpsat_python_file",
+        "run_cpsat_python_file_checked",
+        "run_cpsat_python_experiment",
+        "save_verified_cpsat_python",
+        "load_tabular_data",
+        "write_tabular_result",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_core_profile_registers_tools_in_this_order() -> None:
+    tools = await create_mcp_server("core").list_tools()
+    assert [tool.name for tool in tools] == [
+        "check_runtime",
+        "list_available_solvers",
+        "solve_minizinc_model",
+        "check_minizinc_model",
+        "check_minizinc_files",
+        "solve_minizinc_files",
+        "run_cpsat_python",
+        "run_cpsat_python_file",
+    ]
+
+
 def _tools_declaring_problem() -> list[Any]:
     """Full-profile tools exposing a `problem` parameter.
 
@@ -474,6 +530,25 @@ async def test_core_profile_registers_only_the_backend_neutral_prompt() -> None:
 async def test_full_profile_retains_the_four_prompts() -> None:
     prompts = await create_mcp_server("full").list_prompts()
     assert {prompt.name for prompt in prompts} == FULL_PROMPT_NAMES
+
+
+# Characterization tests, pinned before the registration refactor: see the tool
+# order tests above for why order (not just the set) must survive the move.
+@pytest.mark.asyncio
+async def test_full_profile_registers_prompts_in_this_order() -> None:
+    prompts = await create_mcp_server("full").list_prompts()
+    assert [prompt.name for prompt in prompts] == [
+        "solve_constraint_problem",
+        "minizinc_solution_workflow",
+        "cpsat_python_solution_workflow",
+        "auto_tune_constraint_problem",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_core_profile_registers_prompts_in_this_order() -> None:
+    prompts = await create_mcp_server("core").list_prompts()
+    assert [prompt.name for prompt in prompts] == ["solve_constraint_problem"]
 
 
 def test_create_mcp_server_rejects_unknown_toolset() -> None:
