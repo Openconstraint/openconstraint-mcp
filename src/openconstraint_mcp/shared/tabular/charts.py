@@ -10,8 +10,9 @@ series — so a chart sheet holds drawings and no rows of its own.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict
 
 from ...schemas.tabular import ChartSpec, TabularCell
 from .columns import column_index
@@ -22,9 +23,10 @@ from .limits import WRITE_SHEET_NAME
 _CHART_ROW_SPAN: int = 16
 
 
-@dataclass(frozen=True)
-class ResolvedChart:
+class ResolvedChart(BaseModel):
     """One chart's plot, with every column already resolved to an index."""
+
+    model_config = ConfigDict(frozen=True, strict=True)
 
     kind: str
     sheet_name: str

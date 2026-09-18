@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
 from typing import Any, TypeGuard
+
+from pydantic import BaseModel, ConfigDict
 
 from ..schemas.cpsat import CpsatMutationName
 
@@ -17,12 +18,13 @@ NUMERIC_FIELD_PERTURBED: CpsatMutationName = "numeric_field_perturbed"
 _NO_LIST_REASON = "no non-empty list among the solution's top-level values"
 
 
-@dataclass(frozen=True)
-class SolutionMutation:
+class SolutionMutation(BaseModel):
     """One applied or skipped ``(solution, objective)`` mutation.
 
     A skipped mutation has no usable payload.
     """
+
+    model_config = ConfigDict(frozen=True, strict=True)
 
     name: CpsatMutationName
     solution: dict[str, Any] | None = None
@@ -115,8 +117,7 @@ def _element_duplicated(
     return SolutionMutation(name=ELEMENT_DUPLICATED, solution=mutated, objective=objective)
 
 
-@dataclass(frozen=True)
-class _NumericTarget:
+class _NumericTarget(BaseModel):
     """Where ``_apply_numeric_target`` should mutate.
 
     ``list_key=None`` addresses the top-level solution and ``field`` is one of
@@ -126,6 +127,8 @@ class _NumericTarget:
     own single-item container, so ``container[field]`` reaches the element
     either way without a separate scalar-vs-dict case at the call site.
     """
+
+    model_config = ConfigDict(frozen=True, strict=True)
 
     list_key: str | None
     field: object
@@ -150,7 +153,7 @@ def _find_numeric_target(
         fields = candidate.items() if isinstance(candidate, dict) else ((0, candidate),)
         for field, value in fields:
             if matches(value):
-                return _NumericTarget(candidate_list_key, field)
+                return _NumericTarget(list_key=candidate_list_key, field=field)
     return None
 
 

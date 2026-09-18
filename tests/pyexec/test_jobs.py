@@ -1077,6 +1077,26 @@ def test_admission_with_a_free_slot_reports_running_before_a_worker_starts(
         registry.shutdown()
 
 
+def test_submit_admits_nothing_when_a_worker_thread_cannot_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ThreadPoolExecutor.submit raises when it cannot start a worker thread. The
+    job must not be admitted: no record to poll forever, no leaked in-flight slot."""
+    registry = CpsatJobRegistry()
+
+    def _thread_start_fails(fn: Any, /, *args: Any) -> Future[Any]:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(registry._executor, "submit", _thread_start_fails)
+    try:
+        with pytest.raises(RuntimeError, match="can't start new thread"):
+            registry.submit_source("x=1")
+
+        assert (registry.list(), registry._in_flight) == ([], 0)
+    finally:
+        registry.shutdown()
+
+
 def test_cancelled_job_whose_run_raises_reaches_failed(monkeypatch: pytest.MonkeyPatch) -> None:
     """CP-SAT reports a wrapper exception as `failed` even under a requested
     cancel — only a completed run's result is overridden by the cancel. (The

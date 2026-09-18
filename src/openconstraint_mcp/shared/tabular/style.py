@@ -19,8 +19,9 @@ page plane, both under primary ink.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict
 
 from ...schemas.tabular import TableStyle, TabularCell
 from .columns import column_index
@@ -32,9 +33,10 @@ _BAND_FILL_RGB: str = "FFF9F9F7"
 _HEADER_FONT_RGB: str = "FF0B0B0B"
 
 
-@dataclass(frozen=True)
-class ResolvedStyle:
+class ResolvedStyle(BaseModel):
     """One entry per column, in column order: its width and its number format."""
+
+    model_config = ConfigDict(frozen=True, strict=True)
 
     widths: tuple[int, ...]
     number_formats: tuple[str | None, ...]

@@ -20,9 +20,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from subprocess import Popen
 from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict
 
 # jobs reuses core's solve helpers (validation, arg-building, process teardown)
 # rather than re-implementing them.
@@ -47,8 +48,7 @@ from ..shared.job_registry import BackgroundJobRegistry, JobRecord
 from ..shared.proc import terminate_process_tree as _terminate_process_tree
 
 
-@dataclass(frozen=True)
-class SolveRequest:
+class SolveRequest(BaseModel):
     """The immutable, prepared solve parameters for one job.
 
     ``extra_args`` is the solve argv the submitter already built from ``controls``
@@ -56,6 +56,8 @@ class SolveRequest:
     after a portfolio's plan-level capability check). The worker runs it verbatim
     and never rebuilds or re-resolves.
     """
+
+    model_config = ConfigDict(frozen=True, strict=True)
 
     model: str
     solver: str

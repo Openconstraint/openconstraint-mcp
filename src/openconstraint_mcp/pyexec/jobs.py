@@ -17,10 +17,11 @@ lifecycle). Never imports ``minizinc``, ``runtime``, ``server``, or ``jobs``.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 from subprocess import Popen
 from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict
 
 from ..schemas.cpsat import (
     CpsatCheckerReport,
@@ -47,8 +48,7 @@ from .eligibility import diagnostic_incumbent_eligibility
 from .script_path import validate_script_args, validate_script_path
 
 
-@dataclass(frozen=True)
-class _CpsatJobRequest:
+class _CpsatJobRequest(BaseModel):
     """Immutable per-job parameters; kind discriminates source vs. file path.
 
     ``problem``/``checker``/``checker_path``/``checker_timeout_ms`` are the
@@ -63,6 +63,8 @@ class _CpsatJobRequest:
     mutation of a contained list, and a queued job's argv must not stay
     live-linked to the caller's list; ``submit_file`` snapshots at admission.
     """
+
+    model_config = ConfigDict(frozen=True, strict=True)
 
     source: str | None
     script_path: Path | None
@@ -247,11 +249,10 @@ class CpsatJobRegistry(
             state="running" if runs_now else "queued",
             started_at_ms=now if runs_now else None,
         )
-        # Publish before submit, deliberately the reverse of the MiniZinc registry (which
-        # submits first so a raising submit leaks no slot); `_publish_locked` carries no
-        # shared ordering guarantee.
-        self._publish_locked(record)
+        # Submit first: the worker waits for the caller's lock, so a submit that raises
+        # (a worker thread that cannot start) leaves no record and no in-flight slot.
         record.future = self._executor.submit(self._run_job, job_id)
+        self._publish_locked(record)
         return job_id
 
     def _to_status(self, record: _CpsatJobRecord) -> CpsatPythonJobStatus:
