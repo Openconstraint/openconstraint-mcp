@@ -16,17 +16,18 @@ from typing import Any
 
 import pytest
 
+from openconstraint_mcp.minizinc.core import DEFAULT_SOLVE_TIMEOUT_MS
+
 # The portfolio engine retained for the background path; these are package-internal
 # helpers, not a public API.
 # noinspection PyProtectedMember
-from openconstraint_mcp.jobs.portfolio import (
+from openconstraint_mcp.minizinc.jobs.portfolio import (
     _admit_portfolio,
     _first_decisive_index,
     _PortfolioAdmission,
 )
-from openconstraint_mcp.jobs.portfolio_registry import PortfolioJobRegistry
-from openconstraint_mcp.jobs.registry import JobRegistry
-from openconstraint_mcp.minizinc.core import DEFAULT_SOLVE_TIMEOUT_MS
+from openconstraint_mcp.minizinc.jobs.portfolio_registry import PortfolioJobRegistry
+from openconstraint_mcp.minizinc.jobs.registry import JobRegistry
 from openconstraint_mcp.schemas.minizinc import (
     CheckerReport,
     SolveJobStatus,
@@ -73,13 +74,13 @@ def _never_terminate_for_real(monkeypatch: pytest.MonkeyPatch) -> None:
     assert termination re-patch a recorder over this.
     """
     monkeypatch.setattr(
-        "openconstraint_mcp.jobs.registry._terminate_process_tree",
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
         lambda proc, **kwargs: None,
     )
 
 
 def _patch_solve(monkeypatch: pytest.MonkeyPatch, fake: Any) -> None:
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.run_prepared_solve", fake)
+    monkeypatch.setattr("openconstraint_mcp.minizinc.jobs.registry.run_prepared_solve", fake)
 
 
 def _seed_from_args(extra_args: tuple[str, ...]) -> int | None:
@@ -165,7 +166,10 @@ def test_portfolio_returns_decisive_winner_and_cancels_loser(
         release.set()
 
     _patch_solve(monkeypatch, _fake_solve)
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _fake_terminate,
+    )
 
     registry = JobRegistry(max_running_jobs=4)
     try:

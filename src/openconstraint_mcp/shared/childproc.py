@@ -12,7 +12,7 @@ lifespan terminates whatever is still registered.
 
 Layering: a dependency-light leaf importable by both ``minizinc`` and ``pyexec``
 (mirroring ``proc`` / ``save_target``). It depends only on ``proc`` — the process
-primitive it is built on — for the actual tree-kill, exactly as ``jobs`` does.
+primitive it is built on — for the actual tree-kill, exactly as ``minizinc.jobs`` does.
 
 Not a module-level singleton: one instance is created per server in
 ``create_mcp_server`` and owned by that server's lifecycle, the same sanctioned

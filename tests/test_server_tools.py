@@ -12,7 +12,7 @@ import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import CallToolResult
 
-from openconstraint_mcp.jobs.registry import JobRegistry
+from openconstraint_mcp.minizinc.jobs.registry import JobRegistry
 from openconstraint_mcp.schemas.cpsat import (
     CpsatPythonCheckedResult,
     CpsatPythonExperimentAttempt,
@@ -2048,7 +2048,7 @@ class _JobFakeProc:
 
 
 def _patch_job_solve(monkeypatch: pytest.MonkeyPatch, fake: Any) -> None:
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.run_prepared_solve", fake)
+    monkeypatch.setattr("openconstraint_mcp.minizinc.jobs.registry.run_prepared_solve", fake)
 
 
 async def _poll_job_status(
@@ -2154,7 +2154,10 @@ async def test_cancel_solve_job_terminates_running_job(monkeypatch: pytest.Monke
         release.set()  # the "process" dying unblocks the worker
 
     _patch_job_solve(monkeypatch, _blocking_solve)
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _fake_terminate,
+    )
 
     mcp = create_mcp_server()
     try:
@@ -2187,7 +2190,7 @@ async def test_submit_solve_job_queue_full_surfaces_actionable_error(
     def _raise(self: Any, **kwargs: Any) -> str:
         raise JobRejectedError("Job queue is full (4 running + 16 queued).")
 
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.JobRegistry.submit", _raise)
+    monkeypatch.setattr("openconstraint_mcp.minizinc.jobs.registry.JobRegistry.submit", _raise)
 
     mcp = create_mcp_server()
     with pytest.raises(Exception) as exc_info:
@@ -2259,7 +2262,7 @@ class _PortfolioFakeProc:
 def _never_terminate_for_real(monkeypatch: pytest.MonkeyPatch) -> None:
     """Disarm real process-tree termination for tests using ``_PortfolioFakeProc``."""
     monkeypatch.setattr(
-        "openconstraint_mcp.jobs.registry._terminate_process_tree",
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
         lambda proc, **kwargs: None,
     )
 
@@ -2395,7 +2398,7 @@ async def test_submit_portfolio_job_returns_running_then_get_reaches_succeeded(
         on_start(_PortfolioFakeProc())
         return _portfolio_solve_result("optimal", solver)
 
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.run_prepared_solve", _fake_solve)
+    monkeypatch.setattr("openconstraint_mcp.minizinc.jobs.registry.run_prepared_solve", _fake_solve)
 
     mcp = create_mcp_server()
     submitted = _structured(
@@ -2419,7 +2422,7 @@ async def test_portfolio_snapshot_error_surfaces_failed_diagnostic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "openconstraint_mcp.jobs.registry.run_prepared_solve",
+        "openconstraint_mcp.minizinc.jobs.registry.run_prepared_solve",
         lambda *args, **kwargs: _portfolio_solve_result("optimal", "cp-sat"),
     )
 
@@ -2455,7 +2458,7 @@ async def test_background_portfolio_provenance_threads_to_save(
         on_start(_PortfolioFakeProc())
         return _portfolio_solve_result("satisfied", solver)
 
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.run_prepared_solve", _fake_solve)
+    monkeypatch.setattr("openconstraint_mcp.minizinc.jobs.registry.run_prepared_solve", _fake_solve)
 
     mcp = create_mcp_server()
     submitted = _structured(
@@ -2534,7 +2537,7 @@ async def test_submit_portfolio_job_unsupported_control_surfaces_mcp_error(
     def _fail(model: str, *, on_start: Any, **kw: Any) -> SolveResult:
         raise AssertionError("no solve should run for an unsupported control")
 
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.run_prepared_solve", _fail)
+    monkeypatch.setattr("openconstraint_mcp.minizinc.jobs.registry.run_prepared_solve", _fail)
 
     mcp = create_mcp_server()
     with pytest.raises(Exception) as exc_info:
@@ -2558,7 +2561,7 @@ async def test_submit_portfolio_job_rejects_plan_exceeding_capacity(
     def _fail(model: str, *, on_start: Any, **kw: Any) -> SolveResult:
         raise AssertionError("no solve should run when the batch exceeds capacity")
 
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.run_prepared_solve", _fail)
+    monkeypatch.setattr("openconstraint_mcp.minizinc.jobs.registry.run_prepared_solve", _fail)
 
     mcp = create_mcp_server()
     with pytest.raises(Exception) as exc_info:
@@ -2586,8 +2589,14 @@ async def test_cancel_portfolio_job_stops_running_race(monkeypatch: pytest.Monke
         terminated.append(proc)
         release.set()
 
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.run_prepared_solve", _blocking_solve)
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry.run_prepared_solve",
+        _blocking_solve,
+    )
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _fake_terminate,
+    )
 
     mcp = create_mcp_server()
     try:
@@ -2616,7 +2625,7 @@ async def test_list_portfolio_jobs_returns_one_entry_per_submitted_job(
         on_start(_PortfolioFakeProc())
         return _portfolio_solve_result("optimal", solver)
 
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.run_prepared_solve", _fake_solve)
+    monkeypatch.setattr("openconstraint_mcp.minizinc.jobs.registry.run_prepared_solve", _fake_solve)
 
     mcp = create_mcp_server()
     ids: set[str] = set()

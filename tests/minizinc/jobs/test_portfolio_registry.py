@@ -20,12 +20,12 @@ from typing import Any
 
 import pytest
 
-from openconstraint_mcp.jobs.portfolio_registry import (
+from openconstraint_mcp.minizinc.jobs.portfolio_registry import (
     PortfolioJobRegistry,
     _admitted,
     _PortfolioRecord,
 )
-from openconstraint_mcp.jobs.registry import JobRegistry
+from openconstraint_mcp.minizinc.jobs.registry import JobRegistry
 from openconstraint_mcp.schemas.minizinc import SolveJobStatus, SolveResult
 from openconstraint_mcp.schemas.portfolio import (
     PortfolioJobStatus,
@@ -64,13 +64,13 @@ def _never_terminate_for_real(monkeypatch: pytest.MonkeyPatch) -> None:
     terminate would probe ``os.getpgid``/``os.killpg`` on it.
     """
     monkeypatch.setattr(
-        "openconstraint_mcp.jobs.registry._terminate_process_tree",
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
         lambda proc, **kwargs: None,
     )
 
 
 def _patch_solve(monkeypatch: pytest.MonkeyPatch, fake: Any) -> None:
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry.run_prepared_solve", fake)
+    monkeypatch.setattr("openconstraint_mcp.minizinc.jobs.registry.run_prepared_solve", fake)
 
 
 def _poll(registry: PortfolioJobRegistry, job_id: str, timeout: float = 5.0) -> Any:
@@ -284,7 +284,10 @@ def test_cancel_running_portfolio_reaches_cancelled_and_stops_attempts(
         release.set()  # the "process" dying unblocks the worker
 
     _patch_solve(monkeypatch, _blocking_solve)
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _fake_terminate,
+    )
 
     job_registry = JobRegistry(max_running_jobs=4)
     portfolios = PortfolioJobRegistry(job_registry)
@@ -325,7 +328,10 @@ def test_cancel_drops_queued_attempts_before_stopping_running_ones(
         queued_started.wait(timeout=0.5)
 
     _patch_solve(monkeypatch, _fake_solve)
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _slow_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _slow_terminate,
+    )
     job_registry: JobRegistry = JobRegistry(max_running_jobs=1)
     portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
     try:
@@ -515,7 +521,10 @@ def test_race_settles_and_cancels_losers_without_client_selection(
         release.set()  # the loser's worker finishes only once its tree is signalled
 
     _patch_solve(monkeypatch, _fake_solve)
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _fake_terminate,
+    )
 
     job_registry: JobRegistry = JobRegistry(max_running_jobs=4)
     portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
@@ -559,7 +568,10 @@ def test_get_has_no_side_effects_on_a_running_race(monkeypatch: pytest.MonkeyPat
         release.set()
 
     _patch_solve(monkeypatch, _fake_solve)
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _fake_terminate,
+    )
 
     job_registry: JobRegistry = JobRegistry(max_running_jobs=4)
     portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
@@ -675,7 +687,7 @@ def test_submit_failing_while_hashing_provenance_admits_no_attempts(
         raise AssertionError("no solve should run when admission fails")
 
     _patch_solve(monkeypatch, _never)
-    monkeypatch.setattr("openconstraint_mcp.jobs.portfolio.text_sha256", _hash_exploded)
+    monkeypatch.setattr("openconstraint_mcp.minizinc.jobs.portfolio.text_sha256", _hash_exploded)
 
     job_registry: JobRegistry = JobRegistry()
     portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
@@ -699,7 +711,7 @@ def _patch_broken_result_build(monkeypatch: pytest.MonkeyPatch) -> None:
 
     _patch_solve(monkeypatch, _fake_solve)
     monkeypatch.setattr(
-        "openconstraint_mcp.jobs.portfolio_registry._build_portfolio_result", _broken_build
+        "openconstraint_mcp.minizinc.jobs.portfolio_registry._build_portfolio_result", _broken_build
     )
 
 
@@ -777,7 +789,8 @@ def test_completion_error_cancels_remaining_attempts(monkeypatch: pytest.MonkeyP
 
     _patch_solve(monkeypatch, _fake_solve)
     monkeypatch.setattr(
-        "openconstraint_mcp.jobs.registry._terminate_process_tree", lambda proc: handles[proc].set()
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        lambda proc: handles[proc].set(),
     )
     job_registry: JobRegistry = JobRegistry(max_running_jobs=2)
     portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
@@ -890,7 +903,10 @@ def test_completion_error_teardown_does_not_occupy_the_failing_attempts_worker(
         raise RuntimeError("snapshot exploded")
 
     _patch_decisive_winner_over_running_loser(monkeypatch, loser_release)
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _slow_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _slow_terminate,
+    )
     job_registry: JobRegistry = JobRegistry(max_running_jobs=2)
     portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
     monkeypatch.setattr(portfolios, "_settlement_snapshot", _broken_snapshot)
@@ -935,7 +951,7 @@ def test_retained_attempt_does_not_keep_evicted_portfolio_alive(
 ) -> None:
     # Pytest's log handlers retain exception tracebacks, which would independently
     # keep the failed portfolio alive and obscure the callback retention check.
-    caplog.set_level(logging.CRITICAL, logger="openconstraint_mcp.jobs")
+    caplog.set_level(logging.CRITICAL, logger="openconstraint_mcp.minizinc.jobs")
     _patch_solve(monkeypatch, lambda *args, **kwargs: _solve_result("optimal"))
     job_registry: JobRegistry = JobRegistry(max_running_jobs=1, max_retained_terminal=2)
     portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry, max_retained_terminal=1)
@@ -1015,7 +1031,10 @@ def test_cancel_tolerates_an_evicted_terminal_attempt(monkeypatch: pytest.Monkey
         release.set()
 
     _patch_solve(monkeypatch, _fake_solve)
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _fake_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _fake_terminate,
+    )
 
     job_registry: JobRegistry = JobRegistry(
         max_running_jobs=2, max_queued_jobs=4, max_retained_terminal=1
@@ -1113,7 +1132,7 @@ def test_cancel_after_a_decisive_winner_keeps_the_winning_result(
     loser_teardown: threading.Event = threading.Event()
     _patch_decisive_winner_over_running_loser(monkeypatch, loser_release)
     monkeypatch.setattr(
-        "openconstraint_mcp.jobs.registry._terminate_process_tree",
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
         lambda proc, **kwargs: loser_teardown.set(),
     )
     job_registry: JobRegistry = JobRegistry(max_running_jobs=4)
@@ -1147,7 +1166,10 @@ def test_loser_teardown_does_not_occupy_the_winners_worker(
         teardown_may_finish.wait(timeout=10)
 
     _patch_decisive_winner_over_running_loser(monkeypatch, loser_release)
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _slow_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _slow_terminate,
+    )
     job_registry: JobRegistry = JobRegistry(max_running_jobs=2)
     portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
     try:
@@ -1177,7 +1199,7 @@ def test_cancel_thread_start_failure_still_stops_running_loser(
 
     monkeypatch.setattr(threading.Thread, "start", _start)
     monkeypatch.setattr(
-        "openconstraint_mcp.jobs.registry._terminate_process_tree",
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
         lambda proc: loser_release.set(),
     )
     job_registry: JobRegistry = JobRegistry(max_running_jobs=2)
@@ -1228,7 +1250,10 @@ def test_decisive_winner_cancels_a_queued_loser_before_it_starts(
         teardown_may_finish.wait(timeout=10)
 
     _patch_solve(monkeypatch, _fake_solve)
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _slow_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _slow_terminate,
+    )
     job_registry: JobRegistry = JobRegistry(max_running_jobs=2)
     portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)
     try:
@@ -1279,7 +1304,10 @@ def test_queued_loser_started_by_another_worker_is_not_torn_down_on_the_winners_
         teardown_may_finish.wait(timeout=10)
 
     _patch_solve(monkeypatch, _fake_solve)
-    monkeypatch.setattr("openconstraint_mcp.jobs.registry._terminate_process_tree", _slow_terminate)
+    monkeypatch.setattr(
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree",
+        _slow_terminate,
+    )
     job_registry: JobRegistry = JobRegistry(max_running_jobs=2)
 
     def _after_queued_loser_starts(real: Callable[[str], Any]) -> Callable[[str], Any]:
@@ -1336,7 +1364,7 @@ def test_cancel_still_stops_later_attempts_when_one_teardown_raises(
 
     _patch_solve(monkeypatch, _blocking_solve)
     monkeypatch.setattr(
-        "openconstraint_mcp.jobs.registry._terminate_process_tree", _first_teardown_raises
+        "openconstraint_mcp.minizinc.jobs.registry._terminate_process_tree", _first_teardown_raises
     )
     job_registry: JobRegistry = JobRegistry(max_running_jobs=4)
     portfolios: PortfolioJobRegistry = PortfolioJobRegistry(job_registry)

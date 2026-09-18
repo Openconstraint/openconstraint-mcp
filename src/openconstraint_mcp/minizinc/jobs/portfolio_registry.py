@@ -34,9 +34,10 @@ no worker pool or processes (the attempts live in the ``JobRegistry``, torn down
 that registry's shutdown, which also stops any loser a cancel thread has not reached
 yet), so it needs no shutdown of its own.
 
-Layering: a server-layer module that imports ``portfolio`` (admission + result
-building), ``registry`` (the attempt registry it drives), and ``schemas``; it never
-imports ``server``.
+Layering: part of the ``minizinc`` backend, imported only by ``server``. It
+imports its siblings ``portfolio`` (admission + result building) and ``registry``
+(the attempt registry it drives), plus ``minizinc.core``, ``schemas``, and
+``shared`` leaves.
 """
 
 from __future__ import annotations
@@ -49,17 +50,17 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
-from ..minizinc.core import DEFAULT_SOLVE_TIMEOUT_MS
-from ..schemas.diagnostics import wrapper_job_diagnostic
-from ..schemas.job_state import TERMINAL_STATES
-from ..schemas.minizinc import SolveJobStatus
-from ..schemas.portfolio import (
+from ...schemas.diagnostics import wrapper_job_diagnostic
+from ...schemas.job_state import TERMINAL_STATES
+from ...schemas.minizinc import SolveJobStatus
+from ...schemas.portfolio import (
     PortfolioJobState,
     PortfolioJobStatus,
     PortfolioSolveControls,
     PortfolioSolveResult,
 )
-from ..shared.job_errors import UnknownJobError, exception_summary, now_ms
+from ...shared.job_errors import UnknownJobError, exception_summary, now_ms
+from ..core import DEFAULT_SOLVE_TIMEOUT_MS
 
 # portfolio_registry reuses portfolio's synchronous admission (_admit_portfolio) and
 # its result builder and decisiveness rules. These are package-internal helpers, not

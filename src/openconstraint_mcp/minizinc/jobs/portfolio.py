@@ -16,8 +16,9 @@ resolved once for the whole plan through the runtime's own ``--solvers-json``, a
 nothing leaves the machine. This module orchestrates; it never spawns its own
 processes.
 
-Layering: a server-side module that imports ``jobs.registry``, ``minizinc.core``
-helpers, and ``schemas``; it never imports ``server``.
+Layering: part of the ``minizinc`` backend, imported only by ``server``. It
+imports its sibling ``minizinc.jobs.registry``, ``minizinc.core`` helpers,
+``schemas``, and ``shared`` leaves.
 """
 
 from __future__ import annotations
@@ -28,23 +29,23 @@ from typing import NamedTuple
 
 from pydantic import JsonValue
 
-from ..minizinc.core import (
-    build_solve_extra_args,
-    resolve_capability_map,
-    validate_model_and_timeout,
-    validate_solver_capabilities,
-)
-from ..schemas.diagnostics import Diagnostic
-from ..schemas.job_state import JobState
-from ..schemas.minizinc import SolveControls, SolveJobStatus, SolveResult
-from ..schemas.portfolio import (
+from ...schemas.diagnostics import Diagnostic
+from ...schemas.job_state import JobState
+from ...schemas.minizinc import SolveControls, SolveJobStatus, SolveResult
+from ...schemas.portfolio import (
     PortfolioAttempt,
     PortfolioAttemptState,
     PortfolioSolveControls,
     PortfolioSolveResult,
     PortfolioStatus,
 )
-from ..shared.save_target import text_sha256
+from ...shared.save_target import text_sha256
+from ..core import (
+    build_solve_extra_args,
+    resolve_capability_map,
+    validate_model_and_timeout,
+    validate_solver_capabilities,
+)
 
 # portfolio consumes the registry (provider) plus core's capability
 # resolver/validator, model/timeout validator, and solve-argv builder; these
