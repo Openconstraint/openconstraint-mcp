@@ -429,13 +429,13 @@ def _job_solve_result(status: SolveStatus, *, timed_out: bool = False) -> SolveR
         ("unbounded", "succeeded"),
         ("unsat_or_unbounded", "succeeded"),
         # The load-bearing case: a structured solver/driver `error` verdict is a
-        # SUCCEEDED job (a result was produced), not a job-machinery failure (D1.9).
+        # SUCCEEDED job (a result was produced), not a job-machinery failure.
         ("error", "succeeded"),
         ("timeout", "timeout"),
     ],
 )
 def test_job_state_for_result_maps_every_solve_status(status: SolveStatus, expected: str) -> None:
-    # The total D1.9 mapping over all eight SolveStatus values for the
+    # The total mapping over all eight SolveStatus values for the
     # result-present paths: only a `timeout` verdict is `timeout`; everything else
     # (including `error`, `unbounded`, `unsat_or_unbounded`) is `succeeded`.
     assert job_state_for_result(_job_solve_result(status)) == expected

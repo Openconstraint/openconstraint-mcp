@@ -46,7 +46,7 @@ def _cpsat_result(status: CpsatStatus, *, timed_out: bool = False) -> CpsatPytho
         ("infeasible", False, "succeeded"),
         ("unknown", False, "succeeded"),
         # The load-bearing case: error → succeeded (a structured verdict, not a
-        # job-machinery failure — D3 / schemas.py:144-159 analogue).
+        # job-machinery failure — the same mapping as the MiniZinc job_state_for_result).
         ("error", False, "succeeded"),
         ("timeout", False, "timeout"),
         # timed_out flag overrides status → always timeout
@@ -60,7 +60,7 @@ def test_cpsat_job_state_for_result_maps_every_status(
 
 
 def test_cpsat_job_state_for_result_error_maps_to_succeeded_not_failed() -> None:
-    # Explicit assertion for the D3 semantic: error → succeeded.
+    # Explicit assertion for the load-bearing mapping: error → succeeded.
     result = _cpsat_result("error")
     assert cpsat_job_state_for_result(result) == "succeeded"
 

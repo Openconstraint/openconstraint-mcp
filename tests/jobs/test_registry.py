@@ -166,7 +166,7 @@ def test_fast_solve_reaches_succeeded_with_result(monkeypatch: pytest.MonkeyPatc
 
 
 def test_solve_status_error_reaches_succeeded_not_failed(monkeypatch: pytest.MonkeyPatch) -> None:
-    # D1.9: a structured solver `error` verdict is a SUCCEEDED job with the result
+    # A structured solver `error` verdict is a SUCCEEDED job with the result
     # attached — `failed` is reserved for the absence of a result.
     _patch_solve(monkeypatch, lambda model, *, on_start, **kw: _solve_result("error"))
     registry = JobRegistry()
@@ -356,7 +356,7 @@ def test_cancel_if_queued_leaves_a_started_job_running(monkeypatch: pytest.Monke
 
 def test_submit_resolves_capabilities_once_at_admission(monkeypatch: pytest.MonkeyPatch) -> None:
     # A gated-control job resolves the capability map exactly once, at admission;
-    # the worker trusts that and never re-resolves (D1/D2).
+    # the worker trusts that and never re-resolves.
     resolve_calls = _patch_list_solvers(monkeypatch, SolverCapabilities(supports_free_search=True))
     _patch_solve(monkeypatch, lambda model, *, on_start, **kw: _solve_result())
     registry = JobRegistry()
@@ -451,7 +451,7 @@ def test_submit_many_admits_whole_batch_in_order(monkeypatch: pytest.MonkeyPatch
 def test_submit_many_rejects_whole_batch_when_over_capacity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Atomic admission (D8): a batch that would exceed running+queued capacity
+    # Atomic admission: a batch that would exceed running+queued capacity
     # admits NONE — no record is created and in_flight is unchanged.
     release = threading.Event()
     started = threading.Event()

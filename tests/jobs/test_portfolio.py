@@ -290,7 +290,7 @@ def test_portfolio_expands_models_solvers_seeds_cross_product(
 
 
 def test_portfolio_plan_interleaves_models_first(monkeypatch: pytest.MonkeyPatch) -> None:
-    # The model index varies fastest (D1): when len(models) <= max_running_jobs, the
+    # The model index varies fastest: when len(models) <= max_running_jobs, the
     # first len(models) attempts cover every distinct formulation, so each gets a
     # first-wave slot before any model is repeated on another solver.
     def _fake_solve(model: str, *, solver: str, on_start: Any, **kw: Any) -> SolveResult:
@@ -360,7 +360,7 @@ def test_portfolio_no_winner_when_all_attempts_fail(monkeypatch: pytest.MonkeyPa
 
 def test_portfolio_picks_timeout_incumbent_over_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
     # No decisive result: a timeout WITH an incumbent solution outranks a bare
-    # `unknown`, so the timeout attempt is the best-available winner (D6).
+    # `unknown`, so the timeout attempt is the best-available winner.
     def _fake_solve(model: str, *, solver: str, on_start: Any, **kw: Any) -> SolveResult:
         on_start(_FakeProc())
         if solver == "cp-sat":

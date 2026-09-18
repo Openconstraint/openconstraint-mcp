@@ -118,7 +118,7 @@ def test_submit_source_reaches_succeeded_with_result(monkeypatch: pytest.MonkeyP
 
 
 def test_submit_source_error_status_yields_succeeded_job(monkeypatch: pytest.MonkeyPatch) -> None:
-    # D3: error → succeeded (a structured verdict, not a job-machinery failure).
+    # error → succeeded (a structured verdict, not a job-machinery failure).
     _patch_run_source(
         monkeypatch,
         lambda source, *, on_start, **kw: _cpsat_result("error", solution=None),
@@ -360,7 +360,7 @@ def test_queue_overflow_raises_job_rejected_error(monkeypatch: pytest.MonkeyPatc
         registry.shutdown()
 
 
-# --- cancel running job → cancelled, NOT succeeded (D4) --------------------
+# --- cancel running job → cancelled, NOT succeeded -------------------------
 
 
 def test_cancel_running_job_finalizes_as_cancelled_not_succeeded(
@@ -369,8 +369,8 @@ def test_cancel_running_job_finalizes_as_cancelled_not_succeeded(
     """A cancelled running job must finalize as 'cancelled', not 'succeeded'.
 
     When the child is killed mid-run, _execute_cpsat returns an error result
-    (nonzero exit). Without the cancel_requested check in _run_job, D3 would
-    map that to 'succeeded'. The check must override it.
+    (nonzero exit). Without the cancel_requested check in _run_job, the result mapping
+    would report that as 'succeeded'. The check must override it.
     """
     running_event = threading.Event()
     cancel_event = threading.Event()

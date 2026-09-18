@@ -686,7 +686,7 @@ def _classify_unsat_core_outcome(
 
 
 def _derive_checker_status(solve: SolveResult, checks: Sequence[SolutionCheck]) -> CheckerStatus:
-    """Map a built ``SolveResult`` + parsed checks to the honest aggregate (D4).
+    """Map a built ``SolveResult`` + parsed checks to the honest aggregate.
 
     First match wins, so a stream-reported solve error is never hidden behind
     ``no_solution``/``completed``: ``timeout`` (the subprocess cap fired); then
@@ -817,10 +817,10 @@ def build_solve_extra_args(solver: str, controls: SolveControls) -> tuple[str, .
 def validate_solver_capabilities(
     solver: str, capabilities: SolverCapabilities, controls: SolveControls
 ) -> None:
-    """Reject a requested ``-a/-f/-p/-r`` control the resolved solver omits (D4 case a).
+    """Reject a requested ``-a/-f/-p/-r`` control the resolved solver omits.
 
     Pure: it runs no subprocess — the caller passes an already-resolved
-    ``capabilities`` (D1), so the same resolved map can validate one solver
+    ``capabilities``, so the same resolved map can validate one solver
     (single solve) or many (a portfolio plan). A requested control whose matching
     ``supports_*`` field is False raises a ``ValueError`` naming the solver, the
     MCP control, and the MiniZinc flag, plus the actionable fix. ``num_solutions``
@@ -846,7 +846,7 @@ def validate_solver_capabilities(
 def resolve_capability_map() -> dict[str, SolverCapabilities]:
     """Resolve the runtime-local ``solver_id -> capabilities`` map (one ``list_solvers()``).
 
-    A single ``--solvers-json`` subprocess; the result is not cached (D3). Keyed by
+    A single ``--solvers-json`` subprocess; the result is not cached. Keyed by
     exact solver ``id`` so capability enforcement matches the canonical-id stance of
     the ``num_solutions`` gate. Callers resolve this once per entry point and reuse
     it (a portfolio resolves it once for the whole plan).
@@ -859,8 +859,8 @@ def enforce_solver_capabilities(solver: str, controls: SolveControls) -> None:
 
     No-op — and NO ``--solvers-json`` subprocess — when none of the four gated
     controls is requested, so a default solve stays byte-identical and pays no
-    capability-lookup cost (D2). When at least one is requested, resolves the map
-    once and applies D4: (a) the solver resolves to an entry that omits the flag ->
+    capability-lookup cost. When at least one is requested, resolves the map
+    once and applies three cases: (a) the solver resolves to an entry that omits the flag ->
     raise; (b) it resolves and declares the flag -> pass; (c) the solver string
     does not resolve to any entry ``id`` (a short alias like ``gecode`` or an
     unknown solver) -> pass through untouched and let MiniZinc resolve it, exactly
@@ -909,7 +909,7 @@ def run_prepared_solve(
     The enforcement-free solve shared by ``solve_model``, the internal solve of
     ``save_verified_model``, and the background job worker: each entry point
     validates controls and enforces capabilities once up front (so the save path
-    resolves capabilities at most once — D1, and the worker never re-resolves),
+    resolves capabilities at most once, and the worker never re-resolves),
     then calls this to run and parse. ``extra_args`` already carries the
     json-stream transport plus any control flags from ``build_solve_extra_args``.
     ``tracker`` registers the child for server teardown; ``on_start`` publishes
@@ -1073,7 +1073,7 @@ def _validate_portfolio_result_consistency(
 
     ``winner_index`` is bounds-checked defensively against ``attempts`` before
     indexing into it — nothing in ``PortfolioSolveResult`` guarantees that
-    invariant today (adding it there is out of scope for this task) — so a
+    invariant — so a
     malformed client-supplied result raises a clear ``ValueError`` here instead
     of an unhandled ``IndexError``.
     """
@@ -1169,7 +1169,7 @@ def save_verified_model(
     validate_model_and_timeout(model, timeout_ms)
     # Validates the solve controls with the exact solve_model rules and rejects an
     # unsupported -a/-f/-p/-r control before check, solve, or write (one
-    # --solvers-json at most for the whole save — D1). The built args are kept so
+    # --solvers-json at most for the whole save). The built args are kept so
     # the internal solve neither rebuilds them nor re-enforces.
     extra_args = prepare_solve_args(solver, controls)
     if portfolio_result is not None:
@@ -1293,7 +1293,7 @@ def solve_model_path(
     model_path, data_path = validate_model_data_paths(model_path, data_path)
     checker_path = validate_checker_path(checker_path) if checker_path is not None else None
     # Reject an unsupported -a/-f/-p/-r control before the solve, same lazy
-    # one-shot resolution as the inline path (D2/D4).
+    # one-shot resolution as the inline path.
     extra_args = prepare_solve_args(solver, controls)
     if checker_path is not None:
         extra_args = (*extra_args, "--solution-checker", str(checker_path))

@@ -52,7 +52,7 @@ SolveStatus = Literal[
 ]
 
 
-# A `--solution-checker` aggregate verdict — honest, NOT pass/fail (Decision D4).
+# A `--solution-checker` aggregate verdict — honest, NOT pass/fail.
 # `completed` means the checker ran for every produced solution with no nested
 # UNSATISFIABLE; it does NOT mean "all author-correct" (author CORRECT/INCORRECT
 # text is a convention the server never adjudicates). `violation` is the one
@@ -132,7 +132,7 @@ class SolveResult(BaseModel):
     # `--solution-checker`); None for an ordinary solve. The checker validates
     # each produced solution; it never proves optimality (see CheckerReport).
     checker: CheckerReport | None = None
-    # Stage 2 structured diagnostic (None on a clean success). Additive: the
+    # Structured diagnostic (None on a clean success). Additive: the
     # authoritative outcome stays `status`; this is the stable branch point.
     diagnostic: Diagnostic | None = None
 
@@ -160,7 +160,7 @@ DEFAULT_SOLVE_CONTROLS: SolveControls = SolveControls()
 
 
 def job_state_for_result(result: SolveResult) -> JobState:
-    """Map a produced ``SolveResult`` to its terminal ``JobState`` (D1.9).
+    """Map a produced ``SolveResult`` to its terminal ``JobState``.
 
     Total over all eight ``SolveStatus`` values for the *result-present* paths: a
     subprocess timeout (``result.timed_out``) or a stream ``timeout`` verdict maps
@@ -183,7 +183,7 @@ class SolveJobStatus(BaseModel):
     ``result`` is present IFF ``state`` is a result-bearing terminal state
     (``succeeded`` or ``timeout``); it is ``None`` for ``queued``/``running`` (not
     finished) and for ``failed``/``cancelled`` (no usable result). This is the
-    load-bearing D1.9 invariant — ``result present ⇔ state ∈ {succeeded, timeout}``
+    load-bearing result-presence invariant — ``result present ⇔ state ∈ {succeeded, timeout}``
     — and it is *enforced*, so a client can branch on ``state`` and trust
     ``result``'s presence (``result is None`` alone does not imply ``failed``).
     Partial mid-run statistics are not provided in this increment: a

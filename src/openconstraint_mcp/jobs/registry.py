@@ -97,7 +97,7 @@ class JobRegistry(BackgroundJobRegistry[SolveResult, SolveJobStatus, _JobRecord]
 
         Validates the model/timeout and solver/search controls up front with the
         exact ``solve_model`` rules (so a bad ``num_solutions``/``parallel`` fails
-        fast as a ``ValueError`` before any job exists), then applies D1.3 admission
+        fast as a ``ValueError`` before any job exists), then applies bounded-queue admission
         under the lock. Returns immediately (state ``queued``) without awaiting the
         solve; raises ``JobRejectedError`` when the bounded queue is full or shutdown
         has begun — no worker or subprocess is created then.
@@ -105,7 +105,7 @@ class JobRegistry(BackgroundJobRegistry[SolveResult, SolveJobStatus, _JobRecord]
         validate_model_and_timeout(model, timeout_ms)
         # Validates the controls and rejects an unsupported -a/-f/-p/-r control at
         # admission (one --solvers-json at most, only when a gated control is set);
-        # the worker runs these prepared args and never re-resolves (D1/D2).
+        # the worker runs these prepared args and never re-resolves.
         request = SolveRequest(
             model=model,
             solver=solver,
@@ -126,7 +126,7 @@ class JobRegistry(BackgroundJobRegistry[SolveResult, SolveJobStatus, _JobRecord]
         on_terminal: Callable[[int, SolveJobStatus], None] | None = None,
         on_terminal_error: Callable[[int, str], None] | None = None,
     ) -> list[str]:
-        """Admit a batch of solves atomically — all or none (D8) — in request order.
+        """Admit a batch of solves atomically — all or none — in request order.
 
         Validates every request's model/timeout up front with the exact
         ``solve_model`` rules, then under a SINGLE lock acquisition either admits
@@ -241,7 +241,7 @@ class JobRegistry(BackgroundJobRegistry[SolveResult, SolveJobStatus, _JobRecord]
         # Non-result-bearing terminal states (failed/cancelled) get a wrapper
         # diagnostic; result-bearing states (succeeded/timeout) derive theirs
         # from the embedded result, so a result-carried timeout_with_incumbent
-        # wins over a generic wrapper timeout (D3 invariant).
+        # wins over a generic wrapper timeout.
         wrapper = wrapper_job_diagnostic(
             record.state,
             message=record.message or f"job {record.state}",

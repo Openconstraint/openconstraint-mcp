@@ -1349,7 +1349,7 @@ def test_checked_run_rejected_carries_the_rejected_verdict(
 def test_checked_run_rejected_but_optimal_sets_the_top_level_diagnostic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # D8: `diagnostic: null` is the clean-success signal, so an optimal run the
+    # `diagnostic: null` is the clean-success signal, so an optimal run the
     # checker rejected must NOT come back with a null top-level diagnostic.
     script, checker = _checked_pair(tmp_path)
     _patch_checked(
@@ -1379,7 +1379,7 @@ def test_checked_run_rejected_preserves_the_model_result(
 def test_checked_run_timeout_with_incumbent_runs_the_checker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # D5: `timeout` IS a diagnostic-accept status, so a recovered incumbent is
+    # `timeout` IS a diagnostic-accept status, so a recovered incumbent is
     # still checkable.
     script, checker = _checked_pair(tmp_path)
     calls = _patch_checked(
@@ -1398,7 +1398,7 @@ def test_checked_run_timeout_with_incumbent_runs_the_checker(
 def test_checked_run_timeout_without_incumbent_skips_the_checker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The other side of the D5 boundary: same status, no solution -> not checkable.
+    # The other side of that boundary: same status, no solution -> not checkable.
     script, checker = _checked_pair(tmp_path)
     calls = _patch_checked(
         monkeypatch,
@@ -1430,7 +1430,7 @@ def test_checked_run_infeasible_skips_the_checker_naming_the_status(
 def test_checked_run_checker_infrastructure_error_yields_a_diagnosed_error_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # D4: a post-run infrastructure failure (temp-file write, spawn) becomes an
+    # A post-run infrastructure failure (temp-file write, spawn) becomes an
     # `error` report — it must never discard the completed model result.
     script, checker = _checked_pair(tmp_path)
     _patch_checked(

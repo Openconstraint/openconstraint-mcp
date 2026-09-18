@@ -273,12 +273,12 @@ def _validate_plan_capabilities(
     seed_used: bool,
     controls: PortfolioSolveControls,
 ) -> None:
-    """Reject the plan if any solver omits a requested control (one resolve, D4).
+    """Reject the plan if any solver omits a requested control (one resolve).
 
     Lazy like the single-solve gate: no ``--solvers-json`` when no gated control is
     requested. Seeds drive ``random_seed`` per attempt, so ``seed_count > 1`` or an
     explicit ``seeds`` list means every solver must support ``-r``. An unresolved
-    solver string (a short alias) passes through (D4 case c) — MiniZinc resolves it
+    solver string (a short alias) passes through — MiniZinc resolves it
     at solve time.
     """
     if not (
@@ -324,7 +324,7 @@ def _first_decisive_index(statuses: Sequence[SolveJobStatus]) -> int | None:
 
 
 def _best_available_rank(result: SolveResult) -> int:
-    """Rank a non-decisive but result-bearing attempt; lower is better (D6).
+    """Rank a non-decisive but result-bearing attempt; lower is better.
 
     Order: a timeout/error that still carried a solution, then ``unknown``, then a
     timeout with no solution, then a bare error.

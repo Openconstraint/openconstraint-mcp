@@ -1,4 +1,4 @@
-"""Stable, client-branchable diagnostic surface (Stage 2 structured diagnostics).
+"""Stable, client-branchable diagnostic surface.
 
 ``diagnostic=None`` on a result/job model is the clean-success signal; a
 ``Diagnostic`` exists only when there is something actionable or noteworthy for

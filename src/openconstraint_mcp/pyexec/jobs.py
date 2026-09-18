@@ -133,8 +133,8 @@ class CpsatJobRegistry(
 
     ``get`` / ``list`` / ``cancel`` / ``shutdown`` are kind-agnostic. The
     result-presence invariant ``result present ⇔ state ∈ {succeeded, timeout}``
-    is enforced by ``CpsatPythonJobStatus``'s model validator (D3). Cancel
-    post-run overrides a completed run's result with ``cancelled`` (D4), while a
+    is enforced by ``CpsatPythonJobStatus``'s model validator. Cancel
+    post-run overrides a completed run's result with ``cancelled``, while a
     wrapper exception still reports ``failed``.
     """
 

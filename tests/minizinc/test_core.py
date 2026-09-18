@@ -931,7 +931,7 @@ def test_solve_model_rejects_unsupported_control(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The resolved default solver declares no stdFlags, so each gated control is
-    # rejected before the solve runs (D4 case a), naming the solver, the control,
+    # rejected before the solve runs, naming the solver, the control,
     # and its MiniZinc flag.
     _patch_capabilities(monkeypatch, {"cp-sat": SolverCapabilities()})
     _fail_if_solve_runs(monkeypatch)
@@ -947,7 +947,7 @@ def test_solve_model_unresolved_solver_passes_capability_check(
 ) -> None:
     # A solver string that resolves to no entry id (a short alias) is NOT rejected
     # and gets no "missing capability" message — it passes through to the solve so
-    # MiniZinc resolves the alias, exactly as before (D4 case c).
+    # MiniZinc resolves the alias, exactly as before.
     _patch_capabilities(monkeypatch, {"cp-sat": SolverCapabilities()})
     _record_subprocess(monkeypatch, child_result(stdout=STREAM_SATISFY, stderr="", returncode=0))
     result = solve_model(
@@ -960,7 +960,7 @@ def test_solve_model_default_controls_skip_capability_resolution(
     fake_minizinc_binary: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # With no gated control requested, the lazy resolver is never invoked, so a
-    # default solve pays no --solvers-json cost (D2).
+    # default solve pays no --solvers-json cost.
     resolve_calls = _patch_capabilities(monkeypatch, {"cp-sat": SolverCapabilities()})
     _record_subprocess(monkeypatch, child_result(stdout=STREAM_SATISFY, stderr="", returncode=0))
     result = solve_model("solve satisfy;")
@@ -971,8 +971,8 @@ def test_solve_model_default_controls_skip_capability_resolution(
 def test_solve_model_supported_control_resolves_once_and_solves(
     fake_minizinc_binary: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A declared control resolves the capability map exactly once (D2/D3) and the
-    # solve proceeds (D4 case b).
+    # A declared control resolves the capability map exactly once and the
+    # solve proceeds.
     resolve_calls = _patch_capabilities(
         monkeypatch, {"cp-sat": SolverCapabilities(supports_free_search=True)}
     )
@@ -1952,7 +1952,7 @@ def test_save_verified_model_rejects_unsupported_control_before_check(
 ) -> None:
     # An unsupported -a/-f/-p/-r is rejected before the compile check, the solve,
     # or any write — and the capability map is resolved at most once for the whole
-    # save (D1). subprocess.run would run the check/solve, so it must not fire.
+    # save. subprocess.run would run the check/solve, so it must not fire.
     _patch_capabilities(monkeypatch, {"cp-sat": SolverCapabilities()})
     _fail_if_solve_runs(monkeypatch)
     target = tmp_path / "project"
@@ -1971,7 +1971,7 @@ def test_save_verified_model_supported_control_resolves_capabilities_once(
     tmp_path: Path,
 ) -> None:
     # The save's compile check and internal solve trust the one up-front
-    # enforcement: a gated control resolves the capability map exactly once (D1).
+    # enforcement: a gated control resolves the capability map exactly once.
     resolve_calls = _patch_capabilities(
         monkeypatch, {"cp-sat": SolverCapabilities(supports_free_search=True)}
     )
