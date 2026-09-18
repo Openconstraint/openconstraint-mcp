@@ -12,8 +12,8 @@ TERMINAL_STATES: frozenset[JobState] = cast(
     "frozenset[JobState]", frozenset({"succeeded", "failed", "timeout", "cancelled"})
 )
 
-# The terminal states that carry a produced result. The load-bearing D1.9/D3
-# invariant: a job status has a `result` IFF its state is one of these
+# The terminal states that carry a produced result. The load-bearing
+# result-presence invariant: a job status has a `result` IFF its state is one of these
 # (`result present ⇔ state ∈ {succeeded, timeout}`). For `failed` this is
 # one-way only — `failed ⇒ result is None`, but `result is None` also holds for
 # `queued`/`running`/`cancelled`.

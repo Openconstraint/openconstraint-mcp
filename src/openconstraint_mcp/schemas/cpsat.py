@@ -18,9 +18,9 @@ from .diagnostics import Diagnostic
 from .job_state import RESULT_BEARING_STATES, JobState
 
 # ---------------------------------------------------------------------------
-# CP-SAT Python executor output models (moved from pyexec/core.py per D7 so
+# CP-SAT Python executor output models. They live here, not in pyexec.core, so
 # CpsatPythonJobStatus can reference CpsatPythonResult without a
-# schemas → pyexec.core edge that would break the dependency-free leaf).
+# schemas → pyexec.core edge that would break the dependency-free leaf.
 # ---------------------------------------------------------------------------
 
 CpsatStatus = Literal["optimal", "feasible", "infeasible", "unknown", "error", "timeout"]
@@ -60,7 +60,7 @@ class CpsatPythonResult(BaseModel):
 
 
 def cpsat_job_state_for_result(result: CpsatPythonResult) -> JobState:
-    """Map a produced ``CpsatPythonResult`` to its terminal ``JobState`` (D3).
+    """Map a produced ``CpsatPythonResult`` to its terminal ``JobState``.
 
     ``timeout`` → ``timeout`` (result-bearing; partial recovered).
     All other statuses — including ``error`` — → ``succeeded``: ``status="error"``

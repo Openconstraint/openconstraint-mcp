@@ -403,7 +403,7 @@ def test_solve_model_path_rejects_unsupported_control_before_solve(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The path solve inherits the inline capability gate: a control the resolved
-    # solver omits is rejected before the solve runs (D4 case a).
+    # solver omits is rejected before the solve runs.
     model_path = tmp_path / "entry.mzn"
     model_path.write_text(_MODEL_SRC)
     _patch_capabilities(monkeypatch, {"cp-sat": SolverCapabilities()})

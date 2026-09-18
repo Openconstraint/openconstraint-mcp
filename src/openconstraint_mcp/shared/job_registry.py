@@ -30,7 +30,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, ConfigDict
 
 # RESULT_BEARING_STATES/TERMINAL_STATES are imported, not re-declared: they are
-# the load-bearing D1.9/D3 invariant ("result present iff state in this set") and
+# the load-bearing result-presence invariant ("result present iff state in this set") and
 # schemas.job_state owns it, so _finalize and the status validators can never
 # drift apart.
 from ..schemas.job_state import RESULT_BEARING_STATES, TERMINAL_STATES, JobState
@@ -290,7 +290,7 @@ class BackgroundJobRegistry[ResultT, StatusT, RecordT: JobRecord[Any, Any, Any]]
     def _elapsed_ms(self, record: RecordT) -> int | None:
         # Frozen at finalize for a terminal job; for a started-but-running job it is
         # derived from started_at_ms on each read so it advances (a `running` job
-        # reports `state` + `elapsed_ms` — README / the status models).
+        # reports `state` + `elapsed_ms` — see docs/mcp-tools.md).
         if record.state in TERMINAL_STATES:
             return record.elapsed_ms
         if record.started_at_ms is None:
@@ -391,7 +391,7 @@ class BackgroundJobRegistry[ResultT, StatusT, RecordT: JobRecord[Any, Any, Any]]
 
     def _evict_terminal_overflow(self) -> None:
         # Caller holds the lock. FIFO eviction of the oldest terminal jobs beyond
-        # the retention cap, so a long-lived server cannot grow unbounded (D1.5).
+        # the retention cap, so a long-lived server cannot grow unbounded.
         while len(self._terminal_order) > self._max_retained_terminal:
             oldest: str = self._terminal_order.pop(0)
             evicted = self._records.pop(oldest, None)

@@ -228,41 +228,19 @@ async def _report_status(
     *,
     total: float | None = None,
 ) -> None:
-    """Send one status milestone to the client on both feedback channels.
+    """Send one status milestone as a progress notification and an ``info`` log.
 
-    Emits ``notifications/progress`` (delivered only when the request carried
-    ``_meta.progressToken`` — i.e. only reaches a client that registered a
-    progress callback for the call; the SDK no-ops otherwise) and an
-    ``info``-level ``notifications/message`` log. The log is BEST-EFFORT, not a
-    guaranteed fallback: it reaches a client that never registered a progress
-    callback only on a handshake-era session (see the SEP-2577 note below).
-    ``total`` is omitted by default on purpose: these are indeterminate stage
-    counters, not a solver completion percentage, and reporting a total would
-    invite a misleading percent-complete UI. Outside a real request the SDK
-    raises ``ValueError(_CONTEXT_UNAVAILABLE_MESSAGE)``; only that exact case
-    is swallowed — any other error from tool code still propagates.
+    Progress reaches only a client that sent a ``progressToken``; the log is
+    best-effort. ``total`` is omitted on purpose: stages are indeterminate, and
+    a total invites a misleading percent-complete UI. Only the SDK's exact
+    context-unavailable ``ValueError`` is swallowed; every other error propagates.
 
-    ``Context.info`` is deprecated (SEP-2577: the logging capability is
-    deprecated as of protocol 2026-07-28) with no non-deprecated replacement for
-    server-initiated status push. Kept rather than dropped: on a handshake-era
-    session (<= 2025-11-25) the notification is still delivered unconditionally,
-    so removing it would cost those clients their only activity feedback when
-    they did not request progress. On a 2026-07-28 session it is DROPPED unless
-    that request's ``_meta`` opted in at ``info`` level — see
-    ``mcp.server.session.send_log_message``. Progress notifications are
-    unaffected either way.
-
-    Keeping it means accepting one stderr line per call site per process:
-    ``MCPDeprecationWarning`` subclasses ``UserWarning``, so it warns at
-    runtime, not just under a type checker. That runtime warning STAYS — every
-    rung (``info`` → ``log`` → ``send_log_message``) is ``@deprecated``, so
-    there is no quieter API to drop to, and suppressing it in-process is unsafe:
-    two of the three warnings fire inside the coroutine, so a ``catch_warnings``
-    block would have to mutate the process-global filter across an ``await``
-    that concurrent tool calls share. Only the test gate is quieted, by a
-    message-pinned ``filterwarnings`` entry in ``pyproject.toml`` — a static
-    ini filter in a test-only process, not a mutation mid-flight — because the
-    three rungs otherwise repeat one accepted decision 27 times per run.
+    ``Context.info`` is deprecated (SEP-2577) but stays: on a handshake-era
+    session it is those clients' only activity feedback when they did not ask
+    for progress. Its runtime ``MCPDeprecationWarning`` is not suppressed
+    in-process, because the warnings filter is process-global and a
+    ``catch_warnings`` block would span an ``await`` that concurrent tool calls
+    share; ``pyproject.toml`` filters it in tests only.
     """
     if ctx is None:
         return
@@ -339,9 +317,9 @@ _DEFAULT_MCP_ERROR_TYPES: tuple[type[Exception], ...] = (
 def _classify_domain_error(exc: Exception) -> Diagnostic | None:
     """Map a pre-result domain exception to a structured ``Diagnostic``, or None.
 
-    Stage 2 gives clients a stable branch point for the errors raised *before*
-    any result model exists. Classification is entirely by exception type, not
-    message content: ``RuntimeMissingError`` -> ``runtime_missing``,
+    Classification is by exception type, never by message text, because the
+    messages embed caller-controlled paths and solver ids. The mapping:
+    ``RuntimeMissingError`` -> ``runtime_missing``,
     ``UnsupportedFeatureError`` -> ``unsupported_feature``,
     ``InvalidSaveTargetError`` -> ``invalid_save_target``, and every other
     ``ValueError`` (both are ``ValueError`` subclasses, so this check must come
@@ -350,15 +328,6 @@ def _classify_domain_error(exc: Exception) -> Diagnostic | None:
     tabular write tools' plain file-exists overwrite refusal, which carries
     none of ``save_target.py``'s manifest-gated directory semantics and so
     deliberately stays a plain ``ValueError``, never ``InvalidSaveTargetError``.
-
-    A prior version of this function classified by message-substring/prefix
-    marker instead of type. That was fragile in a way type-checking is not:
-    every one of these messages embeds caller-controlled text (a solver id, a
-    filesystem path) ahead of the only fixed words in the message, so a path
-    or solver id that coincidentally contained a marker — even an anchored
-    prefix, for the messages where the interpolated text isn't first —
-    misclassified. See ``UnsupportedFeatureError``/``InvalidSaveTargetError``
-    in ``schemas.diagnostics`` for the full reasoning.
 
     Exceptions that are neither (``MiniZincExecutionError`` runtime corruption,
     ``JobRejectedError`` transient capacity) return None and pass through as a
@@ -1370,7 +1339,7 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         SOLVE_CONSTRAINT_PROBLEM_PROMPT_CORE if is_core_profile else SOLVE_CONSTRAINT_PROBLEM_PROMPT
     )
 
-    # The single server-owned job registry (D1.1): one instance per server,
+    # The single server-owned job registry: one instance per server,
     # captured by the job-tool closures and torn down by the lifespan. This is
     # the deliberate, bounded exception to "no global mutable state". The three
     # bounds default to today's values and are overridable via env vars (a
