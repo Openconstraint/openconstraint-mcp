@@ -865,8 +865,10 @@ on a **stable category** before scraping raw `stdout`/`stderr`/transcripts:
 
 Existing `status`/`state` fields are unchanged and remain the primary
 success/failure outcome; `diagnostic` is additive. Pre-result MCP errors (raised
-before any result model exists) expose the same contract through a documented
-first line, `Diagnostic: <category> — <message>`, in the error text.
+before any result model exists) expose the same contract through the documented
+pattern `Diagnostic: <category> — <message>` in the error text — after the mcp
+SDK's own `Error executing tool <name>: ` prefix (SDK >=2.1), so a client should
+locate the pattern rather than assume the error text starts with it.
 
 | category | what happened | typical client action |
 | --- | --- | --- |

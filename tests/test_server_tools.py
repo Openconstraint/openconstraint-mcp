@@ -1772,7 +1772,7 @@ async def test_check_minizinc_files_missing_path_still_raises_after_early_stages
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Path validation behavior is unchanged: the domain ValueError still
-    # surfaces through the decorated tool as its translated RuntimeError; only
+    # surfaces through the decorated tool as its translated ToolError; only
     # the pre-call stages were emitted before it fired.
     def _fail_if_called(*args: object, **kwargs: object) -> None:
         raise AssertionError("subprocess.run must not be invoked for a missing path")
@@ -1781,7 +1781,7 @@ async def test_check_minizinc_files_missing_path_still_raises_after_early_stages
     mcp = create_mcp_server()
     ctx = _FakeStatusContext()
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         await _tool_fn(mcp, "check_minizinc_files")(model_path=str(tmp_path / "nope.mzn"), ctx=ctx)
 
     assert "does not exist" in str(exc_info.value)

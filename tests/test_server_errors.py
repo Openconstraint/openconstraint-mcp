@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 from openconstraint_mcp.minizinc.core import MiniZincExecutionError
 from openconstraint_mcp.runtime import RuntimeMissingError
@@ -21,12 +22,14 @@ from openconstraint_mcp.server import (
 )
 from openconstraint_mcp.shared.job_errors import JobRejectedError
 
-# --- _as_mcp_error: the single (domain exc -> RuntimeError) translation home ---
+# --- _as_mcp_error: the single (domain exc -> ToolError) translation home ---
 #
-# RuntimeMissingError and MiniZincExecutionError both subclass RuntimeError, so a
-# bare `pytest.raises(RuntimeError)` cannot tell a *translated* plain RuntimeError
-# apart from the domain subclass passing through untouched. Every translation
-# assertion therefore pins `type(...) is RuntimeError` plus the `__cause__` chain.
+# ToolError is the mcp SDK's anticipated-error channel: its message reaches the
+# client verbatim, where any other exception type is logged server-side and
+# replaced with a generic "Error executing tool <name>". Every translation
+# assertion pins `type(...) is ToolError` plus the `__cause__` chain, so a test
+# also fails loudly (rather than silently passing an untranslated domain
+# exception through) if translation is ever skipped.
 
 
 def _no_subprocess(*args: object, **kwargs: object) -> None:
@@ -36,9 +39,10 @@ def _no_subprocess(*args: object, **kwargs: object) -> None:
 def _tool_fn(name: str) -> Any:
     """Return a registered tool's underlying (decorated) function.
 
-    Reaches past ``mcp.call_tool`` — which re-wraps a tool's exception in its own
-    error type — to the decorated function itself, the only seam where a test can
-    observe the exact ``RuntimeError`` type and its preserved ``__cause__``.
+    Reaches past ``mcp.call_tool`` — which re-wraps a ``ToolError`` with an
+    ``Error executing tool <name>: `` prefix — to the decorated function itself,
+    the only seam where a test can observe the exact ``ToolError`` type, its
+    unprefixed message, and its preserved ``__cause__``.
     """
     tool = create_mcp_server()._tool_manager.get_tool(name)
     assert tool is not None, f"no tool named {name!r} is registered"
@@ -59,10 +63,10 @@ def test_as_mcp_error_translates_default_domain_exceptions(exc: Exception) -> No
     def tool() -> None:
         raise exc
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         tool()
 
-    assert type(exc_info.value) is RuntimeError
+    assert type(exc_info.value) is ToolError
     # The original message is always preserved; a classifiable pre-result error
     # additionally gains a `Diagnostic: <category> — …` first line.
     assert str(exc) in str(exc_info.value)
@@ -88,9 +92,9 @@ def test_as_mcp_error_narrow_set_translates_a_listed_type() -> None:
     def tool() -> None:
         raise boom
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         tool()
-    assert type(exc_info.value) is RuntimeError
+    assert type(exc_info.value) is ToolError
     assert exc_info.value.__cause__ is boom
 
 
@@ -125,10 +129,10 @@ async def test_as_mcp_error_translates_domain_exception_from_async_tool() -> Non
     async def tool() -> None:
         raise boom
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         await tool()
 
-    assert type(exc_info.value) is RuntimeError
+    assert type(exc_info.value) is ToolError
     assert str(boom) in str(exc_info.value)
     assert exc_info.value.__cause__ is boom
 
@@ -180,15 +184,15 @@ async def test_string_tools_translate_value_error_with_cause(
     tool_name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # An empty model raises ValueError before the runtime gate; the default caught
-    # set must convert it to a plain RuntimeError with the cause preserved. The
+    # set must convert it to a plain ToolError with the cause preserved. The
     # direct call passes no ctx, so the async wrappers must default it to None.
     monkeypatch.setattr("openconstraint_mcp.minizinc.core.execute_child", _no_subprocess)
     fn = _tool_fn(tool_name)
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         await fn(model="")
 
-    assert type(exc_info.value) is RuntimeError
+    assert type(exc_info.value) is ToolError
     assert "empty" in str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, ValueError)
 
@@ -212,10 +216,10 @@ async def test_file_tools_translate_value_error_with_cause(
     missing = tmp_path / "nope.mzn"
     fn = _tool_fn(tool_name)
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         await fn(model_path=str(missing))
 
-    assert type(exc_info.value) is RuntimeError
+    assert type(exc_info.value) is ToolError
     assert "does not exist" in str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, ValueError)
 
@@ -225,15 +229,15 @@ async def test_save_tool_translates_target_value_error_with_cause(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A relative target_dir raises ValueError ahead of the runtime gate and any
-    # subprocess; the default caught set converts it to a plain RuntimeError
+    # subprocess; the default caught set converts it to a plain ToolError
     # whose message tells the client how to fix the call.
     monkeypatch.setattr("openconstraint_mcp.minizinc.core.execute_child", _no_subprocess)
     fn = _tool_fn("save_verified_minizinc_model")
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         await fn(model="solve satisfy;", target_dir="relative/project")
 
-    assert type(exc_info.value) is RuntimeError
+    assert type(exc_info.value) is ToolError
     assert "absolute" in str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, ValueError)
 
@@ -249,10 +253,10 @@ def test_list_available_solvers_translates_execution_error_with_cause(
     monkeypatch.setattr("openconstraint_mcp.server.list_solvers", _raise)
     fn = _tool_fn("list_available_solvers")
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         fn()
 
-    assert type(exc_info.value) is RuntimeError
+    assert type(exc_info.value) is ToolError
     assert str(exc_info.value) == "bad config"
     assert exc_info.value.__cause__ is boom
 
@@ -262,7 +266,7 @@ def test_list_available_solvers_does_not_translate_value_error(
 ) -> None:
     # Its narrower caught set omits ValueError: a ValueError here is a real bug,
     # so it must propagate untouched rather than masquerade as an actionable
-    # RuntimeError message.
+    # ToolError message.
     boom = ValueError("unexpected internal error")
 
     def _raise() -> object:
@@ -282,14 +286,14 @@ def test_list_available_solvers_does_not_translate_value_error(
 @pytest.mark.parametrize("tool_name", ["get_solve_job", "cancel_solve_job"])
 def test_job_lookup_tools_translate_unknown_id_with_cause(tool_name: str) -> None:
     # The registry raises ValueError for an unknown job_id; the default-caught
-    # ValueError becomes a plain RuntimeError carrying the cause. These tools are
+    # ValueError becomes a plain ToolError carrying the cause. These tools are
     # synchronous (fast registry reads), so they are called directly.
     fn = _tool_fn(tool_name)
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         fn(job_id="does-not-exist")
 
-    assert type(exc_info.value) is RuntimeError
+    assert type(exc_info.value) is ToolError
     assert "unknown" in str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, ValueError)
 
@@ -299,7 +303,7 @@ def test_submit_solve_job_translates_queue_full_with_cause(
 ) -> None:
     # JobRejectedError subclasses RuntimeError but is NOT in the default caught
     # set, so submit_solve_job must name it explicitly; the assertion pins the
-    # exact RuntimeError type to prove translation (not subclass passthrough).
+    # exact ToolError type to prove translation (not subclass passthrough).
     boom = JobRejectedError("Job queue is full (4 running + 16 queued).")
 
     def _raise(self: object, **kwargs: object) -> str:
@@ -308,10 +312,10 @@ def test_submit_solve_job_translates_queue_full_with_cause(
     monkeypatch.setattr("openconstraint_mcp.jobs.registry.JobRegistry.submit", _raise)
     fn = _tool_fn("submit_solve_job")
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         fn(model="solve satisfy;")
 
-    assert type(exc_info.value) is RuntimeError
+    assert type(exc_info.value) is ToolError
     assert "queue is full" in str(exc_info.value)
     assert exc_info.value.__cause__ is boom
 
@@ -320,14 +324,14 @@ def test_submit_solve_job_translates_value_error_with_cause(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # An empty model raises ValueError in submit's up-front validation, before any
-    # job or subprocess; the default caught set converts it to a plain RuntimeError.
+    # job or subprocess; the default caught set converts it to a plain ToolError.
     monkeypatch.setattr("openconstraint_mcp.minizinc.core.execute_child", _no_subprocess)
     fn = _tool_fn("submit_solve_job")
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         fn(model="")
 
-    assert type(exc_info.value) is RuntimeError
+    assert type(exc_info.value) is ToolError
     assert "empty" in str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, ValueError)
 
@@ -339,7 +343,7 @@ def test_submit_solve_job_translates_capability_gate_runtime_error_with_cause(
     # which runs list_solvers() — so an uninstalled/corrupt runtime raises
     # RuntimeMissingError at submit, BEFORE any job exists. The wrapper must
     # translate it like every other actionable runtime error (pin the exact
-    # RuntimeError type to prove translation, not subclass passthrough).
+    # ToolError type to prove translation, not subclass passthrough).
     boom = RuntimeMissingError("runtime missing; run install-runtime")
 
     def _raise() -> object:
@@ -348,20 +352,23 @@ def test_submit_solve_job_translates_capability_gate_runtime_error_with_cause(
     monkeypatch.setattr("openconstraint_mcp.minizinc.core.list_solvers", _raise)
     fn = _tool_fn("submit_solve_job")
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         fn(model="solve satisfy;", free_search=True)
 
-    assert type(exc_info.value) is RuntimeError
+    assert type(exc_info.value) is ToolError
     assert "install-runtime" in str(exc_info.value)
     assert exc_info.value.__cause__ is boom
 
 
 # --- Stage 2: structured diagnostic on pre-result MCP errors ----------------
 #
-# The mcp SDK's tool-exception path surfaces only the message string, so the
-# structured contract rides in a documented `Diagnostic: <category> — …` first
-# line (see server._translated_error). These tests pin the classifier and prove
-# the contract reaches clients through the real MCP tool path.
+# A ToolError's message reaches the client verbatim (any other exception type
+# does not — see the module header), so the structured contract rides in a
+# documented `Diagnostic: <category> — …` line (see server._translated_error).
+# These tests pin the classifier and the decorated-function contract; the
+# "via mcp.call_tool" test at the end of this file proves it survives the real
+# `mcp.call_tool` dispatch too, where the SDK prepends its own
+# `Error executing tool <name>: `.
 
 
 def test_classify_runtime_missing() -> None:
@@ -469,7 +476,7 @@ async def test_tool_malformed_model_path_exposes_invalid_request(tmp_path: Path)
     # Required through-the-tool proof: a nonexistent model_path raises ValueError
     # before the runtime gate, and the client sees the invalid_request contract.
     fn = _tool_fn("solve_minizinc_files")
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         await fn(model_path=str(tmp_path / "nope.mzn"))
     assert str(exc_info.value).startswith("Diagnostic: invalid_request — ")
     assert "does not exist" in str(exc_info.value)
@@ -481,7 +488,7 @@ async def test_tool_relative_target_dir_exposes_invalid_save_target(
 ) -> None:
     monkeypatch.setattr("openconstraint_mcp.minizinc.core.execute_child", _no_subprocess)
     fn = _tool_fn("save_verified_minizinc_model")
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         await fn(model="solve satisfy;", target_dir="relative/project")
     assert str(exc_info.value).startswith("Diagnostic: invalid_save_target — ")
 
@@ -496,7 +503,7 @@ def test_tool_runtime_missing_exposes_runtime_missing(
 
     monkeypatch.setattr("openconstraint_mcp.minizinc.core.list_solvers", _raise)
     fn = _tool_fn("submit_solve_job")
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         fn(model="solve satisfy;", free_search=True)
     assert str(exc_info.value).startswith("Diagnostic: runtime_missing — ")
 
@@ -507,7 +514,7 @@ async def test_tool_experiment_budget_exposes_invalid_request() -> None:
     # runs; the client sees invalid_request through the experiment tool.
     fn = _tool_fn("run_cpsat_python_experiment")
     attempt = CpsatPythonExperimentAttempt(source="print('x')")
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         await fn(attempts=[attempt], default_script_timeout_ms=10_000_000)
     assert str(exc_info.value).startswith("Diagnostic: invalid_request — ")
     assert "budget" in str(exc_info.value)
@@ -521,7 +528,7 @@ async def test_tool_checked_run_budget_exposes_invalid_request(tmp_path: Path) -
     checker.write_text("print('checker')", encoding="utf-8")
     fn = _tool_fn("run_cpsat_python_file_checked")
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         await fn(
             script_path=str(script),
             checker_path=str(checker),
@@ -546,7 +553,7 @@ async def test_tool_experiment_hash_race_exposes_indexed_invalid_request(
     monkeypatch.setattr("openconstraint_mcp.pyexec.experiment.path_sha256", _disappeared)
     fn = _tool_fn("run_cpsat_python_experiment")
 
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         await fn(attempts=[CpsatPythonExperimentAttempt(script_path=str(script))])
 
     assert str(exc_info.value).startswith(
@@ -560,7 +567,7 @@ async def test_tool_experiment_hash_race_exposes_indexed_invalid_request(
 @pytest.mark.asyncio
 async def test_load_tabular_data_missing_file_is_an_invalid_request(tmp_path: Path) -> None:
     fn = _tool_fn("load_tabular_data")
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         await fn(path=str(tmp_path / "absent.csv"))
     assert str(exc_info.value).startswith("Diagnostic: invalid_request — ")
     assert "does not exist" in str(exc_info.value)
@@ -571,7 +578,7 @@ async def test_load_tabular_data_unsupported_suffix_is_an_invalid_request(tmp_pa
     source = tmp_path / "data.ods"
     source.write_text("", encoding="utf-8")
     fn = _tool_fn("load_tabular_data")
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         await fn(path=str(source))
     assert "unsupported tabular file type" in str(exc_info.value)
 
@@ -579,7 +586,7 @@ async def test_load_tabular_data_unsupported_suffix_is_an_invalid_request(tmp_pa
 @pytest.mark.asyncio
 async def test_write_tabular_result_relative_path_is_an_invalid_request() -> None:
     fn = _tool_fn("write_tabular_result")
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         await fn(headers=["a"], rows=[["1"]], target_path="out.csv")
     assert str(exc_info.value).startswith("Diagnostic: invalid_request — ")
     assert "absolute" in str(exc_info.value)
@@ -591,7 +598,7 @@ async def test_write_tabular_result_refuses_to_clobber_an_existing_file(tmp_path
     target.write_text("keep me\n", encoding="utf-8")
 
     fn = _tool_fn("write_tabular_result")
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         await fn(headers=["a"], rows=[["1"]], target_path=str(target))
     assert str(exc_info.value).startswith("Diagnostic: invalid_request — ")
     assert "refusing to overwrite" in str(exc_info.value)
@@ -601,7 +608,7 @@ async def test_write_tabular_result_refuses_to_clobber_an_existing_file(tmp_path
 @pytest.mark.asyncio
 async def test_write_tabular_result_rejects_a_formula_string_for_csv(tmp_path: Path) -> None:
     fn = _tool_fn("write_tabular_result")
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         await fn(headers=["a"], rows=[["=1+1"]], target_path=str(tmp_path / "out.csv"))
     assert "formula" in str(exc_info.value)
     assert not (tmp_path / "out.csv").exists()
@@ -610,6 +617,25 @@ async def test_write_tabular_result_rejects_a_formula_string_for_csv(tmp_path: P
 @pytest.mark.asyncio
 async def test_write_tabular_result_rejects_a_ragged_row(tmp_path: Path) -> None:
     fn = _tool_fn("write_tabular_result")
-    with pytest.raises(RuntimeError) as exc_info:
+    with pytest.raises(ToolError) as exc_info:
         await fn(headers=["a", "b"], rows=[["1"]], target_path=str(tmp_path / "out.csv"))
     assert "every row must have exactly one cell per header" in str(exc_info.value)
+
+
+# --- via mcp.call_tool: the Diagnostic contract survives the real dispatch ---
+#
+# Every test above reaches past mcp.call_tool to the decorated function, which
+# cannot see how the SDK's dispatcher itself treats the raised exception. A
+# ToolError is the SDK's one channel whose message reaches the client rather
+# than being replaced with a generic "Error executing tool <name>" (see the
+# module header) — this test is the proof that _translated_error's choice of
+# exception type, not just its message, is load-bearing.
+
+
+@pytest.mark.asyncio
+async def test_diagnostic_contract_survives_mcp_call_tool_dispatch(tmp_path: Path) -> None:
+    mcp = create_mcp_server()
+    with pytest.raises(ToolError) as exc_info:
+        await mcp.call_tool("solve_minizinc_files", {"model_path": str(tmp_path / "nope.mzn")})
+    assert "Diagnostic: invalid_request — " in str(exc_info.value)
+    assert "does not exist" in str(exc_info.value)

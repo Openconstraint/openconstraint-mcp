@@ -12,6 +12,7 @@ from typing import Annotated, Any, Literal, ParamSpec, TypeVar, cast
 
 from anyio import to_thread
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import CallToolResult, TextContent
 from pydantic import BaseModel, JsonValue, StrictInt
 
@@ -406,34 +407,36 @@ def _classify_domain_error(exc: Exception) -> Diagnostic | None:
     return Diagnostic(category="invalid_request", message=str(exc))
 
 
-def _translated_error(exc: Exception) -> RuntimeError:
-    """Build the ``RuntimeError`` an MCP tool raises for a domain exception.
+def _translated_error(exc: Exception) -> ToolError:
+    """Build the ``ToolError`` an MCP tool raises for a domain exception.
 
-    When the exception classifies to a ``Diagnostic``, the first line is the
-    documented fallback ``Diagnostic: <category> — <summary>`` (the mcp SDK's
-    tool-exception path surfaces only the message string, so the contract rides
-    in that line), with any remaining original detail preserved on following
-    lines. An unclassified exception is re-raised with its verbatim message, as
-    before.
+    ``ToolError`` (unlike a plain exception) is the mcp SDK's anticipated-error
+    channel: its message reaches the client verbatim, where any other exception
+    type is logged server-side and replaced with a generic "Error executing
+    tool <name>" (see the mcp SDK's ``UnexpectedToolError``). When the exception
+    classifies to a ``Diagnostic``, the first line is the documented fallback
+    ``Diagnostic: <category> — <summary>`` — the contract rides in that line —
+    with any remaining original detail preserved on following lines. An
+    unclassified exception is re-raised with its verbatim message, as before.
     """
     diagnostic = _classify_domain_error(exc)
     if diagnostic is None:
-        return RuntimeError(str(exc))
+        return ToolError(str(exc))
     first_line, _, rest = diagnostic.message.partition("\n")
     text = f"Diagnostic: {diagnostic.category} — {first_line}"
     if rest:
         text = f"{text}\n{rest}"
-    return RuntimeError(text)
+    return ToolError(text)
 
 
 def _as_mcp_error(
     *exc_types: type[Exception],
 ) -> Callable[[Callable[_P, _R]], Callable[_P, _R]]:
-    """Translate a tool's domain exceptions into a plain MCP ``RuntimeError``.
+    """Translate a tool's domain exceptions into a ``ToolError`` the client sees.
 
-    The single home for the ``(domain exception -> RuntimeError)`` invariant: on
+    The single home for the ``(domain exception -> ToolError)`` invariant: on
     any of ``exc_types`` (defaulting to the runtime/execution/value triad), the
-    domain error is re-raised as a ``RuntimeError`` (original preserved as
+    domain error is re-raised as a ``ToolError`` (original preserved as
     ``__cause__``). Pre-result errors clients need to branch on are prefixed with
     a structured ``Diagnostic: <category> — …`` first line (see
     ``_translated_error``); others keep their verbatim message. Pass a narrower
