@@ -19,7 +19,7 @@ from openconstraint_mcp.schemas.minizinc import (
     SolverInfo,
     SolverList,
 )
-from openconstraint_mcp.shared.job_errors import JobRejectedError
+from openconstraint_mcp.shared.job_errors import JobRejectedError, UnknownJobError
 from tests.minizinc.helpers import STREAM_SATISFY, child_result
 
 
@@ -215,6 +215,27 @@ def test_runner_exception_reaches_failed_with_none_result(
         assert status.result is None
         assert status.message is not None
         assert "blew up" in status.message
+    finally:
+        registry.shutdown()
+
+
+def test_exception_from_the_state_mapping_fails_the_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The result -> JobState mapping runs inside the worker's boundary too: a
+    raise there finalizes `failed` instead of leaving the record `running` forever
+    and leaking its in-flight slot."""
+
+    def _boom(result: SolveResult) -> str:
+        raise RuntimeError("state mapping exploded")
+
+    _patch_solve(monkeypatch, lambda model, *, on_start, **kw: _solve_result())
+    monkeypatch.setattr("openconstraint_mcp.jobs.registry.job_state_for_result", _boom)
+    registry = JobRegistry()
+    try:
+        job_id = registry.submit(model="solve satisfy;")
+
+        assert _wait_until_terminal(registry, job_id) == "failed"
     finally:
         registry.shutdown()
 
@@ -563,6 +584,7 @@ def test_job_waiting_for_terminal_listener_starts_timing_only_on_worker(
         release_listener.wait(timeout=5)
 
     _patch_solve(monkeypatch, _solve)
+    monkeypatch.setattr("openconstraint_mcp.shared.job_registry.now_ms", lambda: clock_ms[0])
     monkeypatch.setattr("openconstraint_mcp.jobs.registry.now_ms", lambda: clock_ms[0])
     registry: JobRegistry = JobRegistry(max_running_jobs=1, max_queued_jobs=0)
     try:
@@ -717,100 +739,6 @@ def test_shutdown_terminates_a_running_child(monkeypatch: pytest.MonkeyPatch) ->
     registry.shutdown()
 
     assert terminated == handles
-
-
-def test_shutdown_retries_a_terminal_unreaped_child(monkeypatch: pytest.MonkeyPatch) -> None:
-    handle = _FakeProc()
-    handle.returncode = None
-    terminated: list[Any] = []
-
-    def _unreaped_solve(model: str, *, on_start: Any, **kw: Any) -> SolveResult:
-        on_start(handle)
-        return _solve_result()
-
-    _patch_solve(monkeypatch, _unreaped_solve)
-    _patch_terminate(monkeypatch, terminated)
-    registry = JobRegistry()
-    try:
-        job_id = registry.submit(model="solve satisfy;")
-        assert _wait_until_terminal(registry, job_id) == "succeeded"
-    finally:
-        registry.shutdown()
-
-    assert terminated == [handle]
-
-
-def test_shutdown_terminates_an_evicted_unreaped_child(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Evicting a terminal record that still owns an unreaped leader must not drop
-    # the only reference to that child: the handle is kept for the shutdown sweep.
-    unreaped = _FakeProc()
-    unreaped.returncode = None  # type: ignore[attr-defined]
-    reaped = _FakeProc()
-    reaped.returncode = 0  # type: ignore[attr-defined]
-    handles = iter([unreaped, reaped])
-    terminated: list[Any] = []
-
-    def _solve(model: str, *, on_start: Any, **kw: Any) -> SolveResult:
-        on_start(next(handles))
-        return _solve_result()
-
-    _patch_solve(monkeypatch, _solve)
-    _patch_terminate(monkeypatch, terminated)
-    # max_running=1 forces sequential completion so "oldest terminal" is the first
-    # job; cap=1 evicts it the moment the second finalizes.
-    registry = JobRegistry(max_running_jobs=1, max_queued_jobs=8, max_retained_terminal=1)
-    try:
-        first = registry.submit(model="solve satisfy;")
-        assert _wait_until_terminal(registry, first) == "succeeded"
-        second = registry.submit(model="solve satisfy;")
-        assert _wait_until_terminal(registry, second) == "succeeded"
-        with pytest.raises(ValueError, match="unknown"):
-            registry.get(first)  # evicted
-    finally:
-        registry.shutdown()
-
-    # first's unreaped handle was kept and swept; second's reaped handle was not.
-    assert terminated == [unreaped]
-
-
-def test_eviction_reaps_a_leader_that_exited_before_eviction(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # A leader can exit on its own between finalize and eviction (eviction may run
-    # long after the job that owns it finished, once the retention cap is next
-    # exceeded). Eviction must poll() to reap it there rather than trusting the
-    # stale post-finalize returncode and stashing an already-dead handle.
-    class _LateExitProc(_FakeProc):
-        def __init__(self) -> None:
-            self.returncode = None
-
-        def poll(self) -> Any:
-            self.returncode = 0  # exits the moment eviction checks it
-            return self.returncode
-
-    late_exit = _LateExitProc()
-    reaped = _FakeProc()
-    reaped.returncode = 0  # type: ignore[attr-defined]
-    handles = iter([late_exit, reaped])
-    terminated: list[Any] = []
-
-    def _solve(model: str, *, on_start: Any, **kw: Any) -> SolveResult:
-        on_start(next(handles))
-        return _solve_result()
-
-    _patch_solve(monkeypatch, _solve)
-    _patch_terminate(monkeypatch, terminated)
-    registry = JobRegistry(max_running_jobs=1, max_queued_jobs=8, max_retained_terminal=1)
-    try:
-        first = registry.submit(model="solve satisfy;")
-        assert _wait_until_terminal(registry, first) == "succeeded"
-        second = registry.submit(model="solve satisfy;")
-        assert _wait_until_terminal(registry, second) == "succeeded"
-    finally:
-        registry.shutdown()
-
-    # Reaped at eviction time, so it was never stashed for the shutdown sweep.
-    assert terminated == []
 
 
 def test_shutdown_finalizes_a_queued_job_as_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1338,3 +1266,36 @@ def test_listener_exception_on_the_worker_thread_is_logged(
         if record.name == "openconstraint_mcp.jobs.registry" and record.exc_info
     ]
     assert logged == ["listener exploded"]
+
+
+# --- differences this backend keeps from the shared lifecycle ------------------
+
+
+def test_admission_leaves_a_job_queued_even_with_a_free_running_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MiniZinc admission: a job is `queued` and untimed until a worker takes it,
+    however free the pool is (the CP-SAT registry reports `running` at once).
+
+    The pool is stubbed out so no worker can run, leaving admission as the only
+    thing that could have set the state.
+    """
+    registry: JobRegistry = JobRegistry()
+    monkeypatch.setattr(registry._executor, "submit", lambda fn, *args: Future())
+    try:
+        status: SolveJobStatus = registry.get(registry.submit(model="solve satisfy;"))
+
+        assert (status.state, status.started_at_ms) == ("queued", None)
+    finally:
+        registry.shutdown()
+
+
+def test_get_unknown_job_id_raises_unknown_job_error() -> None:
+    # Its own ValueError subtype: a portfolio skipping evicted attempts catches it
+    # without also swallowing pydantic's ValidationError.
+    registry: JobRegistry = JobRegistry()
+    try:
+        with pytest.raises(UnknownJobError):
+            registry.get("does-not-exist")
+    finally:
+        registry.shutdown()

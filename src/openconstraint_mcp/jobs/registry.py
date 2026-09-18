@@ -7,12 +7,10 @@ singleton. It lets a client submit a solve as a background job, poll its status,
 fetch the final ``SolveResult``, and cancel a running job, so hard solves no longer
 hit synchronous MCP client timeouts.
 
-Bounding (D1.3 / D1.5): at most ``max_running_jobs`` solves run concurrently (a
-fixed ``ThreadPoolExecutor`` pool); further submissions sit ``queued`` until a
-worker frees up, up to ``max_queued_jobs``; a submit beyond that is rejected with
-``JobRejectedError`` rather than growing unbounded. Retained terminal jobs are
-capped at ``max_retained_terminal`` (oldest evicted), and ``shutdown`` terminates
-any still-running child process tree.
+Bounded admission, cancel, FIFO retention and shutdown all live in
+``shared.job_registry``; this module adds the MiniZinc request type, the two
+submission entry points (one job, or an atomic batch for a portfolio), and the
+worker that runs a prepared solve.
 
 Layering: this is a server-layer module — it imports the ``minizinc`` solve
 machinery and ``schemas``; it never imports ``server``.
@@ -21,12 +19,11 @@ machinery and ``schemas``; it never imports ``server``.
 from __future__ import annotations
 
 import logging
-import threading
 from collections.abc import Callable, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
 from subprocess import Popen
 from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict
 
 # jobs reuses core's solve helpers (validation, arg-building, process teardown)
 # rather than re-implementing them.
@@ -37,13 +34,8 @@ from ..minizinc.core import (
     run_prepared_solve,
     validate_model_and_timeout,
 )
-
-# RESULT_BEARING_STATES/TERMINAL_STATES are imported, not re-declared: they are
-# the load-bearing D1.9 invariant ("result present iff state in this set") and
-# schemas.job_state owns it, so _finalize and the SolveJobStatus validator can
-# never drift apart.
 from ..schemas.diagnostics import Diagnostic, wrapper_job_diagnostic
-from ..schemas.job_state import RESULT_BEARING_STATES, TERMINAL_STATES, JobState
+from ..schemas.job_state import JobState
 from ..schemas.minizinc import (
     DEFAULT_SOLVE_CONTROLS,
     SolveControls,
@@ -52,13 +44,11 @@ from ..schemas.minizinc import (
     job_state_for_result,
 )
 from ..shared.job_errors import JobRejectedError, UnknownJobError, exception_summary, now_ms
+from ..shared.job_registry import BackgroundJobRegistry, JobRecord
 from ..shared.proc import terminate_process_tree as _terminate_process_tree
 
-_logger: logging.Logger = logging.getLogger(__name__)
 
-
-@dataclass(frozen=True)
-class SolveRequest:
+class SolveRequest(BaseModel):
     """The immutable, prepared solve parameters for one job.
 
     ``extra_args`` is the solve argv the submitter already built from ``controls``
@@ -66,6 +56,8 @@ class SolveRequest:
     after a portfolio's plan-level capability check). The worker runs it verbatim
     and never rebuilds or re-resolves.
     """
+
+    model_config = ConfigDict(frozen=True, strict=True)
 
     model: str
     solver: str
@@ -76,68 +68,20 @@ class SolveRequest:
     extra_args: tuple[str, ...]
 
 
-@dataclass
-class _JobRecord:
-    """Mutable per-job state, guarded by the registry lock."""
-
-    job_id: str
-    request: SolveRequest
-    submitted_at_ms: int
-    state: JobState
-    started_at_ms: int | None = None
-    finished_at_ms: int | None = None
-    elapsed_ms: int | None = None
-    result: SolveResult | None = None
-    message: str | None = None
-    handle: Popen[str] | None = None
-    future: Future[None] | None = None
-    cancel_requested: bool = False
-    # Set by submit_many: called once, outside the lock, after the record finalizes.
-    on_terminal: Callable[[int, SolveJobStatus], None] | None = None
-    on_terminal_error: Callable[[int, str], None] | None = None
-    batch_index: int = 0
+_JobRecord = JobRecord[SolveRequest, SolveResult, SolveJobStatus]
 
 
-class JobRegistry:
+class JobRegistry(BackgroundJobRegistry[SolveResult, SolveJobStatus, _JobRecord]):
     """A bounded, single-owned registry of background solve jobs.
 
-    All record mutation happens under ``_lock``; the critical sections are kept
-    trivial. A worker writes only its own record. The bounded pool caps concurrent
-    running solves (and thus live MiniZinc subprocesses); a single ``in_flight``
-    counter (running + queued) enforces the admission bound of ``max_running +
-    max_queued``. Admitted jobs stay queued until a worker starts them, including
-    while a finishing worker is still notifying its terminal listener.
+    Admitted jobs stay ``queued`` until a worker starts them — including while a
+    finishing worker is still notifying its terminal listener — so a job's clock
+    starts on the worker, never at admission.
     """
 
-    def __init__(
-        self,
-        *,
-        max_running_jobs: int = 4,
-        max_queued_jobs: int = 16,
-        max_retained_terminal: int = 64,
-    ) -> None:
-        if max_running_jobs < 1:
-            raise ValueError("max_running_jobs must be >= 1")
-        if max_queued_jobs < 0:
-            raise ValueError("max_queued_jobs must be >= 0")
-        if max_retained_terminal < 1:
-            raise ValueError("max_retained_terminal must be >= 1")
-        self._max_running = max_running_jobs
-        self._max_queued = max_queued_jobs
-        self._max_retained_terminal = max_retained_terminal
-        self._lock = threading.Lock()
-        self._records: dict[str, _JobRecord] = {}
-        self._terminal_order: list[str] = []
-        # Handles of evicted terminal records whose leader was never reaped
-        # (returncode None). Eviction drops the record — the only reference to
-        # that live child — so the handle is stashed here for shutdown to sweep.
-        self._unreaped_orphans: list[Popen[str]] = []
-        self._in_flight = 0
-        # Set by shutdown(); admission rejects once closed.
-        self._closed: bool = False
-        self._executor = ThreadPoolExecutor(
-            max_workers=max_running_jobs, thread_name_prefix="solve-job"
-        )
+    _queue_label = "Job"
+    _thread_name_prefix = "solve-job"
+    _logger = logging.getLogger(__name__)
 
     def submit(
         self,
@@ -154,9 +98,9 @@ class JobRegistry:
         Validates the model/timeout and solver/search controls up front with the
         exact ``solve_model`` rules (so a bad ``num_solutions``/``parallel`` fails
         fast as a ``ValueError`` before any job exists), then applies D1.3 admission
-        under the lock. Returns immediately (state ``queued`` or ``running``)
-        without awaiting the solve; raises ``JobRejectedError`` when the bounded
-        queue is full or shutdown has begun — no worker or subprocess is created then.
+        under the lock. Returns immediately (state ``queued``) without awaiting the
+        solve; raises ``JobRejectedError`` when the bounded queue is full or shutdown
+        has begun — no worker or subprocess is created then.
         """
         validate_model_and_timeout(model, timeout_ms)
         # Validates the controls and rejects an unsupported -a/-f/-p/-r control at
@@ -172,9 +116,7 @@ class JobRegistry:
             extra_args=prepare_solve_args(solver, controls),
         )
         with self._lock:
-            self._require_open()
-            if self._in_flight >= self._max_running + self._max_queued:
-                raise JobRejectedError(self._queue_full_message())
+            self._admission_gate_locked()
             return self._admit_locked(request)
 
     def submit_many(
@@ -213,7 +155,7 @@ class JobRegistry:
         with self._lock:
             self._require_open()
             if self._in_flight + len(requests) > self._max_running + self._max_queued:
-                raise JobRejectedError(self._queue_full_message(batch=len(requests)))
+                raise JobRejectedError(self._batch_full_message(len(requests)))
             job_ids: list[str] = []
             try:
                 for index, request in enumerate(requests):
@@ -230,127 +172,24 @@ class JobRegistry:
                 # run yet (each worker waits for this lock), so un-admit the jobs already
                 # admitted; a worker that then finds no record returns without solving.
                 for job_id in job_ids:
-                    del self._records[job_id]
-                    self._in_flight -= 1
+                    self._unpublish_locked(job_id)
                 raise
             return job_ids
 
-    def get(self, job_id: str) -> SolveJobStatus:
-        with self._lock:
-            return self._to_status(self._require_record(job_id))
-
-    def list(self) -> list[SolveJobStatus]:
-        with self._lock:
-            return [self._to_status(record) for record in self._records.values()]
-
-    def cancel(self, job_id: str) -> SolveJobStatus:
-        """Cancel a job: drop it if still queued, else terminate its process tree.
-
-        A no-op on an already-terminal job. Cancellation before the worker starts
-        is handled by ``Future.cancel``; for a running job the live handle's process
-        tree is terminated and the worker records the ``cancelled`` state. If the
-        handle is not yet recorded (a cancel that races process startup), the
-        ``on_start`` hook terminates as soon as it captures the handle.
-        """
-        with self._lock:
-            record = self._require_record(job_id)
-            if record.state in TERMINAL_STATES:
-                return self._to_status(record)
-            record.cancel_requested = True
-            future = record.future
-            handle = record.handle
-        if future is not None and future.cancel():
-            # Cancelled before the worker started: it will never run, so finalize here.
-            # A second cancel racing this one also sees future.cancel() True, but
-            # its _finalize is a no-op, so only the first notifies.
-            status: SolveJobStatus | None = self._complete(
-                record, "cancelled", None, "Cancelled before start"
-            )
-            if status is not None:
-                return status
-            with self._lock:
-                return self._to_status(record)
-        if handle is not None:
-            _terminate_process_tree(handle)
-        with self._lock:
-            return self._to_status(record)
-
-    def cancel_if_queued(self, job_id: str) -> bool:
-        """Drop a job no worker has started yet; return whether it was dropped.
-
-        Unlike ``cancel``, never terminates a process, so it returns promptly: a job a
-        worker has already taken, or one already terminal, is left untouched for a
-        real ``cancel``. A dropped job finalizes ``cancelled`` and notifies its terminal
-        listener on this thread, exactly like a queued job ``cancel`` drops.
-        """
-        with self._lock:
-            record: _JobRecord = self._require_record(job_id)
-            future: Future[None] | None = record.future
-        if future is None or not future.cancel():
-            return False
-        self._complete(record, "cancelled", None, "Cancelled before start")
-        return True
-
-    def shutdown(self) -> None:
-        """Terminate running children and tear down the worker pool (lifespan exit).
-
-        Cancels not-yet-started queued jobs and finalizes them as ``cancelled`` so
-        no record is left non-terminal; terminates every live child process tree
-        (orphan handling) — whose worker then finalizes itself — and joins the pool.
-        A hard server kill bypasses this — acceptable for a local, non-persistent v1.
-        """
-        with self._lock:
-            # Close admission in the SAME acquisition as the snapshot below, so every
-            # job is either in the snapshot (and marked) or rejected — none can be
-            # admitted after the snapshot and stranded by the pool teardown.
-            self._closed = True
-            # Mark every non-terminal record cancel_requested FIRST. A worker that
-            # is running but has not yet recorded its handle (the launch window)
-            # would otherwise slip past both the future.cancel() and the handle
-            # snapshot below; with the flag set, its own on_start terminates the
-            # child the instant it launches, so wait=True joins promptly instead of
-            # blocking on the full solve timeout.
-            for record in self._records.values():
-                if record.state not in TERMINAL_STATES:
-                    record.cancel_requested = True
-            records = list(self._records.values())
-        # A pending job's future.cancel() succeeds, so its worker will never run to
-        # finalize it; do that here. A running job's cancel() returns False — its
-        # handle is terminated below and its worker finalizes it (joined by wait).
-        for record in records:
-            future = record.future
-            if future is not None and future.cancel():
-                self._complete(record, "cancelled", None, "Cancelled at shutdown")
-        with self._lock:
-            # A terminal record can still own a leader that termination could not
-            # reap. Its None returncode is the teardown-retry signal.
-            handles = [
-                r.handle
-                for r in self._records.values()
-                if r.handle is not None
-                and (r.state not in TERMINAL_STATES or getattr(r.handle, "returncode", 0) is None)
-            ]
-            # Evicted-but-unreaped children live only here now; sweep them too.
-            handles.extend(self._unreaped_orphans)
-            self._unreaped_orphans = []
-        for handle in handles:
-            _terminate_process_tree(handle)
-        self._executor.shutdown(wait=True, cancel_futures=True)
-
     # --- internals (assume the caller holds the lock unless noted) -------------
 
-    def _require_open(self) -> None:
-        # Caller holds the lock. The single admission gate for shutdown.
-        if self._closed:
-            raise JobRejectedError("Job registry is shutting down; no new jobs are accepted.")
+    def _terminate(self, handle: Popen[str]) -> None:
+        _terminate_process_tree(handle)
 
-    def _queue_full_message(self, *, batch: int | None = None) -> str:
-        capacity = f"{self._max_running} running + {self._max_queued} queued"
-        if batch is None:
-            return f"Job queue is full ({capacity}). Retry once a running job finishes."
+    def _unknown_job_error(self, job_id: str) -> Exception:
+        # Its own type, so a portfolio skipping evicted attempts does not also
+        # swallow pydantic's ValidationError.
+        return UnknownJobError(f"unknown job_id: {job_id}")
+
+    def _batch_full_message(self, batch: int) -> str:
         return (
-            f"Batch of {batch} job(s) exceeds the bounded capacity ({capacity}) given "
-            f"{self._in_flight} already in flight. Retry once running jobs finish."
+            f"Batch of {batch} job(s) exceeds the bounded capacity ({self._capacity_label()}) "
+            f"given {self._in_flight} already in flight. Retry once running jobs finish."
         )
 
     def _admit_locked(
@@ -361,15 +200,13 @@ class JobRegistry:
         on_terminal_error: Callable[[int, str], None] | None = None,
         batch_index: int = 0,
     ) -> str:
-        # Caller holds the lock AND has already checked capacity. Launches the worker
-        # future, then records the job and bumps in_flight — the single admission
+        # Caller holds the lock AND has already checked capacity. The single admission
         # primitive shared by submit (one) and submit_many (a batch under one lock).
         job_id = uuid4().hex
-        now = now_ms()
         record = _JobRecord(
             job_id=job_id,
             request=request,
-            submitted_at_ms=now,
+            submitted_at_ms=now_ms(),
             state="queued",
             on_terminal=on_terminal,
             on_terminal_error=on_terminal_error,
@@ -379,29 +216,12 @@ class JobRegistry:
         # after queueing the item (a worker thread that cannot start) leaves no record
         # for that item to run and no in-flight slot to leak.
         record.future = self._executor.submit(self._run_job, job_id)
-        self._records[job_id] = record
-        self._in_flight += 1
+        self._publish_locked(record)
         return job_id
 
-    def _require_record(self, job_id: str) -> _JobRecord:
-        record = self._records.get(job_id)
-        if record is None:
-            raise UnknownJobError(f"unknown job_id: {job_id}")
-        return record
-
-    @staticmethod
-    def _to_status(record: _JobRecord) -> SolveJobStatus:
+    def _to_status(self, record: _JobRecord) -> SolveJobStatus:
         # `result` is stored only on result-bearing terminal states, so passing it
         # straight through already satisfies the SolveJobStatus invariant.
-        # `elapsed_ms` is frozen at finalize for terminal jobs; for a started-but-
-        # running job it is derived from `started_at_ms` on each read so it advances
-        # (a `running` job reports `state` + `elapsed_ms` — README / SolveJobStatus).
-        if record.state in TERMINAL_STATES:
-            elapsed_ms = record.elapsed_ms
-        elif record.started_at_ms is not None:
-            elapsed_ms = max(now_ms() - record.started_at_ms, 0)
-        else:
-            elapsed_ms = None
         return SolveJobStatus(
             job_id=record.job_id,
             state=record.state,
@@ -410,10 +230,10 @@ class JobRegistry:
             submitted_at_ms=record.submitted_at_ms,
             started_at_ms=record.started_at_ms,
             finished_at_ms=record.finished_at_ms,
-            elapsed_ms=elapsed_ms,
+            elapsed_ms=self._elapsed_ms(record),
             result=record.result,
             message=record.message,
-            diagnostic=JobRegistry._job_diagnostic(record),
+            diagnostic=self._job_diagnostic(record),
         )
 
     @staticmethod
@@ -438,123 +258,18 @@ class JobRegistry:
         result: SolveResult | None,
         message: str | None,
     ) -> bool:
-        # Caller holds the lock. Idempotent against a late cancel: a record already
-        # terminal is left untouched. Returns whether this call performed the
-        # transition, so the caller notifies the terminal listener exactly once.
-        if record.state in TERMINAL_STATES:
-            return False
-        now = now_ms()
-        record.state = state
-        record.finished_at_ms = now
-        if record.started_at_ms is not None:
-            record.elapsed_ms = max(now - record.started_at_ms, 0)
-        record.result = result if state in RESULT_BEARING_STATES else None
-        record.message = message
-        self._in_flight -= 1
-        self._terminal_order.append(record.job_id)
-        self._evict_terminal_overflow()
-        return True
-
-    def _complete(
-        self,
-        record: _JobRecord,
-        state: JobState,
-        result: SolveResult | None,
-        message: str | None,
-    ) -> SolveJobStatus | None:
-        # Shared by workers, queued cancellation, and shutdown. In particular,
-        # eviction or status construction can fail AFTER _finalize changed state.
-        # Report that failure independently of constructing a SolveJobStatus.
-        error: str | None = None
-        status: SolveJobStatus | None = None
-        with self._lock:
-            try:
-                # A requested cancel wins however the killed solve ended, even by raising;
-                # a job already finalizing as cancelled keeps its own message.
-                if record.cancel_requested and state != "cancelled":
-                    state, result, message = "cancelled", None, "Cancelled by client"
-                if not self._finalize(record, state, result, message):
-                    return None
-                status = self._to_status(record)
-            except Exception as exc:  # noqa: BLE001 - completion boundary
-                error = exception_summary(exc)
-                _logger.exception("completion failed for job %s", record.job_id)
-        try:
-            if error is not None:
-                self._notify_terminal_error(record, error)
-            elif status is not None:
-                self._notify_terminal(record, status)
-        finally:
-            # Both callbacks can capture a portfolio and its winner output. Keep
-            # them through error reporting, then release those references even
-            # while this terminal attempt remains retained in the registry.
-            with self._lock:
-                record.on_terminal = None
-                record.on_terminal_error = None
-        return status
-
-    def _notify_terminal(self, record: _JobRecord, status: SolveJobStatus) -> None:
-        # Caller must NOT hold the lock: a listener may call back into the registry
-        # (a portfolio cancels its losers), and threading.Lock is not reentrant.
-        if record.on_terminal is None:
-            return
-        try:
-            record.on_terminal(record.batch_index, status)
-        except Exception as exc:
-            # Logged, not raised: shutdown must still finalize the remaining queued jobs
-            # and terminate live children, and on a worker thread the error would
-            # otherwise vanish into a Future nobody reads.
-            _logger.exception("terminal listener failed for job %s", record.job_id)
-            self._notify_terminal_error(record, exception_summary(exc))
-
-    @staticmethod
-    def _notify_terminal_error(record: _JobRecord, message: str) -> None:
-        # Caller must NOT hold the registry lock: the owner may cancel other jobs.
-        if record.on_terminal_error is None:
-            return
-        try:
-            record.on_terminal_error(record.batch_index, message)
-        except Exception:
-            _logger.exception("terminal error listener failed for job %s", record.job_id)
-
-    def _evict_terminal_overflow(self) -> None:
-        # Caller holds the lock. FIFO eviction of the oldest terminal jobs beyond
-        # the retention cap, so a long-lived server cannot grow unbounded (D1.5).
-        while len(self._terminal_order) > self._max_retained_terminal:
-            oldest: str = self._terminal_order.pop(0)
-            evicted = self._records.pop(oldest, None)
-            handle = evicted.handle if evicted is not None else None
-            # poll() (not the stale .returncode) so a leader that exited on its own
-            # since finalize gets reaped here instead of stashed as a false orphan.
-            if handle is not None and handle.poll() is None:
-                # A still-live, unreaped leader whose only reference was this record;
-                # keep the handle so shutdown can still terminate it.
-                self._unreaped_orphans.append(handle)
-
-    def _on_start(self, job_id: str, proc: Popen[str]) -> None:
-        # Called by the runner the instant the child is launched. Record the handle
-        # and, if a cancel already arrived during startup, terminate immediately so
-        # the cancel can't slip through the launch window.
-        with self._lock:
-            record = self._records.get(job_id)
-            if record is None:
-                cancel_now = True  # job evicted mid-flight; don't leave a child
-            else:
-                record.handle = proc
-                cancel_now = record.cancel_requested
-        if cancel_now:
-            _terminate_process_tree(proc)
+        # A requested cancel wins however the killed solve ended, even by raising;
+        # a job already finalizing as cancelled keeps its own message.
+        if record.cancel_requested and state != "cancelled":
+            state, result, message = "cancelled", None, "Cancelled by client"
+        return super()._finalize(record, state, result, message)
 
     def _run_job(self, job_id: str) -> None:
         # The worker callable: mark running, solve, then record the terminal state.
-        with self._lock:
-            record = self._records.get(job_id)
-            if record is None:
-                return  # un-admitted by a failed batch, or evicted, before it could start
-            request = record.request
-            record.state = "running"
-            if record.started_at_ms is None:
-                record.started_at_ms = now_ms()
+        record = self._begin_job(job_id)
+        if record is None:
+            return  # un-admitted by a failed batch, or evicted, before it could start
+        request = record.request
         try:
             result = run_prepared_solve(
                 request.model,
@@ -565,7 +280,10 @@ class JobRegistry:
                 extra_args=request.extra_args,
                 on_start=lambda proc: self._on_start(job_id, proc),
             )
+            # Inside the boundary as well: an exception from the state mapping would
+            # otherwise leave the record `running` forever and leak its in-flight slot.
+            state: JobState = job_state_for_result(result)
         except Exception as exc:  # noqa: BLE001 - worker boundary: never leak; record as failed
             self._complete(record, "failed", None, exception_summary(exc))
             return
-        self._complete(record, job_state_for_result(result), result, None)
+        self._complete(record, state, result, None)

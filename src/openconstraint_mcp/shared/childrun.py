@@ -25,9 +25,10 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 from subprocess import Popen
+
+from pydantic import BaseModel, ConfigDict
 
 from .childproc import ChildProcessTracker
 from .proc import popen_process_group, terminate_process_tree
@@ -79,8 +80,7 @@ def _as_spawn_error(exc: OSError) -> ChildSpawnError:
     return spawn_error
 
 
-@dataclass(frozen=True)
-class ChildExecutionResult:
+class ChildExecutionResult(BaseModel):
     """Raw outcome of one child-process run, with no protocol parsing applied.
 
     When non-``None``, ``return_code`` is the child's actual exit status (so a
@@ -105,6 +105,8 @@ class ChildExecutionResult:
     ``stdout``/``stderr`` are already capped so their combined size never exceeds
     ``MAX_OUTPUT_BYTES`` (stdout is read first; stderr gets the remaining budget).
     """
+
+    model_config = ConfigDict(frozen=True, strict=True)
 
     stdout: str
     stderr: str

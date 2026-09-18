@@ -43,9 +43,11 @@ from __future__ import annotations
 
 import logging
 import threading
+from _thread import LockType
 from collections.abc import Sequence
-from dataclasses import dataclass, field
 from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..minizinc.core import DEFAULT_SOLVE_TIMEOUT_MS
 from ..schemas.diagnostics import wrapper_job_diagnostic
@@ -75,8 +77,7 @@ from .registry import JobRegistry
 _logger: logging.Logger = logging.getLogger(__name__)
 
 
-@dataclass
-class _PortfolioRecord:
+class _PortfolioRecord(BaseModel):
     """Mutable per-portfolio-job state, guarded by ``lock``.
 
     ``submit`` creates the record before admission, so an attempt event that arrives
@@ -88,19 +89,23 @@ class _PortfolioRecord:
     ``result``/``message`` are cached.
     """
 
+    model_config = ConfigDict(arbitrary_types_allowed=True, strict=True)
+
     job_id: str
     submitted_at_ms: int
     started_at_ms: int
     per_attempt_timeout_ms: int
     solve_controls: PortfolioSolveControls
     admission: _PortfolioAdmission | None = None
-    statuses: dict[int, SolveJobStatus] = field(default_factory=dict)
+    statuses: dict[int, SolveJobStatus] = Field(default_factory=dict)
     state: PortfolioJobState = "running"
     finished_at_ms: int | None = None
     elapsed_ms: int | None = None
     result: PortfolioSolveResult | None = None
     message: str | None = None
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    # _thread.LockType, not threading.Lock: on 3.12 the latter is a factory
+    # function, which Pydantic cannot check and warns about at class creation.
+    lock: LockType = Field(default_factory=threading.Lock)
 
 
 def _admitted(record: _PortfolioRecord) -> _PortfolioAdmission:

@@ -3,11 +3,11 @@ from __future__ import annotations
 import hashlib
 import platform
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 import httpx
+from pydantic import BaseModel, ConfigDict
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -25,9 +25,10 @@ MINIZINC_VERSION: str = "2.9.7"
 BundleKind = Literal["tgz", "dmg", "nsis"]
 
 
-@dataclass(frozen=True)
-class BundleSpec:
+class BundleSpec(BaseModel):
     """One pinned upstream MiniZinc release asset the installer can fetch."""
+
+    model_config = ConfigDict(frozen=True, strict=True)
 
     filename: str
     url: str

@@ -3649,6 +3649,35 @@ async def test_submit_cpsat_python_job_rejects_bad_checker_args_before_admission
 
 
 @pytest.mark.asyncio
+async def test_get_cpsat_python_job_reports_failed_when_the_checker_phase_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An exception raised outside the checker's own handler (here the eligibility
+    # gate) used to leave the job unfinalized forever, so a polling client waited
+    # on `running` with no end. It now finalizes as `failed`.
+    def _boom(result: Any) -> Any:
+        raise RuntimeError("eligibility exploded")
+
+    monkeypatch.setattr(
+        "openconstraint_mcp.pyexec.jobs.run_cpsat_python",
+        lambda source, *, on_start, **kw: _fake_cpsat_result(),
+    )
+    monkeypatch.setattr("openconstraint_mcp.pyexec.jobs.diagnostic_incumbent_eligibility", _boom)
+    mcp = create_mcp_server()
+    submitted = _structured(
+        await mcp.call_tool(
+            "submit_cpsat_python_job",
+            {"source": "x=1", "checker": 'print(\'{"status":"accepted","errors":[]}\')'},
+        )
+    )
+
+    final = await _poll_job_status(mcp, submitted["job_id"], get_tool="get_cpsat_python_job")
+
+    assert final["state"] == "failed"
+    assert "eligibility exploded" in final["message"]
+
+
+@pytest.mark.asyncio
 async def test_submit_cpsat_python_file_job_accepts_checker_inputs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -29,8 +29,9 @@ rests on colour alone.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict
 
 from ...schemas.tabular import GanttSpec, TabularCell
 from .columns import column_index
@@ -69,14 +70,15 @@ _MISSING_COLOR_NAME: str = "(uncategorized)"
 _MISSING_ROW_LABEL: str = "(no group)"
 
 
-@dataclass(frozen=True)
-class ResolvedTask:
+class ResolvedTask(BaseModel):
     """One task's bar: its half-open span, its fill colour, and the row it sits on.
 
     ``bar_label`` is the text drawn inside the bar, or ``None`` when column A
     already names this task — an ungrouped grid gives every task its own row, so
     a bar label there would only repeat what is one cell to its left.
     """
+
+    model_config = ConfigDict(frozen=True, strict=True)
 
     bar_label: str | None
     start: int
@@ -85,8 +87,7 @@ class ResolvedTask:
     grid_row: int
 
 
-@dataclass(frozen=True)
-class ResolvedGantt:
+class ResolvedGantt(BaseModel):
     """Everything ``render_gantt`` needs, with nothing left to validate.
 
     ``row_labels`` is column A top to bottom, one entry per grid row, and
@@ -94,6 +95,8 @@ class ResolvedGantt:
     under ``"Task"``; grouped they are the resource values under that column's
     own header, repeated once per sub-row a resource needed.
     """
+
+    model_config = ConfigDict(frozen=True, strict=True)
 
     sheet_name: str
     title: str | None
@@ -104,9 +107,10 @@ class ResolvedGantt:
     horizon: int
 
 
-@dataclass(frozen=True)
-class _Staged:
+class _Staged(BaseModel):
     """One task read off a row, before its grid row is known."""
+
+    model_config = ConfigDict(frozen=True, strict=True)
 
     label: str
     start: int
