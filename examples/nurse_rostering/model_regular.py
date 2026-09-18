@@ -51,12 +51,12 @@ import argparse
 import json
 import sys
 from collections import deque
-from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
 
 from ortools.sat.python import cp_model, cp_model_helper
+from pydantic import BaseModel, ConfigDict, Field
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -86,9 +86,16 @@ REQUEST_NAMES: dict[tuple[bool, bool], str] = {
 }
 
 
-@dataclass
-class PenaltyTerm:
+class FrozenModel(BaseModel):
+    """Base for the immutable records passed across this script's function boundary."""
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+
+class PenaltyTerm(FrozenModel):
     """One penalty contribution, tagged so the objective can be broken down."""
+
+    model_config = ConfigDict(frozen=True, strict=True, arbitrary_types_allowed=True)
 
     group: str  # "rule", "cover" or "request"
     key: str  # the <Label>, cover type, or request family
@@ -96,19 +103,17 @@ class PenaltyTerm:
     weight: int
 
 
-@dataclass
-class Solution:
+class Solution(FrozenModel):
     status: str
     objective: int | None = None
     best_objective_bound: float | None = None
     wall_time: float = 0.0
-    roster: dict[str, list[str]] = field(default_factory=dict)
-    breakdown: dict[str, dict[str, int]] = field(default_factory=dict)
-    model_stats: dict[str, int] = field(default_factory=dict)
+    roster: dict[str, list[str]] = Field(default_factory=dict)
+    breakdown: dict[str, dict[str, int]] = Field(default_factory=dict)
+    model_stats: dict[str, int] = Field(default_factory=dict)
 
 
-@dataclass(frozen=True)
-class Options:
+class Options(FrozenModel):
     """Everything the command line settles before any modelling happens."""
 
     instance_path: Path
@@ -192,8 +197,7 @@ def parse_input(raw: Options) -> tuple[Instance, Options]:
 # -- the regular layer -----------------------------------------------------
 
 
-@dataclass(frozen=True)
-class Dfa:
+class Dfa(FrozenModel):
     """A deterministic automaton counting occurrences of a set of patterns.
 
     `triples` is (state, letter, next_state, hits): reading `letter` in `state`
@@ -865,17 +869,15 @@ def solve(parsed: tuple[Instance, Options]) -> Solution:
         cp_model.INFEASIBLE: "infeasible",
         cp_model.UNKNOWN: "unknown",
     }
-    solution: Solution = Solution(
-        status=status_map.get(status, "error"), wall_time=solver.wall_time
-    )
-    solution.model_stats = dict(builder.stats)
+    mapped_status: str = status_map.get(status, "error")
+    model_stats: dict[str, int] = dict(builder.stats)
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return solution
+        return Solution(status=mapped_status, wall_time=solver.wall_time, model_stats=model_stats)
 
-    solution.objective = int(round(solver.objective_value))
-    solution.best_objective_bound = float(solver.best_objective_bound)
-    solution.roster = {
+    objective: int = int(round(solver.objective_value))
+    best_objective_bound: float = float(solver.best_objective_bound)
+    roster: dict[str, list[str]] = {
         employee.id: [
             next(
                 (s for s in instance.shift_types if solver.value(builder.x[employee.id, day, s])),
@@ -895,8 +897,16 @@ def solve(parsed: tuple[Instance, Options]) -> Solution:
         cost: int = solver.value(term.expression) * term.weight
         if cost:
             breakdown[term.group][term.key] = breakdown[term.group].get(term.key, 0) + cost
-    solution.breakdown = breakdown
-    return solution
+
+    return Solution(
+        status=mapped_status,
+        wall_time=solver.wall_time,
+        objective=objective,
+        best_objective_bound=best_objective_bound,
+        roster=roster,
+        breakdown=breakdown,
+        model_stats=model_stats,
+    )
 
 
 def _pin_roster(builder: RosterModel, instance: Instance, path: Path) -> None:

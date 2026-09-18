@@ -29,8 +29,9 @@ from __future__ import annotations
 
 import collections
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict, Field
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -59,14 +60,19 @@ REQUEST_NAMES: dict[tuple[bool, bool], str] = {
 }
 
 
-@dataclass
-class Breakdown:
+class FrozenModel(BaseModel):
+    """Base for the immutable records passed across this script's function boundary."""
+
+    model_config = ConfigDict(frozen=True, strict=True)
+
+
+class Breakdown(FrozenModel):
     """Penalties grouped the way the deliverable asks for them."""
 
-    by_label: dict[str, int] = field(default_factory=dict)
-    by_cover_type: dict[str, int] = field(default_factory=dict)
-    requests: dict[str, int] = field(default_factory=dict)
-    violations: list[str] = field(default_factory=list)
+    by_label: dict[str, int] = Field(default_factory=dict)
+    by_cover_type: dict[str, int] = Field(default_factory=dict)
+    requests: dict[str, int] = Field(default_factory=dict)
+    violations: list[str] = Field(default_factory=list)
 
     @property
     def total(self) -> int:
