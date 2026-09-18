@@ -55,8 +55,8 @@ checker must be able to grade:
 """
 
 # The one profile-dependent clause. CP-SAT checker EXECUTION is full-only —
-# `run_cpsat_python_file_checked`, the experiment, save, and job tools all live
-# in `_FULL_ONLY_TOOL_NAMES`; core exposes only `run_cpsat_python` and
+# `run_cpsat_python_file_checked`, the experiment, save, and job tools are all
+# registered with `full_only=True`; core exposes only `run_cpsat_python` and
 # `run_cpsat_python_file`, neither of which takes a checker. So the core variant
 # must not promise the server will run one, the same core/full split
 # `_RUN_CPSAT_PYTHON_FILE_SHAPE_CORE`/`_FULL` already make in the tool

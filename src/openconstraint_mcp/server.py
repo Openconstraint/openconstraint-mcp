@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from importlib import metadata
 from pathlib import Path
-from typing import Annotated, Any, Literal, ParamSpec, TypeVar, cast
+from typing import Annotated, Any, Literal, ParamSpec, Protocol, TypeVar, cast
 
 from anyio import to_thread
 from mcp.server.mcpserver import Context, MCPServer
@@ -153,40 +153,8 @@ _PACKAGE_NAME = "openconstraint-mcp"
 Toolset = Literal["core", "full"]
 _VALID_TOOLSETS: tuple[Toolset, ...] = ("core", "full")
 
-# Every tool the core profile removes after registration. Static (not derived via
-# `asyncio.run(mcp.list_tools())`, which raises inside the running event loop the
-# tests build the server in). Two nets guard drift: `remove_tool()` raises
-# `ToolError` on an unknown name, so a renamed/deleted tool breaks core
-# construction loudly, and the exact-set tests catch a new tool leaking into
-# core. MAINTENANCE RULE: a newly registered tool must be added here unless it is
-# deliberately core.
-_FULL_ONLY_TOOL_NAMES = frozenset(
-    {
-        "inspect_minizinc_model",
-        "find_unsat_core",
-        "save_verified_minizinc_model",
-        "inspect_minizinc_files",
-        "find_unsat_core_files",
-        "submit_solve_job",
-        "get_solve_job",
-        "cancel_solve_job",
-        "list_solve_jobs",
-        "submit_portfolio_job",
-        "get_portfolio_job",
-        "cancel_portfolio_job",
-        "list_portfolio_jobs",
-        "submit_cpsat_python_job",
-        "submit_cpsat_python_file_job",
-        "get_cpsat_python_job",
-        "cancel_cpsat_python_job",
-        "list_cpsat_python_jobs",
-        "run_cpsat_python_file_checked",
-        "run_cpsat_python_experiment",
-        "save_verified_cpsat_python",
-        "load_tabular_data",
-        "write_tabular_result",
-    }
-)
+# A new tool is core unless it is registered with `full_only=True`, and the
+# core exact-set test fails if one leaks.
 
 
 def _homepage_url() -> str | None:
@@ -589,16 +557,786 @@ def _run_cpsat_python_file_checked_with_replay(
         )
 
 
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _identity[F: Callable[..., Any]](fn: F) -> F:
+    return fn
+
+
+class _ToolRegistrar(Protocol):
+    """Callable shape `_tool_registrar` returns; mirrors `MCPServer.tool`."""
+
+    def __call__(
+        self, *, description: str, name: str | None = None, full_only: bool = False
+    ) -> Callable[[_F], _F]: ...
+
+
+def _tool_registrar(mcp: MCPServer[Any], *, is_core: bool) -> _ToolRegistrar:
+    """Build the `tool` decorator `create_mcp_server`'s registration functions use.
+
+    `full_only` is declared at each call site instead of checked against a name
+    set far from the tools it names: under `is_core`, `full_only=True` returns
+    the identity decorator, so the tool is never registered — not registered
+    then removed — and the tools that follow it keep their position. A new tool
+    is core unless it is registered with `full_only=True`, and the core
+    exact-set test fails if one leaks.
+    """
+
+    def _tool(
+        *, description: str, name: str | None = None, full_only: bool = False
+    ) -> Callable[[_F], _F]:
+        if is_core and full_only:
+            return _identity
+        return mcp.tool(name=name, description=description)
+
+    return _tool
+
+
+def _register_runtime_tools(tool: _ToolRegistrar) -> None:
+    """Register the two core runtime-introspection tools."""
+
+    @tool(description=CHECK_RUNTIME_DESCRIPTION)
+    def check_runtime() -> RuntimeStatus:
+        return get_runtime_status()
+
+    @tool(description=LIST_AVAILABLE_SOLVERS_DESCRIPTION)
+    # Narrower than the default: this tool takes no user arguments, so a
+    # ValueError would be a real bug, not an actionable user message.
+    @_as_mcp_error(RuntimeMissingError, MiniZincExecutionError)
+    def list_available_solvers() -> Annotated[CallToolResult, SolverList]:
+        return _wrap_result(list_solvers(), format_solver_list_content)
+
+
+def _register_minizinc_tools(
+    tool: _ToolRegistrar, *, child_tracker: ChildProcessTracker, solve_minizinc_model_desc: str
+) -> None:
+    """Register the 9 MiniZinc model and file tools (check/inspect/solve/unsat-core/save)."""
+
+    @tool(description=solve_minizinc_model_desc)
+    @_as_mcp_error()
+    async def solve_minizinc_model(
+        model: str,
+        data: str | None = None,
+        checker: str | None = None,
+        solver: str = DEFAULT_SOLVER,
+        timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
+        free_search: bool = False,
+        parallel: int | None = None,
+        random_seed: int | None = None,
+        all_solutions: bool = False,
+        num_solutions: int | None = None,
+        ctx: Context | None = None,
+    ) -> Annotated[CallToolResult, SolveResult]:
+        stages = status.solve_stages(checker is not None)
+        result = await _run_tool_with_status(
+            ctx,
+            stages,
+            functools.partial(
+                solve_model,
+                model,
+                solver=solver,
+                data=data,
+                checker=checker,
+                timeout_ms=timeout_ms,
+                controls=SolveControls(
+                    free_search=free_search,
+                    parallel=parallel,
+                    random_seed=random_seed,
+                    all_solutions=all_solutions,
+                    num_solutions=num_solutions,
+                ),
+                tracker=child_tracker,
+            ),
+        )
+        return _wrap_result(result, format_solve_result_content)
+
+    @tool(description=CHECK_MINIZINC_MODEL_DESCRIPTION)
+    @_as_mcp_error()
+    async def check_minizinc_model(
+        model: str,
+        data: str | None = None,
+        solver: str = DEFAULT_SOLVER,
+        timeout_ms: int = DEFAULT_CHECK_TIMEOUT_MS,
+        ctx: Context | None = None,
+    ) -> CheckResult:
+        return await _run_tool_with_status(
+            ctx,
+            status.CHECK_STAGES,
+            functools.partial(
+                check_model,
+                model,
+                solver=solver,
+                data=data,
+                timeout_ms=timeout_ms,
+                tracker=child_tracker,
+            ),
+        )
+
+    @tool(description=INSPECT_MINIZINC_MODEL_DESCRIPTION, full_only=True)
+    @_as_mcp_error()
+    async def inspect_minizinc_model(
+        model: str,
+        data: str | None = None,
+        solver: str = DEFAULT_SOLVER,
+        timeout_ms: int = DEFAULT_INSPECT_TIMEOUT_MS,
+        ctx: Context | None = None,
+    ) -> ModelInspectionResult:
+        return await _run_tool_with_status(
+            ctx,
+            status.INSPECT_STAGES,
+            functools.partial(
+                inspect_model,
+                model,
+                solver=solver,
+                data=data,
+                timeout_ms=timeout_ms,
+                tracker=child_tracker,
+            ),
+        )
+
+    @tool(description=FIND_UNSAT_CORE_DESCRIPTION, full_only=True)
+    @_as_mcp_error()
+    async def find_unsat_core(
+        model: str,
+        data: str | None = None,
+        timeout_ms: int = DEFAULT_UNSAT_CORE_TIMEOUT_MS,
+        ctx: Context | None = None,
+    ) -> UnsatCoreResult:
+        return await _run_tool_with_status(
+            ctx,
+            status.UNSAT_CORE_STAGES,
+            functools.partial(
+                _find_unsat_core, model, data=data, timeout_ms=timeout_ms, tracker=child_tracker
+            ),
+        )
+
+    @tool(description=SAVE_VERIFIED_MINIZINC_MODEL_DESCRIPTION, full_only=True)
+    @_as_mcp_error()
+    async def save_verified_minizinc_model(
+        model: str,
+        target_dir: str,
+        data: str | None = None,
+        checker: str | None = None,
+        problem: ProblemText = None,
+        solver: str = DEFAULT_SOLVER,
+        timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
+        free_search: bool = False,
+        parallel: int | None = None,
+        random_seed: int | None = None,
+        all_solutions: bool = False,
+        num_solutions: int | None = None,
+        overwrite: bool = False,
+        portfolio_result: PortfolioSolveResult | None = None,
+        ctx: Context | None = None,
+    ) -> Annotated[CallToolResult, SaveVerifiedModelResult]:
+        result = await _run_tool_with_status(
+            ctx,
+            status.SAVE_STAGES,
+            functools.partial(
+                save_verified_model,
+                model,
+                target_dir=Path(target_dir),
+                data=data,
+                checker=checker,
+                problem=problem,
+                solver=solver,
+                timeout_ms=timeout_ms,
+                controls=SolveControls(
+                    free_search=free_search,
+                    parallel=parallel,
+                    random_seed=random_seed,
+                    all_solutions=all_solutions,
+                    num_solutions=num_solutions,
+                ),
+                overwrite=overwrite,
+                portfolio_result=portfolio_result,
+                tracker=child_tracker,
+            ),
+        )
+        return _wrap_result(result, format_save_result_content)
+
+    @tool(description=CHECK_MINIZINC_FILES_DESCRIPTION)
+    @_as_mcp_error()
+    async def check_minizinc_files(
+        model_path: str,
+        data_path: str | None = None,
+        solver: str = DEFAULT_SOLVER,
+        timeout_ms: int = DEFAULT_CHECK_TIMEOUT_MS,
+        ctx: Context | None = None,
+    ) -> CheckResult:
+        return await _run_tool_with_status(
+            ctx,
+            status.CHECK_STAGES,
+            functools.partial(
+                check_model_path,
+                Path(model_path),
+                solver=solver,
+                data_path=Path(data_path) if data_path is not None else None,
+                timeout_ms=timeout_ms,
+                tracker=child_tracker,
+            ),
+        )
+
+    @tool(description=INSPECT_MINIZINC_FILES_DESCRIPTION, full_only=True)
+    @_as_mcp_error()
+    async def inspect_minizinc_files(
+        model_path: str,
+        data_path: str | None = None,
+        solver: str = DEFAULT_SOLVER,
+        timeout_ms: int = DEFAULT_INSPECT_TIMEOUT_MS,
+        ctx: Context | None = None,
+    ) -> ModelInspectionResult:
+        return await _run_tool_with_status(
+            ctx,
+            status.INSPECT_STAGES,
+            functools.partial(
+                inspect_model_path,
+                Path(model_path),
+                solver=solver,
+                data_path=Path(data_path) if data_path is not None else None,
+                timeout_ms=timeout_ms,
+                tracker=child_tracker,
+            ),
+        )
+
+    @tool(description=SOLVE_MINIZINC_FILES_DESCRIPTION)
+    @_as_mcp_error()
+    async def solve_minizinc_files(
+        model_path: str,
+        data_path: str | None = None,
+        checker_path: str | None = None,
+        solver: str = DEFAULT_SOLVER,
+        timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
+        free_search: bool = False,
+        parallel: int | None = None,
+        random_seed: int | None = None,
+        all_solutions: bool = False,
+        num_solutions: int | None = None,
+        ctx: Context | None = None,
+    ) -> Annotated[CallToolResult, SolveResult]:
+        stages = status.solve_stages(checker_path is not None)
+        result = await _run_tool_with_status(
+            ctx,
+            stages,
+            functools.partial(
+                solve_model_path,
+                Path(model_path),
+                solver=solver,
+                data_path=Path(data_path) if data_path is not None else None,
+                checker_path=Path(checker_path) if checker_path is not None else None,
+                timeout_ms=timeout_ms,
+                controls=SolveControls(
+                    free_search=free_search,
+                    parallel=parallel,
+                    random_seed=random_seed,
+                    all_solutions=all_solutions,
+                    num_solutions=num_solutions,
+                ),
+                tracker=child_tracker,
+            ),
+        )
+        return _wrap_result(result, format_solve_result_content)
+
+    @tool(description=FIND_UNSAT_CORE_FILES_DESCRIPTION, full_only=True)
+    @_as_mcp_error()
+    async def find_unsat_core_files(
+        model_path: str,
+        data_path: str | None = None,
+        timeout_ms: int = DEFAULT_UNSAT_CORE_TIMEOUT_MS,
+        ctx: Context | None = None,
+    ) -> UnsatCoreResult:
+        return await _run_tool_with_status(
+            ctx,
+            status.UNSAT_CORE_STAGES,
+            functools.partial(
+                find_unsat_core_path,
+                Path(model_path),
+                data_path=Path(data_path) if data_path is not None else None,
+                timeout_ms=timeout_ms,
+                tracker=child_tracker,
+            ),
+        )
+
+
+def _register_solve_job_tools(tool: _ToolRegistrar, *, registry: JobRegistry) -> None:
+    """Register the 4 background MiniZinc solve-job tools."""
+
+    @tool(description=SUBMIT_SOLVE_JOB_DESCRIPTION, full_only=True)
+    # Validation raises ValueError; a full bounded queue raises JobRejectedError
+    # (a direct RuntimeError subclass, NOT in the default caught set). A gated
+    # control (free_search/parallel/random_seed/all_solutions) makes admission
+    # resolve solver capabilities via list_solvers(), so the runtime/binary triad
+    # can fire here too — exactly as for submit_portfolio_job. All must surface as
+    # actionable MCP errors.
+    @_as_mcp_error(RuntimeMissingError, MiniZincExecutionError, ValueError, JobRejectedError)
+    def submit_solve_job(
+        model: str,
+        data: str | None = None,
+        checker: str | None = None,
+        solver: str = DEFAULT_SOLVER,
+        timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
+        free_search: bool = False,
+        parallel: int | None = None,
+        random_seed: int | None = None,
+        all_solutions: bool = False,
+        num_solutions: int | None = None,
+    ) -> SolveJobStatus:
+        job_id = registry.submit(
+            model=model,
+            solver=solver,
+            data=data,
+            checker=checker,
+            timeout_ms=timeout_ms,
+            controls=SolveControls(
+                free_search=free_search,
+                parallel=parallel,
+                random_seed=random_seed,
+                all_solutions=all_solutions,
+                num_solutions=num_solutions,
+            ),
+        )
+        return registry.get(job_id)
+
+    @tool(description=GET_SOLVE_JOB_DESCRIPTION, full_only=True)
+    # An unknown job_id is the only domain error (ValueError); the registry reads
+    # touch no runtime, so the narrower caught set is honest.
+    @_as_mcp_error(ValueError)
+    def get_solve_job(job_id: str) -> SolveJobStatus:
+        return registry.get(job_id)
+
+    @tool(description=CANCEL_SOLVE_JOB_DESCRIPTION, full_only=True)
+    @_as_mcp_error(ValueError)
+    def cancel_solve_job(job_id: str) -> SolveJobStatus:
+        return registry.cancel(job_id)
+
+    @tool(description=LIST_SOLVE_JOBS_DESCRIPTION, full_only=True)
+    # Takes no arguments and only reads the registry, so no domain exception is
+    # reachable — nothing to translate.
+    def list_solve_jobs() -> list[SolveJobStatus]:
+        return registry.list()
+
+
+def _register_portfolio_job_tools(
+    tool: _ToolRegistrar, *, portfolios: PortfolioJobRegistry
+) -> None:
+    """Register the 4 background portfolio-job tools."""
+
+    @tool(description=SUBMIT_PORTFOLIO_JOB_DESCRIPTION, full_only=True)
+    # Admission runs plan validation, the capability gate, and an atomic batch
+    # admission synchronously — so it can raise the runtime/binary triad (resolving
+    # a gated control), a plan ValueError, or JobRejectedError when the batch exceeds
+    # the bounded queue. All must surface as actionable MCP errors.
+    @_as_mcp_error(RuntimeMissingError, MiniZincExecutionError, ValueError, JobRejectedError)
+    def submit_portfolio_job(
+        models: list[str],
+        solvers: list[str],
+        data: str | None = None,
+        checker: str | None = None,
+        seed_count: int = 1,
+        seeds: list[int] | None = None,
+        per_attempt_timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
+        free_search: bool = False,
+        parallel: int | None = None,
+        all_solutions: bool = False,
+        num_solutions: int | None = None,
+    ) -> PortfolioJobStatus:
+        job_id = portfolios.submit(
+            models=models,
+            solvers=solvers,
+            data=data,
+            checker=checker,
+            seed_count=seed_count,
+            seeds=seeds,
+            per_attempt_timeout_ms=per_attempt_timeout_ms,
+            solve_controls=PortfolioSolveControls(
+                free_search=free_search,
+                parallel=parallel,
+                all_solutions=all_solutions,
+                num_solutions=num_solutions,
+            ),
+        )
+        return portfolios.get(job_id)
+
+    @tool(description=GET_PORTFOLIO_JOB_DESCRIPTION, full_only=True)
+    # An unknown job_id is the only domain error (ValueError); the registry reads
+    # touch no runtime, so the narrower caught set is honest.
+    @_as_mcp_error(ValueError)
+    def get_portfolio_job(job_id: str) -> PortfolioJobStatus:
+        return portfolios.get(job_id)
+
+    @tool(description=CANCEL_PORTFOLIO_JOB_DESCRIPTION, full_only=True)
+    @_as_mcp_error(ValueError)
+    def cancel_portfolio_job(job_id: str) -> PortfolioJobStatus:
+        return portfolios.cancel(job_id)
+
+    @tool(description=LIST_PORTFOLIO_JOBS_DESCRIPTION, full_only=True)
+    # Takes no arguments and only reads the registry, so no domain exception is
+    # reachable — nothing to translate.
+    def list_portfolio_jobs() -> list[PortfolioJobStatus]:
+        return portfolios.list()
+
+
+def _register_cpsat_job_tools(tool: _ToolRegistrar, *, cpsat_registry: CpsatJobRegistry) -> None:
+    """Register the 5 background CP-SAT Python job tools."""
+
+    @tool(
+        name="submit_cpsat_python_job",
+        description=SUBMIT_CPSAT_PYTHON_JOB_DESCRIPTION,
+        full_only=True,
+    )
+    @_as_mcp_error(ValueError, JobRejectedError)
+    def submit_cpsat_python_job(
+        source: str,
+        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+        problem: ProblemText = None,
+        checker: str | None = None,
+        checker_timeout_ms: int | None = None,
+    ) -> CpsatPythonJobStatus:
+        job_id = cpsat_registry.submit_source(
+            source,
+            script_timeout_ms=script_timeout_ms,
+            problem=problem,
+            checker=checker,
+            checker_timeout_ms=checker_timeout_ms,
+        )
+        return cpsat_registry.get(job_id)
+
+    @tool(
+        name="submit_cpsat_python_file_job",
+        description=SUBMIT_CPSAT_PYTHON_FILE_JOB_DESCRIPTION,
+        full_only=True,
+    )
+    @_as_mcp_error(ValueError, JobRejectedError)
+    def submit_cpsat_python_file_job(
+        script_path: str,
+        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+        args: list[str] | None = None,
+        problem: ProblemText = None,
+        checker: str | None = None,
+        checker_path: str | None = None,
+        checker_timeout_ms: int | None = None,
+    ) -> CpsatPythonJobStatus:
+        job_id = cpsat_registry.submit_file(
+            Path(script_path),
+            script_timeout_ms=script_timeout_ms,
+            args=args,
+            problem=problem,
+            checker=checker,
+            checker_path=Path(checker_path) if checker_path is not None else None,
+            checker_timeout_ms=checker_timeout_ms,
+        )
+        return cpsat_registry.get(job_id)
+
+    @tool(name="get_cpsat_python_job", description=GET_CPSAT_PYTHON_JOB_DESCRIPTION, full_only=True)
+    @_as_mcp_error(ValueError)
+    def get_cpsat_python_job(job_id: str) -> CpsatPythonJobStatus:
+        return cpsat_registry.get(job_id)
+
+    @tool(
+        name="cancel_cpsat_python_job",
+        description=CANCEL_CPSAT_PYTHON_JOB_DESCRIPTION,
+        full_only=True,
+    )
+    @_as_mcp_error(ValueError)
+    def cancel_cpsat_python_job(job_id: str) -> CpsatPythonJobStatus:
+        return cpsat_registry.cancel(job_id)
+
+    @tool(
+        name="list_cpsat_python_jobs",
+        description=LIST_CPSAT_PYTHON_JOBS_DESCRIPTION,
+        full_only=True,
+    )
+    def list_cpsat_python_jobs() -> list[CpsatPythonJobStatus]:
+        return cpsat_registry.list()
+
+
+def _register_cpsat_run_tools(
+    tool: _ToolRegistrar,
+    *,
+    child_tracker: ChildProcessTracker,
+    run_cpsat_python_desc: str,
+    run_cpsat_python_file_desc: str,
+) -> None:
+    """Register the 5 synchronous CP-SAT Python run/save tools."""
+
+    @tool(name="run_cpsat_python", description=run_cpsat_python_desc)
+    @_as_mcp_error(ValueError)
+    async def run_cpsat_python_tool(
+        source: str,
+        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+        ctx: Context | None = None,
+    ) -> CpsatPythonResult:
+        # No MCP-facing seed/config for this inline tool (see module docstring on
+        # `run_cpsat_python`'s `env` param); always clear both protocol env vars so
+        # a value inherited from the server's own launch environment cannot leak
+        # into the child.
+        return await _run_tool_with_status(
+            ctx,
+            status.CPSAT_PYTHON_STAGES,
+            functools.partial(
+                run_cpsat_python,
+                source,
+                script_timeout_ms=script_timeout_ms,
+                tracker=child_tracker,
+                env=seed_config_env(seed=None, config_path=None),
+            ),
+        )
+
+    @tool(name="run_cpsat_python_file", description=run_cpsat_python_file_desc)
+    @_as_mcp_error(ValueError)
+    async def run_cpsat_python_file_tool(
+        script_path: str,
+        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+        args: list[str] | None = None,
+        seed: StrictInt | None = None,
+        config: dict[str, JsonValue] | None = None,
+        ctx: Context | None = None,
+    ) -> CpsatPythonResult:
+        await _status_starting(ctx, status.CPSAT_PYTHON_STAGES)
+        validated_seed = validate_cpsat_random_seed(seed) if seed is not None else None
+        normalized_config: dict[str, Any] | None = config if config else None
+        result = await _run_blocking(
+            functools.partial(
+                _run_cpsat_python_file_with_replay,
+                Path(script_path),
+                script_timeout_ms=script_timeout_ms,
+                seed=validated_seed,
+                config=normalized_config,
+                args=args,
+                tracker=child_tracker,
+            )
+        )
+        await _status_finished(ctx, status.CPSAT_PYTHON_STAGES)
+        return result
+
+    @tool(
+        name="run_cpsat_python_file_checked",
+        description=RUN_CPSAT_PYTHON_FILE_CHECKED_DESCRIPTION,
+        full_only=True,
+    )
+    @_as_mcp_error(ValueError)
+    async def run_cpsat_python_file_checked_tool(
+        script_path: str,
+        checker_path: str,
+        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+        args: list[str] | None = None,
+        problem: ProblemText = None,
+        checker_timeout_ms: int | None = None,
+        test_checker: bool = False,
+        seed: StrictInt | None = None,
+        config: dict[str, JsonValue] | None = None,
+        ctx: Context | None = None,
+    ) -> CpsatPythonCheckedResult:
+        await _status_starting(ctx, status.CPSAT_PYTHON_CHECKED_STAGES)
+        validated_seed = validate_cpsat_random_seed(seed) if seed is not None else None
+        normalized_config: dict[str, Any] | None = config if config else None
+        result = await _run_blocking(
+            functools.partial(
+                _run_cpsat_python_file_checked_with_replay,
+                Path(script_path),
+                Path(checker_path),
+                problem=problem,
+                script_timeout_ms=script_timeout_ms,
+                checker_timeout_ms=checker_timeout_ms,
+                args=args,
+                test_checker=test_checker,
+                seed=validated_seed,
+                config=normalized_config,
+                tracker=child_tracker,
+            )
+        )
+        await _status_finished(ctx, status.CPSAT_PYTHON_CHECKED_STAGES)
+        return result
+
+    @tool(
+        name="run_cpsat_python_experiment",
+        description=RUN_CPSAT_PYTHON_EXPERIMENT_DESCRIPTION,
+        full_only=True,
+    )
+    @_as_mcp_error(ValueError)
+    async def run_cpsat_python_experiment_tool(
+        attempts: list[CpsatPythonExperimentAttempt],
+        objective_sense: CpsatObjectiveSense | None = None,
+        default_script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+        max_parallel_attempts: int = 1,
+        problem: ProblemText = None,
+        checker: str | None = None,
+        checker_timeout_ms: int | None = None,
+        include_winner_stdout: bool = True,
+        ctx: Context | None = None,
+    ) -> Annotated[CallToolResult, CpsatPythonExperimentResult]:
+        result = await _run_tool_with_status(
+            ctx,
+            status.CPSAT_EXPERIMENT_STAGES,
+            functools.partial(
+                run_cpsat_python_experiment,
+                attempts,
+                objective_sense=objective_sense,
+                default_script_timeout_ms=default_script_timeout_ms,
+                max_parallel_attempts=max_parallel_attempts,
+                problem=problem,
+                checker=checker,
+                checker_timeout_ms=checker_timeout_ms,
+                include_winner_stdout=include_winner_stdout,
+                tracker=child_tracker,
+            ),
+        )
+        return _wrap_result(result, format_cpsat_experiment_content)
+
+    @tool(
+        name="save_verified_cpsat_python",
+        description=SAVE_VERIFIED_CPSAT_PYTHON_DESCRIPTION,
+        full_only=True,
+    )
+    @_as_mcp_error(ValueError)
+    async def save_verified_cpsat_python_tool(
+        source: str,
+        target_dir: str | None = None,
+        problem: ProblemText = None,
+        expectation: CpsatExpectation | None = None,
+        checker: str | None = None,
+        checker_timeout_ms: int | None = None,
+        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
+        overwrite: bool = False,
+        verify_only: bool = False,
+        seed: StrictInt | None = None,
+        config: dict[str, JsonValue] | None = None,
+        experiment_result: CpsatPythonExperimentResult | None = None,
+        ctx: Context | None = None,
+    ) -> SaveVerifiedPythonResult:
+        stages = status.cpsat_save_stages(with_checker=checker is not None)
+        return await _run_tool_with_status(
+            ctx,
+            stages,
+            functools.partial(
+                save_verified_cpsat_python,
+                source,
+                target_dir=Path(target_dir) if target_dir is not None else None,
+                problem=problem,
+                expectation=expectation,
+                checker=checker,
+                checker_timeout_ms=checker_timeout_ms,
+                script_timeout_ms=script_timeout_ms,
+                overwrite=overwrite,
+                verify_only=verify_only,
+                seed=seed,
+                config=config,
+                experiment_result=experiment_result,
+                tracker=child_tracker,
+            ),
+        )
+
+
+def _register_tabular_tools(tool: _ToolRegistrar) -> None:
+    """Register the 2 tabular data read/write tools."""
+
+    # The tabular tools take no solver and touch no managed runtime, so a
+    # ValueError is the only domain exception they raise (every rejection —
+    # bad path, non-scalar cell, refused to overwrite — is one).
+    @tool(name="load_tabular_data", description=LOAD_TABULAR_DATA_DESCRIPTION, full_only=True)
+    @_as_mcp_error(ValueError)
+    async def load_tabular_data(
+        path: str,
+        sheet: str | None = None,
+        has_header: bool = True,
+        row_offset: int = 0,
+        max_rows: int = DEFAULT_MAX_ROWS,
+    ) -> Annotated[CallToolResult, TabularData]:
+        result = await _run_blocking(
+            functools.partial(
+                read_tabular_data,
+                Path(path),
+                sheet=sheet,
+                has_header=has_header,
+                row_offset=row_offset,
+                max_rows=max_rows,
+            )
+        )
+        return _wrap_result(result, format_tabular_data_content)
+
+    @tool(name="write_tabular_result", description=WRITE_TABULAR_RESULT_DESCRIPTION, full_only=True)
+    @_as_mcp_error(ValueError)
+    async def write_tabular_result(
+        headers: list[str],
+        rows: list[list[TabularCell]],
+        target_path: str,
+        overwrite: bool = False,
+        style: TableStyle | None = None,
+        gantt: GanttSpec | None = None,
+        charts: list[ChartSpec] | None = None,
+    ) -> TabularWriteResult:
+        return await _run_blocking(
+            functools.partial(
+                write_tabular_data,
+                headers,
+                rows,
+                Path(target_path),
+                overwrite=overwrite,
+                style=style,
+                gantt=gantt,
+                charts=charts,
+            )
+        )
+
+
+def _register_prompts(
+    mcp: MCPServer[Any], *, is_core: bool, solve_constraint_problem_prompt: str
+) -> None:
+    """Register the backend-neutral prompt, then the 3 full-only detailed prompts."""
+
+    # Registered ABOVE the core early return, so both profiles expose it: this
+    # is the one backend-neutral prompt, and it names core tools only.
+    @mcp.prompt(
+        name="solve_constraint_problem",
+        description=SOLVE_CONSTRAINT_PROBLEM_PROMPT_DESCRIPTION,
+    )
+    def solve_constraint_problem(problem: str) -> str:
+        return solve_constraint_problem_prompt.format(problem=problem)
+
+    if is_core:
+        # Every full-only tool above was registered with `full_only=True`, so
+        # `tool` skipped it via the identity decorator and never registered it
+        # — nothing to remove here. Only the backend-neutral
+        # `solve_constraint_problem` prompt above is core; the three detailed
+        # prompts below stay full-only because they reference save, portfolio,
+        # experiment, inspection, and job tools core hides.
+        return
+
+    @mcp.prompt(
+        name="minizinc_solution_workflow",
+        description=MINIZINC_SOLUTION_WORKFLOW_PROMPT_DESCRIPTION,
+    )
+    def minizinc_solution_workflow(problem: str) -> str:
+        return MINIZINC_SOLUTION_WORKFLOW_PROMPT.format(problem=problem)
+
+    @mcp.prompt(
+        name="cpsat_python_solution_workflow",
+        description=CPSAT_PYTHON_SOLUTION_WORKFLOW_PROMPT_DESCRIPTION,
+    )
+    def cpsat_python_solution_workflow(problem: str) -> str:
+        return SOLVE_CPSAT_PYTHON_PROMPT.format(problem=problem)
+
+    @mcp.prompt(
+        name="auto_tune_constraint_problem",
+        description=AUTO_TUNE_CONSTRAINT_PROBLEM_PROMPT_DESCRIPTION,
+    )
+    def auto_tune_constraint_problem_prompt(problem: str) -> str:
+        return AUTO_TUNE_CONSTRAINT_PROBLEM_PROMPT.format(problem=problem)
+
+
 def create_mcp_server(toolset: str = "full") -> MCPServer:
     """Build a fresh MCPServer for the given ``toolset``.
 
     ``full`` (the default, for internal callers and existing tests) registers
-    every tool and all four prompts. ``core`` registers the same surface, then
-    removes every tool in ``_FULL_ONLY_TOOL_NAMES`` and skips the three detailed
+    every tool and all four prompts. ``core`` registers only the tools whose
+    call sites do not pass ``full_only=True`` and skips the three detailed
     backend-specific prompts, so the advertised ``tools/list`` payload is the
     eight core tools only and the advertised ``prompts/list`` payload is
-    ``solve_constraint_problem`` only. The user-facing ``stdio`` default is
-    ``core``, enforced by ``run_stdio`` and the CLI.
+    ``solve_constraint_problem`` only. A new tool is core unless it is
+    registered with ``full_only=True``, and the core exact-set test fails if
+    one leaks. The user-facing ``stdio`` default is ``core``, enforced by
+    ``run_stdio`` and the CLI.
     An unknown value is rejected before any server object is built.
     """
     if toolset not in _VALID_TOOLSETS:
@@ -666,681 +1404,25 @@ def create_mcp_server(toolset: str = "full") -> MCPServer:
         website_url=_homepage_url(),
         lifespan=_make_lifespan(registry, cpsat_registry, child_tracker),
     )
+    tool: _ToolRegistrar = _tool_registrar(mcp, is_core=is_core)
 
-    @mcp.tool(description=CHECK_RUNTIME_DESCRIPTION)
-    def check_runtime() -> RuntimeStatus:
-        return get_runtime_status()
-
-    @mcp.tool(description=LIST_AVAILABLE_SOLVERS_DESCRIPTION)
-    # Narrower than the default: this tool takes no user arguments, so a
-    # ValueError would be a real bug, not an actionable user message.
-    @_as_mcp_error(RuntimeMissingError, MiniZincExecutionError)
-    def list_available_solvers() -> Annotated[CallToolResult, SolverList]:
-        return _wrap_result(list_solvers(), format_solver_list_content)
-
-    @mcp.tool(description=solve_minizinc_model_desc)
-    @_as_mcp_error()
-    async def solve_minizinc_model(
-        model: str,
-        data: str | None = None,
-        checker: str | None = None,
-        solver: str = DEFAULT_SOLVER,
-        timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
-        free_search: bool = False,
-        parallel: int | None = None,
-        random_seed: int | None = None,
-        all_solutions: bool = False,
-        num_solutions: int | None = None,
-        ctx: Context | None = None,
-    ) -> Annotated[CallToolResult, SolveResult]:
-        stages = status.solve_stages(checker is not None)
-        result = await _run_tool_with_status(
-            ctx,
-            stages,
-            functools.partial(
-                solve_model,
-                model,
-                solver=solver,
-                data=data,
-                checker=checker,
-                timeout_ms=timeout_ms,
-                controls=SolveControls(
-                    free_search=free_search,
-                    parallel=parallel,
-                    random_seed=random_seed,
-                    all_solutions=all_solutions,
-                    num_solutions=num_solutions,
-                ),
-                tracker=child_tracker,
-            ),
-        )
-        return _wrap_result(result, format_solve_result_content)
-
-    @mcp.tool(description=CHECK_MINIZINC_MODEL_DESCRIPTION)
-    @_as_mcp_error()
-    async def check_minizinc_model(
-        model: str,
-        data: str | None = None,
-        solver: str = DEFAULT_SOLVER,
-        timeout_ms: int = DEFAULT_CHECK_TIMEOUT_MS,
-        ctx: Context | None = None,
-    ) -> CheckResult:
-        return await _run_tool_with_status(
-            ctx,
-            status.CHECK_STAGES,
-            functools.partial(
-                check_model,
-                model,
-                solver=solver,
-                data=data,
-                timeout_ms=timeout_ms,
-                tracker=child_tracker,
-            ),
-        )
-
-    @mcp.tool(description=INSPECT_MINIZINC_MODEL_DESCRIPTION)
-    @_as_mcp_error()
-    async def inspect_minizinc_model(
-        model: str,
-        data: str | None = None,
-        solver: str = DEFAULT_SOLVER,
-        timeout_ms: int = DEFAULT_INSPECT_TIMEOUT_MS,
-        ctx: Context | None = None,
-    ) -> ModelInspectionResult:
-        return await _run_tool_with_status(
-            ctx,
-            status.INSPECT_STAGES,
-            functools.partial(
-                inspect_model,
-                model,
-                solver=solver,
-                data=data,
-                timeout_ms=timeout_ms,
-                tracker=child_tracker,
-            ),
-        )
-
-    @mcp.tool(description=FIND_UNSAT_CORE_DESCRIPTION)
-    @_as_mcp_error()
-    async def find_unsat_core(
-        model: str,
-        data: str | None = None,
-        timeout_ms: int = DEFAULT_UNSAT_CORE_TIMEOUT_MS,
-        ctx: Context | None = None,
-    ) -> UnsatCoreResult:
-        return await _run_tool_with_status(
-            ctx,
-            status.UNSAT_CORE_STAGES,
-            functools.partial(
-                _find_unsat_core, model, data=data, timeout_ms=timeout_ms, tracker=child_tracker
-            ),
-        )
-
-    @mcp.tool(description=SAVE_VERIFIED_MINIZINC_MODEL_DESCRIPTION)
-    @_as_mcp_error()
-    async def save_verified_minizinc_model(
-        model: str,
-        target_dir: str,
-        data: str | None = None,
-        checker: str | None = None,
-        problem: ProblemText = None,
-        solver: str = DEFAULT_SOLVER,
-        timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
-        free_search: bool = False,
-        parallel: int | None = None,
-        random_seed: int | None = None,
-        all_solutions: bool = False,
-        num_solutions: int | None = None,
-        overwrite: bool = False,
-        portfolio_result: PortfolioSolveResult | None = None,
-        ctx: Context | None = None,
-    ) -> Annotated[CallToolResult, SaveVerifiedModelResult]:
-        result = await _run_tool_with_status(
-            ctx,
-            status.SAVE_STAGES,
-            functools.partial(
-                save_verified_model,
-                model,
-                target_dir=Path(target_dir),
-                data=data,
-                checker=checker,
-                problem=problem,
-                solver=solver,
-                timeout_ms=timeout_ms,
-                controls=SolveControls(
-                    free_search=free_search,
-                    parallel=parallel,
-                    random_seed=random_seed,
-                    all_solutions=all_solutions,
-                    num_solutions=num_solutions,
-                ),
-                overwrite=overwrite,
-                portfolio_result=portfolio_result,
-                tracker=child_tracker,
-            ),
-        )
-        return _wrap_result(result, format_save_result_content)
-
-    @mcp.tool(description=CHECK_MINIZINC_FILES_DESCRIPTION)
-    @_as_mcp_error()
-    async def check_minizinc_files(
-        model_path: str,
-        data_path: str | None = None,
-        solver: str = DEFAULT_SOLVER,
-        timeout_ms: int = DEFAULT_CHECK_TIMEOUT_MS,
-        ctx: Context | None = None,
-    ) -> CheckResult:
-        return await _run_tool_with_status(
-            ctx,
-            status.CHECK_STAGES,
-            functools.partial(
-                check_model_path,
-                Path(model_path),
-                solver=solver,
-                data_path=Path(data_path) if data_path is not None else None,
-                timeout_ms=timeout_ms,
-                tracker=child_tracker,
-            ),
-        )
-
-    @mcp.tool(description=INSPECT_MINIZINC_FILES_DESCRIPTION)
-    @_as_mcp_error()
-    async def inspect_minizinc_files(
-        model_path: str,
-        data_path: str | None = None,
-        solver: str = DEFAULT_SOLVER,
-        timeout_ms: int = DEFAULT_INSPECT_TIMEOUT_MS,
-        ctx: Context | None = None,
-    ) -> ModelInspectionResult:
-        return await _run_tool_with_status(
-            ctx,
-            status.INSPECT_STAGES,
-            functools.partial(
-                inspect_model_path,
-                Path(model_path),
-                solver=solver,
-                data_path=Path(data_path) if data_path is not None else None,
-                timeout_ms=timeout_ms,
-                tracker=child_tracker,
-            ),
-        )
-
-    @mcp.tool(description=SOLVE_MINIZINC_FILES_DESCRIPTION)
-    @_as_mcp_error()
-    async def solve_minizinc_files(
-        model_path: str,
-        data_path: str | None = None,
-        checker_path: str | None = None,
-        solver: str = DEFAULT_SOLVER,
-        timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
-        free_search: bool = False,
-        parallel: int | None = None,
-        random_seed: int | None = None,
-        all_solutions: bool = False,
-        num_solutions: int | None = None,
-        ctx: Context | None = None,
-    ) -> Annotated[CallToolResult, SolveResult]:
-        stages = status.solve_stages(checker_path is not None)
-        result = await _run_tool_with_status(
-            ctx,
-            stages,
-            functools.partial(
-                solve_model_path,
-                Path(model_path),
-                solver=solver,
-                data_path=Path(data_path) if data_path is not None else None,
-                checker_path=Path(checker_path) if checker_path is not None else None,
-                timeout_ms=timeout_ms,
-                controls=SolveControls(
-                    free_search=free_search,
-                    parallel=parallel,
-                    random_seed=random_seed,
-                    all_solutions=all_solutions,
-                    num_solutions=num_solutions,
-                ),
-                tracker=child_tracker,
-            ),
-        )
-        return _wrap_result(result, format_solve_result_content)
-
-    @mcp.tool(description=FIND_UNSAT_CORE_FILES_DESCRIPTION)
-    @_as_mcp_error()
-    async def find_unsat_core_files(
-        model_path: str,
-        data_path: str | None = None,
-        timeout_ms: int = DEFAULT_UNSAT_CORE_TIMEOUT_MS,
-        ctx: Context | None = None,
-    ) -> UnsatCoreResult:
-        return await _run_tool_with_status(
-            ctx,
-            status.UNSAT_CORE_STAGES,
-            functools.partial(
-                find_unsat_core_path,
-                Path(model_path),
-                data_path=Path(data_path) if data_path is not None else None,
-                timeout_ms=timeout_ms,
-                tracker=child_tracker,
-            ),
-        )
-
-    @mcp.tool(description=SUBMIT_SOLVE_JOB_DESCRIPTION)
-    # Validation raises ValueError; a full bounded queue raises JobRejectedError
-    # (a direct RuntimeError subclass, NOT in the default caught set). A gated
-    # control (free_search/parallel/random_seed/all_solutions) makes admission
-    # resolve solver capabilities via list_solvers(), so the runtime/binary triad
-    # can fire here too — exactly as for submit_portfolio_job. All must surface as
-    # actionable MCP errors.
-    @_as_mcp_error(RuntimeMissingError, MiniZincExecutionError, ValueError, JobRejectedError)
-    def submit_solve_job(
-        model: str,
-        data: str | None = None,
-        checker: str | None = None,
-        solver: str = DEFAULT_SOLVER,
-        timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
-        free_search: bool = False,
-        parallel: int | None = None,
-        random_seed: int | None = None,
-        all_solutions: bool = False,
-        num_solutions: int | None = None,
-    ) -> SolveJobStatus:
-        job_id = registry.submit(
-            model=model,
-            solver=solver,
-            data=data,
-            checker=checker,
-            timeout_ms=timeout_ms,
-            controls=SolveControls(
-                free_search=free_search,
-                parallel=parallel,
-                random_seed=random_seed,
-                all_solutions=all_solutions,
-                num_solutions=num_solutions,
-            ),
-        )
-        return registry.get(job_id)
-
-    @mcp.tool(description=GET_SOLVE_JOB_DESCRIPTION)
-    # An unknown job_id is the only domain error (ValueError); the registry reads
-    # touch no runtime, so the narrower caught set is honest.
-    @_as_mcp_error(ValueError)
-    def get_solve_job(job_id: str) -> SolveJobStatus:
-        return registry.get(job_id)
-
-    @mcp.tool(description=CANCEL_SOLVE_JOB_DESCRIPTION)
-    @_as_mcp_error(ValueError)
-    def cancel_solve_job(job_id: str) -> SolveJobStatus:
-        return registry.cancel(job_id)
-
-    @mcp.tool(description=LIST_SOLVE_JOBS_DESCRIPTION)
-    # Takes no arguments and only reads the registry, so no domain exception is
-    # reachable — nothing to translate.
-    def list_solve_jobs() -> list[SolveJobStatus]:
-        return registry.list()
-
-    @mcp.tool(description=SUBMIT_PORTFOLIO_JOB_DESCRIPTION)
-    # Admission runs plan validation, the capability gate, and an atomic batch
-    # admission synchronously — so it can raise the runtime/binary triad (resolving
-    # a gated control), a plan ValueError, or JobRejectedError when the batch exceeds
-    # the bounded queue. All must surface as actionable MCP errors.
-    @_as_mcp_error(RuntimeMissingError, MiniZincExecutionError, ValueError, JobRejectedError)
-    def submit_portfolio_job(
-        models: list[str],
-        solvers: list[str],
-        data: str | None = None,
-        checker: str | None = None,
-        seed_count: int = 1,
-        seeds: list[int] | None = None,
-        per_attempt_timeout_ms: int = DEFAULT_SOLVE_TIMEOUT_MS,
-        free_search: bool = False,
-        parallel: int | None = None,
-        all_solutions: bool = False,
-        num_solutions: int | None = None,
-    ) -> PortfolioJobStatus:
-        job_id = portfolios.submit(
-            models=models,
-            solvers=solvers,
-            data=data,
-            checker=checker,
-            seed_count=seed_count,
-            seeds=seeds,
-            per_attempt_timeout_ms=per_attempt_timeout_ms,
-            solve_controls=PortfolioSolveControls(
-                free_search=free_search,
-                parallel=parallel,
-                all_solutions=all_solutions,
-                num_solutions=num_solutions,
-            ),
-        )
-        return portfolios.get(job_id)
-
-    @mcp.tool(description=GET_PORTFOLIO_JOB_DESCRIPTION)
-    # An unknown job_id is the only domain error (ValueError); the registry reads
-    # touch no runtime, so the narrower caught set is honest.
-    @_as_mcp_error(ValueError)
-    def get_portfolio_job(job_id: str) -> PortfolioJobStatus:
-        return portfolios.get(job_id)
-
-    @mcp.tool(description=CANCEL_PORTFOLIO_JOB_DESCRIPTION)
-    @_as_mcp_error(ValueError)
-    def cancel_portfolio_job(job_id: str) -> PortfolioJobStatus:
-        return portfolios.cancel(job_id)
-
-    @mcp.tool(description=LIST_PORTFOLIO_JOBS_DESCRIPTION)
-    # Takes no arguments and only reads the registry, so no domain exception is
-    # reachable — nothing to translate.
-    def list_portfolio_jobs() -> list[PortfolioJobStatus]:
-        return portfolios.list()
-
-    @mcp.tool(
-        name="submit_cpsat_python_job",
-        description=SUBMIT_CPSAT_PYTHON_JOB_DESCRIPTION,
+    _register_runtime_tools(tool)
+    _register_minizinc_tools(
+        tool, child_tracker=child_tracker, solve_minizinc_model_desc=solve_minizinc_model_desc
     )
-    @_as_mcp_error(ValueError, JobRejectedError)
-    def submit_cpsat_python_job(
-        source: str,
-        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
-        problem: ProblemText = None,
-        checker: str | None = None,
-        checker_timeout_ms: int | None = None,
-    ) -> CpsatPythonJobStatus:
-        job_id = cpsat_registry.submit_source(
-            source,
-            script_timeout_ms=script_timeout_ms,
-            problem=problem,
-            checker=checker,
-            checker_timeout_ms=checker_timeout_ms,
-        )
-        return cpsat_registry.get(job_id)
-
-    @mcp.tool(
-        name="submit_cpsat_python_file_job",
-        description=SUBMIT_CPSAT_PYTHON_FILE_JOB_DESCRIPTION,
+    _register_solve_job_tools(tool, registry=registry)
+    _register_portfolio_job_tools(tool, portfolios=portfolios)
+    _register_cpsat_job_tools(tool, cpsat_registry=cpsat_registry)
+    _register_cpsat_run_tools(
+        tool,
+        child_tracker=child_tracker,
+        run_cpsat_python_desc=run_cpsat_python_desc,
+        run_cpsat_python_file_desc=run_cpsat_python_file_desc,
     )
-    @_as_mcp_error(ValueError, JobRejectedError)
-    def submit_cpsat_python_file_job(
-        script_path: str,
-        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
-        args: list[str] | None = None,
-        problem: ProblemText = None,
-        checker: str | None = None,
-        checker_path: str | None = None,
-        checker_timeout_ms: int | None = None,
-    ) -> CpsatPythonJobStatus:
-        job_id = cpsat_registry.submit_file(
-            Path(script_path),
-            script_timeout_ms=script_timeout_ms,
-            args=args,
-            problem=problem,
-            checker=checker,
-            checker_path=Path(checker_path) if checker_path is not None else None,
-            checker_timeout_ms=checker_timeout_ms,
-        )
-        return cpsat_registry.get(job_id)
-
-    @mcp.tool(name="get_cpsat_python_job", description=GET_CPSAT_PYTHON_JOB_DESCRIPTION)
-    @_as_mcp_error(ValueError)
-    def get_cpsat_python_job(job_id: str) -> CpsatPythonJobStatus:
-        return cpsat_registry.get(job_id)
-
-    @mcp.tool(name="cancel_cpsat_python_job", description=CANCEL_CPSAT_PYTHON_JOB_DESCRIPTION)
-    @_as_mcp_error(ValueError)
-    def cancel_cpsat_python_job(job_id: str) -> CpsatPythonJobStatus:
-        return cpsat_registry.cancel(job_id)
-
-    @mcp.tool(name="list_cpsat_python_jobs", description=LIST_CPSAT_PYTHON_JOBS_DESCRIPTION)
-    def list_cpsat_python_jobs() -> list[CpsatPythonJobStatus]:
-        return cpsat_registry.list()
-
-    @mcp.tool(name="run_cpsat_python", description=run_cpsat_python_desc)
-    @_as_mcp_error(ValueError)
-    async def run_cpsat_python_tool(
-        source: str,
-        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
-        ctx: Context | None = None,
-    ) -> CpsatPythonResult:
-        # No MCP-facing seed/config for this inline tool (see module docstring on
-        # `run_cpsat_python`'s `env` param); always clear both protocol env vars so
-        # a value inherited from the server's own launch environment cannot leak
-        # into the child.
-        return await _run_tool_with_status(
-            ctx,
-            status.CPSAT_PYTHON_STAGES,
-            functools.partial(
-                run_cpsat_python,
-                source,
-                script_timeout_ms=script_timeout_ms,
-                tracker=child_tracker,
-                env=seed_config_env(seed=None, config_path=None),
-            ),
-        )
-
-    @mcp.tool(name="run_cpsat_python_file", description=run_cpsat_python_file_desc)
-    @_as_mcp_error(ValueError)
-    async def run_cpsat_python_file_tool(
-        script_path: str,
-        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
-        args: list[str] | None = None,
-        seed: StrictInt | None = None,
-        config: dict[str, JsonValue] | None = None,
-        ctx: Context | None = None,
-    ) -> CpsatPythonResult:
-        await _status_starting(ctx, status.CPSAT_PYTHON_STAGES)
-        validated_seed = validate_cpsat_random_seed(seed) if seed is not None else None
-        normalized_config: dict[str, Any] | None = config if config else None
-        result = await _run_blocking(
-            functools.partial(
-                _run_cpsat_python_file_with_replay,
-                Path(script_path),
-                script_timeout_ms=script_timeout_ms,
-                seed=validated_seed,
-                config=normalized_config,
-                args=args,
-                tracker=child_tracker,
-            )
-        )
-        await _status_finished(ctx, status.CPSAT_PYTHON_STAGES)
-        return result
-
-    @mcp.tool(
-        name="run_cpsat_python_file_checked",
-        description=RUN_CPSAT_PYTHON_FILE_CHECKED_DESCRIPTION,
+    _register_tabular_tools(tool)
+    _register_prompts(
+        mcp, is_core=is_core, solve_constraint_problem_prompt=solve_constraint_problem_prompt
     )
-    @_as_mcp_error(ValueError)
-    async def run_cpsat_python_file_checked_tool(
-        script_path: str,
-        checker_path: str,
-        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
-        args: list[str] | None = None,
-        problem: ProblemText = None,
-        checker_timeout_ms: int | None = None,
-        test_checker: bool = False,
-        seed: StrictInt | None = None,
-        config: dict[str, JsonValue] | None = None,
-        ctx: Context | None = None,
-    ) -> CpsatPythonCheckedResult:
-        await _status_starting(ctx, status.CPSAT_PYTHON_CHECKED_STAGES)
-        validated_seed = validate_cpsat_random_seed(seed) if seed is not None else None
-        normalized_config: dict[str, Any] | None = config if config else None
-        result = await _run_blocking(
-            functools.partial(
-                _run_cpsat_python_file_checked_with_replay,
-                Path(script_path),
-                Path(checker_path),
-                problem=problem,
-                script_timeout_ms=script_timeout_ms,
-                checker_timeout_ms=checker_timeout_ms,
-                args=args,
-                test_checker=test_checker,
-                seed=validated_seed,
-                config=normalized_config,
-                tracker=child_tracker,
-            )
-        )
-        await _status_finished(ctx, status.CPSAT_PYTHON_CHECKED_STAGES)
-        return result
-
-    @mcp.tool(
-        name="run_cpsat_python_experiment", description=RUN_CPSAT_PYTHON_EXPERIMENT_DESCRIPTION
-    )
-    @_as_mcp_error(ValueError)
-    async def run_cpsat_python_experiment_tool(
-        attempts: list[CpsatPythonExperimentAttempt],
-        objective_sense: CpsatObjectiveSense | None = None,
-        default_script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
-        max_parallel_attempts: int = 1,
-        problem: ProblemText = None,
-        checker: str | None = None,
-        checker_timeout_ms: int | None = None,
-        include_winner_stdout: bool = True,
-        ctx: Context | None = None,
-    ) -> Annotated[CallToolResult, CpsatPythonExperimentResult]:
-        result = await _run_tool_with_status(
-            ctx,
-            status.CPSAT_EXPERIMENT_STAGES,
-            functools.partial(
-                run_cpsat_python_experiment,
-                attempts,
-                objective_sense=objective_sense,
-                default_script_timeout_ms=default_script_timeout_ms,
-                max_parallel_attempts=max_parallel_attempts,
-                problem=problem,
-                checker=checker,
-                checker_timeout_ms=checker_timeout_ms,
-                include_winner_stdout=include_winner_stdout,
-                tracker=child_tracker,
-            ),
-        )
-        return _wrap_result(result, format_cpsat_experiment_content)
-
-    @mcp.tool(name="save_verified_cpsat_python", description=SAVE_VERIFIED_CPSAT_PYTHON_DESCRIPTION)
-    @_as_mcp_error(ValueError)
-    async def save_verified_cpsat_python_tool(
-        source: str,
-        target_dir: str | None = None,
-        problem: ProblemText = None,
-        expectation: CpsatExpectation | None = None,
-        checker: str | None = None,
-        checker_timeout_ms: int | None = None,
-        script_timeout_ms: int = DEFAULT_PYEXEC_TIMEOUT_MS,
-        overwrite: bool = False,
-        verify_only: bool = False,
-        seed: StrictInt | None = None,
-        config: dict[str, JsonValue] | None = None,
-        experiment_result: CpsatPythonExperimentResult | None = None,
-        ctx: Context | None = None,
-    ) -> SaveVerifiedPythonResult:
-        stages = status.cpsat_save_stages(with_checker=checker is not None)
-        return await _run_tool_with_status(
-            ctx,
-            stages,
-            functools.partial(
-                save_verified_cpsat_python,
-                source,
-                target_dir=Path(target_dir) if target_dir is not None else None,
-                problem=problem,
-                expectation=expectation,
-                checker=checker,
-                checker_timeout_ms=checker_timeout_ms,
-                script_timeout_ms=script_timeout_ms,
-                overwrite=overwrite,
-                verify_only=verify_only,
-                seed=seed,
-                config=config,
-                experiment_result=experiment_result,
-                tracker=child_tracker,
-            ),
-        )
-
-    # The tabular tools take no solver and touch no managed runtime, so a
-    # ValueError is the only domain exception they raise (every rejection —
-    # bad path, non-scalar cell, refused to overwrite — is one).
-    @mcp.tool(name="load_tabular_data", description=LOAD_TABULAR_DATA_DESCRIPTION)
-    @_as_mcp_error(ValueError)
-    async def load_tabular_data(
-        path: str,
-        sheet: str | None = None,
-        has_header: bool = True,
-        row_offset: int = 0,
-        max_rows: int = DEFAULT_MAX_ROWS,
-    ) -> Annotated[CallToolResult, TabularData]:
-        result = await _run_blocking(
-            functools.partial(
-                read_tabular_data,
-                Path(path),
-                sheet=sheet,
-                has_header=has_header,
-                row_offset=row_offset,
-                max_rows=max_rows,
-            )
-        )
-        return _wrap_result(result, format_tabular_data_content)
-
-    @mcp.tool(name="write_tabular_result", description=WRITE_TABULAR_RESULT_DESCRIPTION)
-    @_as_mcp_error(ValueError)
-    async def write_tabular_result(
-        headers: list[str],
-        rows: list[list[TabularCell]],
-        target_path: str,
-        overwrite: bool = False,
-        style: TableStyle | None = None,
-        gantt: GanttSpec | None = None,
-        charts: list[ChartSpec] | None = None,
-    ) -> TabularWriteResult:
-        return await _run_blocking(
-            functools.partial(
-                write_tabular_data,
-                headers,
-                rows,
-                Path(target_path),
-                overwrite=overwrite,
-                style=style,
-                gantt=gantt,
-                charts=charts,
-            )
-        )
-
-    # Registered ABOVE the core early return, so both profiles expose it: this
-    # is the one backend-neutral prompt, and it names core tools only.
-    @mcp.prompt(
-        name="solve_constraint_problem",
-        description=SOLVE_CONSTRAINT_PROBLEM_PROMPT_DESCRIPTION,
-    )
-    def solve_constraint_problem(problem: str) -> str:
-        return solve_constraint_problem_prompt.format(problem=problem)
-
-    if is_core:
-        # Finalize the core profile before any client connects: drop every
-        # full-only tool and register only the backend-neutral
-        # `solve_constraint_problem` prompt above. The three detailed prompts
-        # below stay full-only because they reference save, portfolio,
-        # experiment, inspection, and job tools core hides.
-        # remove_tool() raises ToolError on an unknown name, so a rename or
-        # deletion upstream breaks core construction loudly instead of silently
-        # drifting.
-        for name in _FULL_ONLY_TOOL_NAMES:
-            mcp.remove_tool(name)
-        return mcp
-
-    @mcp.prompt(
-        name="minizinc_solution_workflow",
-        description=MINIZINC_SOLUTION_WORKFLOW_PROMPT_DESCRIPTION,
-    )
-    def minizinc_solution_workflow(problem: str) -> str:
-        return MINIZINC_SOLUTION_WORKFLOW_PROMPT.format(problem=problem)
-
-    @mcp.prompt(
-        name="cpsat_python_solution_workflow",
-        description=CPSAT_PYTHON_SOLUTION_WORKFLOW_PROMPT_DESCRIPTION,
-    )
-    def cpsat_python_solution_workflow(problem: str) -> str:
-        return SOLVE_CPSAT_PYTHON_PROMPT.format(problem=problem)
-
-    @mcp.prompt(
-        name="auto_tune_constraint_problem",
-        description=AUTO_TUNE_CONSTRAINT_PROBLEM_PROMPT_DESCRIPTION,
-    )
-    def auto_tune_constraint_problem_prompt(problem: str) -> str:
-        return AUTO_TUNE_CONSTRAINT_PROBLEM_PROMPT.format(problem=problem)
 
     return mcp
 
