@@ -55,7 +55,7 @@ class Task(FrozenModel):
 class ProblemInstance(FrozenModel):
     cycle_time: int
     tasks: list[Task]
-    # (i, j): task i is a direct predecessor of task j.
+    # (before, after): task `before` is a direct predecessor of task `after`.
     precedences: list[tuple[int, int]]
 
 
@@ -68,19 +68,24 @@ class Solution(FrozenModel):
 
 
 class Precomputed(FrozenModel):
-    """The instance-only quantities the tightened formulations use, per task index."""
+    """The instance-only quantities the tightened formulations use.
 
-    all_predecessors: list[frozenset[int]]
-    all_successors: list[frozenset[int]]
-    earliest: list[int]  # E_i
-    tail: list[int]  # L_i
+    Every list is indexed by task id (1..n); index 0 is an unused placeholder,
+    so no lookup needs a `- 1`.
+    """
+
+    all_predecessors: list[frozenset[int]]  # P~_i
+    all_successors: list[frozenset[int]]  # S~_i
+    earliest_station: list[int]  # E_i (7)
+    stations_after: list[int]  # L_i (8)
 
 
 def _formulation() -> Formulation:
     value: str = sys.argv[2] if len(sys.argv) > 2 else "full"
-    if value not in FORMULATIONS:
-        raise SystemExit(f"formulation must be one of {', '.join(FORMULATIONS)}, got {value!r}")
-    return value
+    for formulation in FORMULATIONS:
+        if formulation == value:
+            return formulation
+    raise SystemExit(f"formulation must be one of {', '.join(FORMULATIONS)}, got {value!r}")
 
 
 def _time_limit_seconds() -> float | None:
@@ -100,24 +105,32 @@ def parse_input(raw: dict[str, Any]) -> ProblemInstance:
     if ids != list(range(1, len(tasks) + 1)):
         raise ValueError("task ids must be 1..n in order")
     precedences: list[tuple[int, int]] = [(pair[0], pair[1]) for pair in raw["precedences"]]
-    for i, j in precedences:
-        if not (1 <= i <= len(tasks) and 1 <= j <= len(tasks)) or i == j:
-            raise ValueError(f"precedence {i}->{j} does not join two distinct known tasks")
+    for before, after in precedences:
+        if not (1 <= before <= len(tasks) and 1 <= after <= len(tasks)) or before == after:
+            raise ValueError(f"precedence {before}->{after} does not join two distinct known tasks")
     return ProblemInstance(cycle_time=raw["cycle_time"], tasks=tasks, precedences=precedences)
 
 
-def topological_order(num_tasks: int, precedences: list[tuple[int, int]]) -> list[int]:
-    """Task indices (0-based) in an order where every predecessor comes first."""
-    successors: list[list[int]] = [[] for _ in range(num_tasks)]
-    indegree: list[int] = [0] * num_tasks
-    for i, j in precedences:
-        successors[i - 1].append(j - 1)
-        indegree[j - 1] += 1
-    order: list[int] = [index for index in range(num_tasks) if indegree[index] == 0]
-    for index in order:  # grows while iterating: a queue without the import
-        for successor in successors[index]:
-            indegree[successor] -= 1
-            if indegree[successor] == 0:
+def task_times(instance: ProblemInstance) -> list[int]:
+    """Processing times indexed by task id; index 0 is a placeholder 0."""
+    return [0] + [task.time for task in instance.tasks]
+
+
+def topological_order(instance: ProblemInstance) -> list[int]:
+    """Task ids in an order where every predecessor comes first."""
+    num_tasks: int = len(instance.tasks)
+    direct_successors: list[list[int]] = [[] for _ in range(num_tasks + 1)]
+    unplaced_predecessors: list[int] = [0] * (num_tasks + 1)
+    for before, after in instance.precedences:
+        direct_successors[before].append(after)
+        unplaced_predecessors[after] += 1
+    order: list[int] = [
+        task for task in range(1, num_tasks + 1) if unplaced_predecessors[task] == 0
+    ]
+    for task in order:  # grows while iterating: a queue without the import
+        for successor in direct_successors[task]:
+            unplaced_predecessors[successor] -= 1
+            if unplaced_predecessors[successor] == 0:
                 order.append(successor)
     if len(order) != num_tasks:
         raise ValueError("the precedence graph has a cycle")
@@ -133,33 +146,35 @@ def precompute(instance: ProblemInstance) -> Precomputed:
     an exact multiple of ct from counting one station too many (p. 59).
     """
     num_tasks: int = len(instance.tasks)
-    times: list[int] = [task.time for task in instance.tasks]
-    ct: int = instance.cycle_time
-    direct_predecessors: list[list[int]] = [[] for _ in range(num_tasks)]
-    for i, j in instance.precedences:
-        direct_predecessors[j - 1].append(i - 1)
+    times: list[int] = task_times(instance)
+    cycle_time: int = instance.cycle_time
+    direct_predecessors: list[list[int]] = [[] for _ in range(num_tasks + 1)]
+    for before, after in instance.precedences:
+        direct_predecessors[after].append(before)
 
-    order: list[int] = topological_order(num_tasks, instance.precedences)
-    predecessors: list[set[int]] = [set() for _ in range(num_tasks)]
-    for index in order:
-        for parent in direct_predecessors[index]:
-            predecessors[index] |= predecessors[parent] | {parent}
-    successors: list[set[int]] = [set() for _ in range(num_tasks)]
-    for index in range(num_tasks):
-        for ancestor in predecessors[index]:
-            successors[ancestor].add(index)
+    predecessors: list[set[int]] = [set() for _ in range(num_tasks + 1)]
+    for task in topological_order(instance):
+        for predecessor in direct_predecessors[task]:
+            predecessors[task] |= predecessors[predecessor] | {predecessor}
+    successors: list[set[int]] = [set() for _ in range(num_tasks + 1)]
+    for task in range(1, num_tasks + 1):
+        for predecessor in predecessors[task]:
+            successors[predecessor].add(task)
 
-    earliest: list[int] = [
-        -(-(times[i] + sum(times[k] for k in predecessors[i])) // ct) for i in range(num_tasks)
+    task_ids: range = range(1, num_tasks + 1)
+    earliest_station: list[int] = [0] + [
+        -(-(times[task] + sum(times[other] for other in predecessors[task])) // cycle_time)
+        for task in task_ids
     ]
-    tail: list[int] = [
-        (times[i] - 1 + sum(times[k] for k in successors[i])) // ct for i in range(num_tasks)
+    stations_after: list[int] = [0] + [
+        (times[task] - 1 + sum(times[other] for other in successors[task])) // cycle_time
+        for task in task_ids
     ]
     return Precomputed(
         all_predecessors=[frozenset(item) for item in predecessors],
         all_successors=[frozenset(item) for item in successors],
-        earliest=earliest,
-        tail=tail,
+        earliest_station=earliest_station,
+        stations_after=stations_after,
     )
 
 
@@ -170,36 +185,40 @@ def greedy_station_count(instance: ProblemInstance) -> int:
     upper bound ub on m. (The paper takes ub from 100 runs of a randomized greedy,
     p. 60; one deterministic run is enough for a valid bound.)
     """
-    ct: int = instance.cycle_time
+    cycle_time: int = instance.cycle_time
     num_tasks: int = len(instance.tasks)
-    if any(task.time > ct for task in instance.tasks):
+    times: list[int] = task_times(instance)
+    if any(time > cycle_time for time in times):
         return num_tasks  # infeasible either way; the model proves it
-    remaining_predecessors: list[int] = [0] * num_tasks
-    successors: list[list[int]] = [[] for _ in range(num_tasks)]
-    for i, j in instance.precedences:
-        remaining_predecessors[j - 1] += 1
-        successors[i - 1].append(j - 1)
-    available: set[int] = {i for i in range(num_tasks) if remaining_predecessors[i] == 0}
-    stations: int = 0
+    unplaced_predecessors: list[int] = [0] * (num_tasks + 1)
+    direct_successors: list[list[int]] = [[] for _ in range(num_tasks + 1)]
+    for before, after in instance.precedences:
+        unplaced_predecessors[after] += 1
+        direct_successors[before].append(after)
+    available: set[int] = {
+        task for task in range(1, num_tasks + 1) if unplaced_predecessors[task] == 0
+    }
+    opened: int = 0
     while available:
-        stations += 1
+        opened += 1
         load: int = 0
         while True:
-            fitting: list[int] = [i for i in available if load + instance.tasks[i].time <= ct]
+            fitting: list[int] = [task for task in available if load + times[task] <= cycle_time]
             if not fitting:
                 break
-            chosen: int = max(fitting, key=lambda i: (instance.tasks[i].time, -i))
+            chosen: int = max(fitting, key=lambda task: (times[task], -task))
             available.remove(chosen)
-            load += instance.tasks[chosen].time
-            for successor in successors[chosen]:
-                remaining_predecessors[successor] -= 1
-                if remaining_predecessors[successor] == 0:
+            load += times[chosen]
+            for successor in direct_successors[chosen]:
+                unplaced_predecessors[successor] -= 1
+                if unplaced_predecessors[successor] == 0:
                     available.add(successor)
-    return max(stations, 1)
+    return max(opened, 1)
 
 
-def distance_pairs(instance: ProblemInstance, pre: Precomputed) -> dict[tuple[int, int], int]:
-    """D_ij (10) for every transitive predecessor pair, pruned by (4'').
+def station_gaps(instance: ProblemInstance, precomputed: Precomputed) -> dict[tuple[int, int], int]:
+    """D_ij (10) for every transitive predecessor pair, pruned by (4''), keyed by
+    (before, after) task ids.
 
     D_ij = floor((t_i + t_j - 1 + sum over k in S~_i & P~_j of t_k) / ct): the
     tasks from i to j must span at least D_ij + 1 stations. D is not
@@ -207,19 +226,23 @@ def distance_pairs(instance: ProblemInstance, pre: Precomputed) -> dict[tuple[in
     D_ik + D_kj >= D_ij; the dropped constraint then follows from the pairs
     kept for the shorter intervals i..k and k..j.
     """
-    times: list[int] = [task.time for task in instance.tasks]
-    ct: int = instance.cycle_time
-    distance: dict[tuple[int, int], int] = {}
-    for j in range(len(times)):
-        for i in pre.all_predecessors[j]:
-            between: frozenset[int] = pre.all_successors[i] & pre.all_predecessors[j]
-            distance[i, j] = (times[i] + times[j] - 1 + sum(times[k] for k in between)) // ct
+    times: list[int] = task_times(instance)
+    cycle_time: int = instance.cycle_time
+    gap_of: dict[tuple[int, int], int] = {}
+    for after in range(1, len(times)):
+        for before in precomputed.all_predecessors[after]:
+            between: frozenset[int] = (
+                precomputed.all_successors[before] & precomputed.all_predecessors[after]
+            )
+            gap_of[before, after] = (
+                times[before] + times[after] - 1 + sum(times[middle] for middle in between)
+            ) // cycle_time
     return {
-        (i, j): d
-        for (i, j), d in distance.items()
+        (before, after): gap
+        for (before, after), gap in gap_of.items()
         if not any(
-            d <= distance[i, k] + distance[k, j]
-            for k in pre.all_successors[i] & pre.all_predecessors[j]
+            gap <= gap_of[before, middle] + gap_of[middle, after]
+            for middle in precomputed.all_successors[before] & precomputed.all_predecessors[after]
         )
     }
 
@@ -229,55 +252,58 @@ def solve(
     formulation: Formulation = "full",
     time_limit_seconds: float | None = None,
 ) -> Solution:
-    num_tasks: int = len(instance.tasks)
-    ct: int = instance.cycle_time
-    pre: Precomputed = precompute(instance)
-    ub: int = greedy_station_count(instance)
-    tightened: bool = formulation != "base"
+    task_ids: range = range(1, len(instance.tasks) + 1)
+    times: list[int] = task_times(instance)
+    cycle_time: int = instance.cycle_time
+    precomputed: Precomputed = precompute(instance)
+    max_stations: int = greedy_station_count(instance)  # ub
+    use_station_window: bool = formulation != "base"
 
     model: cp_model.CpModel = cp_model.CpModel()
-    m: cp_model.IntVar = model.new_int_var(1, ub, "m")  # (6)
-    # x[i] = station of task i + 1, domain (5); (9)'s constant half E_i <= x_i
-    # goes straight into the domain.
-    x: list[cp_model.IntVar] = [
-        model.new_int_var(min(pre.earliest[i], ub) if tightened else 1, ub, f"x_{i + 1}")
-        for i in range(num_tasks)
+    num_stations: cp_model.IntVar = model.new_int_var(1, max_stations, "m")  # m, domain (6)
+    # station_of[task] = x_i, the station of that task, domain (5); (9)'s constant
+    # half E_i <= x_i goes straight into the domain. station_of[0] is a fixed
+    # placeholder so the list is indexed by task id; no constraint uses it.
+    station_of: list[cp_model.IntVar] = [model.new_constant(0)] + [
+        model.new_int_var(
+            min(precomputed.earliest_station[task], max_stations) if use_station_window else 1,
+            max_stations,
+            f"x_{task}",
+        )
+        for task in task_ids
     ]
 
     # (2): the tasks on station j take at most ct. (x_i = j) is reified into a
     # Boolean that joins the sum as 0/1, as the paper's CP Optimizer syntax does.
-    for station in range(1, ub + 1):
-        on_station: list[cp_model.IntVar] = []
-        for i in range(num_tasks):
-            here: cp_model.IntVar = model.new_bool_var(f"on_{i + 1}_{station}")
-            model.add(x[i] == station).only_enforce_if(here)
-            model.add(x[i] != station).only_enforce_if(~here)
-            on_station.append(here)
-        model.add(
-            cp_model.LinearExpr.weighted_sum(on_station, [task.time for task in instance.tasks])
-            <= ct
-        )
+    for station in range(1, max_stations + 1):
+        on_this_station: list[cp_model.IntVar] = []
+        for task in task_ids:
+            is_on: cp_model.IntVar = model.new_bool_var(f"on_{task}_{station}")
+            model.add(station_of[task] == station).only_enforce_if(is_on)
+            model.add(station_of[task] != station).only_enforce_if(~is_on)
+            on_this_station.append(is_on)
+        model.add(cp_model.LinearExpr.weighted_sum(on_this_station, times[1:]) <= cycle_time)
 
     # (3): a task with no successor sits within the m stations in use.
-    for i in range(num_tasks):
-        if not pre.all_successors[i]:
-            model.add(x[i] <= m)
+    for task in task_ids:
+        if not precomputed.all_successors[task]:
+            model.add(station_of[task] <= num_stations)
 
-    if tightened:
-        # (9): L_i more stations must follow task i's.
-        for i in range(num_tasks):
-            model.add(x[i] <= m - pre.tail[i])
+    if use_station_window:
+        # (9): L_i more stations must follow the task's own.
+        for task in task_ids:
+            model.add(station_of[task] <= num_stations - precomputed.stations_after[task])
 
     if formulation == "full":
         # (4') pruned by (4''), replacing (4).
-        for (i, j), d in distance_pairs(instance, pre).items():
-            model.add(x[i] + d <= x[j])
+        for (before, after), gap in station_gaps(instance, precomputed).items():
+            model.add(station_of[before] + gap <= station_of[after])
     else:
         # (4)
-        for i, j in instance.precedences:
-            model.add(x[i - 1] <= x[j - 1])
+        for before, after in instance.precedences:
+            model.add(station_of[before] <= station_of[after])
 
-    model.minimize(m)  # (1)
+    model.minimize(num_stations)  # (1)
 
     solver: cp_model.CpSolver = cp_model.CpSolver()
     solver.parameters.random_seed = int(os.environ.get("OPENCONSTRAINT_MCP_CPSAT_SEED", "42"))
@@ -296,10 +322,11 @@ def solve(
     stations: list[list[int]] | None = None
     objective: int | None = None
     if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        objective = solver.value(m)
-        stations = [[] for _ in range(objective)]
-        for i in range(num_tasks):
-            stations[solver.value(x[i]) - 1].append(i + 1)
+        objective = solver.value(num_stations)
+        stations = [
+            [task for task in task_ids if solver.value(station_of[task]) == station]
+            for station in range(1, objective + 1)
+        ]
 
     bound_states: tuple[cp_model.CpSolverStatus, ...] = (
         cp_model.OPTIMAL,

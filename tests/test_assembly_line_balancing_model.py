@@ -47,22 +47,23 @@ def test_distances_match_the_papers_three_task_chain() -> None:
     # p. 60: ct = 10, t = 4, 4, 4 in a chain gives D12 = D23 = 0 but D13 = 1, and
     # D13 > D12 + D23 keeps (1, 3) through the (4'') pruning.
     instance = _chain([4, 4, 4], 10)
-    distances = _model.distance_pairs(instance, _model.precompute(instance))
-    assert distances == {(0, 1): 0, (1, 2): 0, (0, 2): 1}
+    gaps = _model.station_gaps(instance, _model.precompute(instance))
+    assert gaps == {(1, 2): 0, (2, 3): 0, (1, 3): 1}
 
 
 def test_distance_implied_through_an_intermediate_task_is_pruned() -> None:
     # ct = 5: D12 = D23 = floor(7 / 5) = 1 and D13 = floor(11 / 5) = 2 <= 1 + 1.
     instance = _chain([4, 4, 4], 5)
-    distances = _model.distance_pairs(instance, _model.precompute(instance))
-    assert distances == {(0, 1): 1, (1, 2): 1}
+    gaps = _model.station_gaps(instance, _model.precompute(instance))
+    assert gaps == {(1, 2): 1, (2, 3): 1}
 
 
 def test_tail_does_not_count_an_extra_station_at_an_exact_multiple() -> None:
     # Task 1 and its successors total exactly 20 = 2 * ct: one station after
     # task 1's, not two (the -1 in (8)).
+    # Lists are indexed by task id; [1:] skips the index-0 placeholder.
     precomputed = _model.precompute(_chain([10, 10], 10))
-    assert (precomputed.earliest, precomputed.tail) == ([1, 2], [1, 0])
+    assert (precomputed.earliest_station[1:], precomputed.stations_after[1:]) == ([1, 2], [1, 0])
 
 
 def test_task_longer_than_the_cycle_time_is_infeasible() -> None:
