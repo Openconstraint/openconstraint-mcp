@@ -9,8 +9,8 @@ stations m.
 The CP model is the one of Bukchin & Raviv, "Constraint programming for solving
 various assembly line balancing problems", Omega 78 (2018) 57-68, Section 2
 (pp. 59-60): one integer variable x_i per task holds its station number, and m
-is minimized directly. Three formulations of that model are selectable, so each
-tightening can be measured against the one before it:
+is minimized directly. Four formulations are selectable, so each tightening
+can be measured against the one before it:
 
 - "base":   (1)-(6) -- capacity (2), terminal tasks within m (3), and direct
             precedence x_i <= x_j (4).
@@ -18,6 +18,9 @@ tightening can be measured against the one before it:
 - "full":   bounds with (4) replaced by the pairwise distances
             x_i + D_ij <= x_j (10)/(4') over all transitive predecessor pairs,
             minus the pairs implied through an intermediate task (4'').
+- "full_work_bound": full plus m >= ceil(sum of t_i / ct), the stations the
+            total work needs. Not part of the paper's model, which gives m the
+            domain 1..ub; it is a valid bound the solver otherwise has to find.
 
 Loads a JSON instance from parsed/ (default: five_task_line.json) and prints one
 JSON result. Optional arguments: the formulation (default "full") and a CP-SAT
@@ -37,8 +40,8 @@ from typing import Any, Literal
 from ortools.sat.python import cp_model
 from pydantic import BaseModel, ConfigDict
 
-Formulation = Literal["base", "bounds", "full"]
-FORMULATIONS: tuple[Formulation, ...] = ("base", "bounds", "full")
+Formulation = Literal["base", "bounds", "full", "full_work_bound"]
+FORMULATIONS: tuple[Formulation, ...] = ("base", "bounds", "full", "full_work_bound")
 
 
 class FrozenModel(BaseModel):
@@ -258,13 +261,14 @@ def solve(
     precomputed: Precomputed = precompute(instance)
     max_stations: int = greedy_station_count(instance)  # ub
     use_station_window: bool = formulation != "base"
+    use_station_gaps: bool = formulation in ("full", "full_work_bound")
 
     model: cp_model.CpModel = cp_model.CpModel()
     num_stations: cp_model.IntVar = model.new_int_var(1, max_stations, "m")  # m, domain (6)
     # station_of[task] = x_i, the station of that task, domain (5); (9)'s constant
     # half E_i <= x_i goes straight into the domain. station_of[0] is a fixed
     # placeholder so the list is indexed by task id; no constraint uses it.
-    station_of: list[cp_model.IntVar] = [model.new_constant(0)] + [
+    station_of: list[cp_model.IntVar] = [model.new_constant(-888)] + [
         model.new_int_var(
             min(precomputed.earliest_station[task], max_stations) if use_station_window else 1,
             max_stations,
@@ -294,7 +298,7 @@ def solve(
         for task in task_ids:
             model.add(station_of[task] <= num_stations - precomputed.stations_after[task])
 
-    if formulation == "full":
+    if use_station_gaps:
         # (4') pruned by (4''), replacing (4).
         for (before, after), gap in station_gaps(instance, precomputed).items():
             model.add(station_of[before] + gap <= station_of[after])
@@ -302,6 +306,10 @@ def solve(
         # (4)
         for before, after in instance.precedences:
             model.add(station_of[before] <= station_of[after])
+
+    if formulation == "full_work_bound":
+        # Not in the paper: the total work needs ceil(sum t_i / ct) stations.
+        model.add(num_stations >= -(-sum(times) // cycle_time))
 
     model.minimize(num_stations)  # (1)
 

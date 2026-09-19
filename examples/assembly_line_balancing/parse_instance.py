@@ -20,7 +20,7 @@ refused rather than silently dropped.
 The raw files stay untouched in data/; the JSON goes to parsed/, so the model
 and checker only ever read JSON.
 
-Run from the repository root:
+Run from the repository root, once per instance name in BENCHMARKS:
     uv run examples/assembly_line_balancing/parse_instance.py JACKSON_c10
 """
 
@@ -57,16 +57,31 @@ class Benchmark(FrozenModel):
     published_optimum: int
 
 
+ARCHIVE_URL: str = (
+    "https://assembly-line-balancing.de/wp-content/uploads/2017/01/SALBP-data-sets.zip"
+)
+
+
+def _benchmark(raw_file: str, cycle_time: int, published_optimum: int) -> Benchmark:
+    return Benchmark(
+        raw_file=raw_file,
+        source=f"{ARCHIVE_URL} (precedence graphs/{raw_file})",
+        cycle_time=cycle_time,
+        published_optimum=published_optimum,
+    )
+
+
+# Jackson is the small instance the fast tests solve; the others are, per size
+# (small <= 45 tasks, medium 46-100, large > 100), the ones Scholl & Klein's
+# SALOME needed the most search for.
 BENCHMARKS: dict[str, Benchmark] = {
-    "JACKSON_c10": Benchmark(
-        raw_file="JACKSON.IN2",
-        source=(
-            "https://assembly-line-balancing.de/wp-content/uploads/2017/01/SALBP-data-sets.zip "
-            "(precedence graphs/JACKSON.IN2)"
-        ),
-        cycle_time=10,
-        published_optimum=5,
-    ),
+    "JACKSON_c10": _benchmark("JACKSON.IN2", 10, 5),
+    "GUNTHER_c41": _benchmark("GUNTHER.IN2", 41, 14),
+    "KILBRID_c62": _benchmark("KILBRID.IN2", 62, 9),
+    "WARNECKE_c54": _benchmark("WARNECKE.IN2", 54, 31),
+    "LUTZ2_c14": _benchmark("LUTZ2.IN2", 14, 37),
+    "BARTHOL2_c87": _benchmark("BARTHOL2.IN2", 87, 49),
+    "SCHOLL_c1515": _benchmark("SCHOLL.IN2", 1515, 46),
 }
 
 

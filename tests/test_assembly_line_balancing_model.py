@@ -43,6 +43,14 @@ def test_five_task_line_proves_three_stations(formulation: str) -> None:
     assert (solution.status, solution.objective) == ("optimal", 3)
 
 
+@pytest.mark.parametrize(("name", "published_optimum"), [("GUNTHER_c41", 14), ("KILBRID_c62", 9)])
+def test_small_benchmark_proves_its_published_optimum(name: str, published_optimum: int) -> None:
+    # The two small-scale Scholl instances prove optimal in under a second.
+    raw = json.loads((_MODEL_PATH.parent / "parsed" / f"{name}.json").read_text())
+    solution = _model.solve(_model.parse_input(raw))
+    assert (solution.status, solution.objective) == ("optimal", published_optimum)
+
+
 def test_distances_match_the_papers_three_task_chain() -> None:
     # p. 60: ct = 10, t = 4, 4, 4 in a chain gives D12 = D23 = 0 but D13 = 1, and
     # D13 > D12 + D23 keeps (1, 3) through the (4'') pruning.

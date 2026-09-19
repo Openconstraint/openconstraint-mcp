@@ -1,5 +1,5 @@
-"""The committed Scholl conversion in examples/assembly_line_balancing/parsed/ must
-match a fresh parse of the raw file in data/, so neither can drift from the other
+"""The committed Scholl conversions in examples/assembly_line_balancing/parsed/ must
+match a fresh parse of the raw files in data/, so neither can drift from the other
 (as tests/test_guillotine_cutting_parse.py does for 2DPackLib)."""
 
 import importlib.util
@@ -25,10 +25,12 @@ def _load_parser() -> Any:
 _parser = _load_parser()
 
 
-def test_committed_instance_matches_a_fresh_parse() -> None:
-    raw_text = (_EXAMPLE_DIR / "data" / "JACKSON.IN2").read_text(encoding="utf-8")
-    committed = json.loads((_EXAMPLE_DIR / "parsed" / "JACKSON_c10.json").read_text())
-    assert _parser.parse_in2(raw_text, "JACKSON_c10") == committed
+@pytest.mark.parametrize("name", sorted(_parser.BENCHMARKS))
+def test_committed_instance_matches_a_fresh_parse(name: str) -> None:
+    raw_file: str = _parser.BENCHMARKS[name].raw_file
+    raw_text = (_EXAMPLE_DIR / "data" / raw_file).read_text(encoding="utf-8")
+    committed = json.loads((_EXAMPLE_DIR / "parsed" / f"{name}.json").read_text())
+    assert _parser.parse_in2(raw_text, name) == committed
 
 
 def test_free_text_note_after_the_end_mark_is_not_data() -> None:

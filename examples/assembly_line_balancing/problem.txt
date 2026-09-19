@@ -21,20 +21,36 @@ tied assignment elsewhere, the objective does not change):
 
     uv run examples/assembly_line_balancing/model.py > examples/assembly_line_balancing/results/optimal.json
 
-Benchmark instance from the Scholl data set
--------------------------------------------
+Benchmark instances from the Scholl data set
+--------------------------------------------
 
-data/JACKSON.IN2 is the original file, unchanged, from Scholl's data set
+data/*.IN2 are original files, unchanged, from Scholl's data set
 (https://assembly-line-balancing.de/salbp/benchmark-data-sets-1993/, archive
 SALBP-data-sets.zip; cite A. Scholl, "Data of assembly line balancing
 problems", TH Darmstadt 1993; the page states no licence). A graph file has no
-cycle time, so parse_instance.py pairs it with one and writes parsed/JACKSON_c10.json:
+cycle time, so parse_instance.py pairs each graph with one and writes
+parsed/<GRAPH>_c<ct>.json:
 
     uv run examples/assembly_line_balancing/parse_instance.py JACKSON_c10
 
-Jackson has 11 tasks. With ct = 10 the published optimum is m* = 5 (Scholl &
-Klein, EJOR 114 (1999), tabulated in the archive's workbook); model.py proves
-it in well under a second with every formulation.
+Published optima are from Scholl & Klein, EJOR 114 (1999), as tabulated in
+the archive's workbook. Jackson is the small instance the integration test
+solves. The others are, per size, the instances Scholl & Klein's SALOME
+needed the most search for:
+
+  scale    instance      tasks    ct   published m*   full, 30 s, one worker
+  small    JACKSON_c10     11     10        5         5 proved, < 1 s
+  small    GUNTHER_c41     35     41       14         14 proved, 0.4 s
+  small    KILBRID_c62     45     62        9         9 proved, 0.4 s
+  medium   WARNECKE_c54    58     54       31         31, bound 30
+  medium   LUTZ2_c14       89     14       37         37 proved, 16.4 s
+  large    BARTHOL2_c87   148     87       49         51, bound 31
+  large    SCHOLL_c1515   297   1515       46         49, bound 46
+
+Every row was graded accepted by checker.py. Barthol2's bound of 31 is far
+below the total-work bound ceil(sum t_i / ct) = 49: the paper's model gives m
+the domain 1..ub and reaches that bound only through E_i + L_i, so this model
+does not state it.
 
 Model (model.py)
 ----------------
@@ -58,8 +74,8 @@ Formulation race
 ----------------
 
 The three formulations were raced with run_cpsat_python_experiment (one worker
-each, 30 s limit, graded by checker.py) on larger Scholl graphs parsed into a
-scratch directory, not shipped:
+each, 30 s limit, graded by checker.py) on medium instances; Warnecke and Lutz2
+ship in parsed/, Tonge (TONGE70.IN2, ct = 168, m* = 22) does not:
 
   instance (published m*)      base               bounds             full
   Warnecke ct=54 (31), seed 42 31 proved 21.8 s   32, bound 31       31, bound 30
