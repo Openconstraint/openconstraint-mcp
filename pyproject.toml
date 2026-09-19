@@ -1,7 +1,7 @@
 [project]
 name = "openconstraint-mcp"
 version = "0.3.0"
-description = "Local-first MCP server for MiniZinc constraint solving"
+description = "Local-first MCP server for constraint solving with MiniZinc and OR-Tools CP-SAT"
 readme = "README.md"
 authors = [
     { name = "Openconstraint", email = "166951411+KeLiu99@users.noreply.github.com" }
