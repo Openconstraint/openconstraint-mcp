@@ -1,0 +1,116 @@
+Simple assembly line balancing, type 1. A product is assembled from n tasks,
+each with an integer processing time t_i. Some tasks must precede others (a
+directed acyclic precedence graph). The line is a sequence of stations; every
+station gets a set of tasks whose total time is at most the fixed cycle time ct,
+and no task may sit on an earlier station than any of its predecessors. Choose
+the station of every task to minimize the number of stations m.
+
+parsed/five_task_line.json -- a five-task line
+----------------------------------------------
+
+Authored for this example (license CC0-1.0); it has no raw form in data/.
+
+  task     1   2   3   4   5
+  time     3   2   4   3   2
+  precedences 1->2, 1->3, 2->4, 3->4, 4->5;  ct = 6
+
+The total work 14 needs at least ceil(14 / 6) = 3 stations, and {1, 2}, {3},
+{4, 5} uses 3, so the optimum is m = 3. results/optimal.json is model.py's
+committed stdout for it (ortools 9.15.6755, seed 42; CP-SAT may pick another
+tied assignment elsewhere, the objective does not change):
+
+    uv run examples/assembly_line_balancing/model.py > examples/assembly_line_balancing/results/optimal.json
+
+Benchmark instances from the Scholl data set
+--------------------------------------------
+
+data/*.IN2 are original files, unchanged, from Scholl's data set
+(https://assembly-line-balancing.de/salbp/benchmark-data-sets-1993/, archive
+SALBP-data-sets.zip; cite A. Scholl, "Data of assembly line balancing
+problems", TH Darmstadt 1993; the page states no licence). A graph file has no
+cycle time, so parse_instance.py pairs each graph with one and writes
+parsed/<GRAPH>_c<ct>.json:
+
+    uv run examples/assembly_line_balancing/parse_instance.py JACKSON_c10
+
+Published optima are from Scholl & Klein, EJOR 114 (1999), as tabulated in
+the archive's workbook. Jackson is the small instance the integration test
+solves. The others are, per size, the instances Scholl & Klein's SALOME
+needed the most search for:
+
+  scale    instance      tasks    ct   published m*   default (full_work_bound),
+                                                      30 s, one worker
+  small    JACKSON_c10     11     10        5         5 proved, < 1 s
+  small    GUNTHER_c41     35     41       14         14 proved, 0.5 s
+  small    KILBRID_c62     45     62        9         9 proved, 0.4 s
+  medium   WARNECKE_c54    58     54       31         31 proved, 29.0 s
+  medium   LUTZ2_c14       89     14       37         37 proved, 16.2 s
+  large    BARTHOL2_c87   148     87       49         51, bound 49
+  large    SCHOLL_c1515   297   1515       46         49, bound 46
+
+Every row was graded accepted by checker.py. The paper's own model (full)
+gets the same stations on every row but a weaker bound on Warnecke (30) and
+Barthol2 (31, far below the total-work bound ceil(sum t_i / ct) = 49); see
+Formulation race.
+
+Model (model.py)
+----------------
+
+The CP model of Bukchin & Raviv, "Constraint programming for solving various
+assembly line balancing problems", Omega 78 (2018) 57-68, Section 2. x_i is the
+station of task i and m is minimized directly. The second argument selects the
+formulation (default full_work_bound):
+
+  base     (1)-(6): station capacity, terminal tasks within m, x_i <= x_j
+  bounds   base + E_i <= x_i <= m - L_i  (7)-(9)
+  full     bounds with x_i <= x_j replaced by x_i + D_ij <= x_j over transitive
+           predecessor pairs (10)/(4'), pruned when an intermediate task k
+           gives D_ik + D_kj >= D_ij (4'')
+  full_work_bound
+           full + m >= ceil(sum t_i / ct). Not in the paper: a valid bound
+           the paper's model leaves the solver to find
+
+The upper bound ub on m is one run of a station-oriented greedy (longest
+available task that still fits); the paper takes the best of 100 randomized
+runs. A third argument caps CP-SAT's search time in seconds.
+
+Formulation race
+----------------
+
+The three formulations were raced with run_cpsat_python_experiment (one worker
+each, 30 s limit, graded by checker.py) on medium instances; Warnecke and Lutz2
+ship in parsed/, Tonge (TONGE70.IN2, ct = 168, m* = 22) does not:
+
+  instance (published m*)      base               bounds             full
+  Warnecke ct=54 (31), seed 42 31 proved 21.8 s   32, bound 31       31, bound 30
+                       seed 1  32, bound 31       31, bound 30       31, bound 30
+                       seed 2  32, bound 31       31 proved 29.8 s   31, bound 30
+  Lutz2 ct=14 (37)             proved 28.3 s      proved 11.6 s      proved 16.4 s
+  Tonge ct=168 (22)            proved ~2.9 s      proved ~1.7 s      proved ~0.7 s
+
+No formulation dominates. full was chosen over base and bounds because it
+reached the published optimum on every run; bounds proved optimality faster on
+Lutz2.
+
+full_work_bound against full, same setup (one run each):
+
+  instance (published m*)      full               full_work_bound
+  Barthol2 ct=87 (49)          51, bound 31       51, bound 49
+  Scholl ct=1515 (46)          49, bound 46       49, bound 46
+  Warnecke ct=54 (31)          31, bound 30       31 proved 29.0 s
+
+It never did worse and makes the reported gap honest on Barthol2; on Gunther,
+Kilbridge and Lutz2 it matches full. The Warnecke proof is one run and may be
+seed luck: that instance's total-work bound is 29, below the 30 full already
+reaches, so the proof did not come from the new constraint directly.
+full_work_bound is the default; pass full to run the paper's model exactly.
+
+Checker (checker.py)
+--------------------
+
+checker.py reads the instance from the payload's `problem` field (the instance
+JSON text) and grades solution.stations, a list of task-id lists for stations
+1..m: every task exactly once, no unknown task, every load within ct, no task
+before a direct predecessor, and the objective equal to the station count. It
+does not prove minimality; details report the loads and the total-work lower
+bound ceil(sum t_i / ct).
