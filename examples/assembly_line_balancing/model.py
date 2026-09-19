@@ -23,7 +23,7 @@ can be measured against the one before it:
             domain 1..ub; it is a valid bound the solver otherwise has to find.
 
 Loads a JSON instance from parsed/ (default: five_task_line.json) and prints one
-JSON result. Optional arguments: the formulation (default "full") and a CP-SAT
+JSON result. Optional arguments: the formulation (default "full_work_bound") and a CP-SAT
 time limit in seconds; without a limit the search runs until it proves
 optimality.
 Run from the repository root:
@@ -84,7 +84,7 @@ class Precomputed(FrozenModel):
 
 
 def _formulation() -> Formulation:
-    value: str = sys.argv[2] if len(sys.argv) > 2 else "full"
+    value: str = sys.argv[2] if len(sys.argv) > 2 else "full_work_bound"
     for formulation in FORMULATIONS:
         if formulation == value:
             return formulation
@@ -219,6 +219,12 @@ def greedy_station_count(instance: ProblemInstance) -> int:
     return max(opened, 1)
 
 
+def total_work_bound(instance: ProblemInstance) -> int:
+    """ceil(sum of t_i / ct): each station holds at most ct of the total work.
+    Not part of the paper's model; the "full_work_bound" formulation adds it."""
+    return -(-sum(task.time for task in instance.tasks) // instance.cycle_time)
+
+
 def station_gaps(instance: ProblemInstance, precomputed: Precomputed) -> dict[tuple[int, int], int]:
     """D_ij (10) for every transitive predecessor pair, pruned by (4''), keyed by
     (before, after) task ids.
@@ -252,7 +258,7 @@ def station_gaps(instance: ProblemInstance, precomputed: Precomputed) -> dict[tu
 
 def solve(
     instance: ProblemInstance,
-    formulation: Formulation = "full",
+    formulation: Formulation = "full_work_bound",
     time_limit_seconds: float | None = None,
 ) -> Solution:
     task_ids: range = range(1, len(instance.tasks) + 1)
@@ -308,8 +314,7 @@ def solve(
             model.add(station_of[before] <= station_of[after])
 
     if formulation == "full_work_bound":
-        # Not in the paper: the total work needs ceil(sum t_i / ct) stations.
-        model.add(num_stations >= -(-sum(times) // cycle_time))
+        model.add(num_stations >= total_work_bound(instance))
 
     model.minimize(num_stations)  # (1)
 

@@ -36,7 +36,7 @@ def _chain(times: list[int], cycle_time: int) -> Any:
     )
 
 
-@pytest.mark.parametrize("formulation", ["base", "bounds", "full"])
+@pytest.mark.parametrize("formulation", ["base", "bounds", "full", "full_work_bound"])
 def test_five_task_line_proves_three_stations(formulation: str) -> None:
     raw = json.loads((_MODEL_PATH.parent / "parsed" / "five_task_line.json").read_text())
     solution = _model.solve(_model.parse_input(raw), formulation)
@@ -72,6 +72,14 @@ def test_tail_does_not_count_an_extra_station_at_an_exact_multiple() -> None:
     # Lists are indexed by task id; [1:] skips the index-0 placeholder.
     precomputed = _model.precompute(_chain([10, 10], 10))
     assert (precomputed.earliest_station[1:], precomputed.stations_after[1:]) == ([1, 2], [1, 0])
+
+
+@pytest.mark.parametrize(("times", "expected"), [([3, 2, 4, 3, 2], 3), ([6, 6], 2)])
+def test_total_work_bound_rounds_up_only_past_an_exact_multiple(
+    times: list[int], expected: int
+) -> None:
+    # ct = 6: total work 14 needs 3 stations; exactly 12 fills 2.
+    assert _model.total_work_bound(_chain(times, 6)) == expected
 
 
 def test_task_longer_than_the_cycle_time_is_infeasible() -> None:
