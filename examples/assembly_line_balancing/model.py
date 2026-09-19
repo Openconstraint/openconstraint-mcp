@@ -147,6 +147,8 @@ def precompute(instance: ProblemInstance) -> Precomputed:
     first x_i stations. L_i = floor((t_i - 1 + sum of all successors' times) / ct)
     is the number of stations that must follow x_i; the -1 keeps a total that is
     an exact multiple of ct from counting one station too many (p. 59).
+    Both formulas assume t_i >= 1; E_i is clamped to at least 1 and L_i to at
+    least 0 so a zero-time task still lands on a station within 1..m.
     """
     num_tasks: int = len(instance.tasks)
     times: list[int] = task_times(instance)
@@ -166,11 +168,11 @@ def precompute(instance: ProblemInstance) -> Precomputed:
 
     task_ids: range = range(1, num_tasks + 1)
     earliest_station: list[int] = [0] + [
-        -(-(times[task] + sum(times[other] for other in predecessors[task])) // cycle_time)
+        max(1, -(-(times[task] + sum(times[other] for other in predecessors[task])) // cycle_time))
         for task in task_ids
     ]
     stations_after: list[int] = [0] + [
-        (times[task] - 1 + sum(times[other] for other in successors[task])) // cycle_time
+        max(0, (times[task] - 1 + sum(times[other] for other in successors[task])) // cycle_time)
         for task in task_ids
     ]
     return Precomputed(
@@ -233,7 +235,8 @@ def station_gaps(instance: ProblemInstance, precomputed: Precomputed) -> dict[tu
     tasks from i to j must span at least D_ij + 1 stations. D is not
     subadditive, so a pair is dropped only when some intermediate k gives
     D_ik + D_kj >= D_ij; the dropped constraint then follows from the pairs
-    kept for the shorter intervals i..k and k..j.
+    kept for the shorter intervals i..k and k..j. D_ij is clamped to at least 0:
+    for zero-time tasks the -1 would otherwise weaken x_i <= x_j to x_i - 1 <= x_j.
     """
     times: list[int] = task_times(instance)
     cycle_time: int = instance.cycle_time
@@ -243,9 +246,11 @@ def station_gaps(instance: ProblemInstance, precomputed: Precomputed) -> dict[tu
             between: frozenset[int] = (
                 precomputed.all_successors[before] & precomputed.all_predecessors[after]
             )
-            gap_of[before, after] = (
-                times[before] + times[after] - 1 + sum(times[middle] for middle in between)
-            ) // cycle_time
+            gap_of[before, after] = max(
+                0,
+                (times[before] + times[after] - 1 + sum(times[middle] for middle in between))
+                // cycle_time,
+            )
     return {
         (before, after): gap
         for (before, after), gap in gap_of.items()

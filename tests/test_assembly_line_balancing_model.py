@@ -74,6 +74,25 @@ def test_tail_does_not_count_an_extra_station_at_an_exact_multiple() -> None:
     assert (precomputed.earliest_station[1:], precomputed.stations_after[1:]) == ([1, 2], [1, 0])
 
 
+@pytest.mark.parametrize("formulation", ["base", "bounds", "full", "full_work_bound"])
+def test_zero_time_task_stays_on_a_station(formulation: str) -> None:
+    # E_1 = ceil(0 / 2) = 0 must not let task 1 sit on station 0, off the line.
+    solution = _model.solve(_chain([0, 1], 2), formulation)
+    assert solution.stations == [[1, 2]]
+
+
+def test_zero_time_tasks_keep_tightening_quantities_non_negative() -> None:
+    # Unclamped, t = 1, 0, 0 with ct = 2 gives L_2 = L_3 = -1 and D_23 = -1,
+    # which would let task 3 precede task 2 or sit past station m.
+    instance = _chain([1, 0, 0], 2)
+    precomputed = _model.precompute(instance)
+    assert (
+        precomputed.earliest_station[1:],
+        precomputed.stations_after[1:],
+        _model.station_gaps(instance, precomputed),
+    ) == ([1, 1, 1], [0, 0, 0], {(1, 2): 0, (2, 3): 0})
+
+
 @pytest.mark.parametrize(("times", "expected"), [([3, 2, 4, 3, 2], 3), ([6, 6], 2)])
 def test_total_work_bound_rounds_up_only_past_an_exact_multiple(
     times: list[int], expected: int
