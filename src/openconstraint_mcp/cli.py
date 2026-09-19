@@ -15,7 +15,7 @@ from .runtime import RuntimeMissingError, get_runtime_status, install_config_war
 app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
-    help="Local-first MCP server for constraint programming, powered by MiniZinc.",
+    help="Local-first MCP server for constraint programming, powered by MiniZinc and OR-Tools CP-SAT.",
 )
 _console = Console()
 _stderr_console = Console(stderr=True)
