@@ -1,0 +1,18 @@
+{
+  "name": "five_task_line",
+  "provenance": {
+    "source": "authored for this example (license CC0-1.0)",
+    "citation": null,
+    "license": "CC0-1.0"
+  },
+  "published_optimum": null,
+  "cycle_time": 6,
+  "tasks": [
+    {"id": 1, "time": 3},
+    {"id": 2, "time": 2},
+    {"id": 3, "time": 4},
+    {"id": 4, "time": 3},
+    {"id": 5, "time": 2}
+  ],
+  "precedences": [[1, 2], [1, 3], [2, 4], [3, 4], [4, 5]]
+}

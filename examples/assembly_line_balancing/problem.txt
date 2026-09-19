@@ -1,0 +1,82 @@
+Simple assembly line balancing, type 1. A product is assembled from n tasks,
+each with an integer processing time t_i. Some tasks must precede others (a
+directed acyclic precedence graph). The line is a sequence of stations; every
+station gets a set of tasks whose total time is at most the fixed cycle time ct,
+and no task may sit on an earlier station than any of its predecessors. Choose
+the station of every task to minimize the number of stations m.
+
+parsed/five_task_line.json -- a five-task line
+----------------------------------------------
+
+Authored for this example (license CC0-1.0); it has no raw form in data/.
+
+  task     1   2   3   4   5
+  time     3   2   4   3   2
+  precedences 1->2, 1->3, 2->4, 3->4, 4->5;  ct = 6
+
+The total work 14 needs at least ceil(14 / 6) = 3 stations, and {1, 2}, {3},
+{4, 5} uses 3, so the optimum is m = 3. results/optimal.json is model.py's
+committed stdout for it (ortools 9.15.6755, seed 42; CP-SAT may pick another
+tied assignment elsewhere, the objective does not change):
+
+    uv run examples/assembly_line_balancing/model.py > examples/assembly_line_balancing/results/optimal.json
+
+Benchmark instance from the Scholl data set
+-------------------------------------------
+
+data/JACKSON.IN2 is the original file, unchanged, from Scholl's data set
+(https://assembly-line-balancing.de/salbp/benchmark-data-sets-1993/, archive
+SALBP-data-sets.zip; cite A. Scholl, "Data of assembly line balancing
+problems", TH Darmstadt 1993; the page states no licence). A graph file has no
+cycle time, so parse_instance.py pairs it with one and writes parsed/JACKSON_c10.json:
+
+    uv run examples/assembly_line_balancing/parse_instance.py JACKSON_c10
+
+Jackson has 11 tasks. With ct = 10 the published optimum is m* = 5 (Scholl &
+Klein, EJOR 114 (1999), tabulated in the archive's workbook); model.py proves
+it in well under a second with every formulation.
+
+Model (model.py)
+----------------
+
+The CP model of Bukchin & Raviv, "Constraint programming for solving various
+assembly line balancing problems", Omega 78 (2018) 57-68, Section 2. x_i is the
+station of task i and m is minimized directly. The second argument selects the
+formulation (default full):
+
+  base     (1)-(6): station capacity, terminal tasks within m, x_i <= x_j
+  bounds   base + E_i <= x_i <= m - L_i  (7)-(9)
+  full     bounds with x_i <= x_j replaced by x_i + D_ij <= x_j over transitive
+           predecessor pairs (10)/(4'), pruned when an intermediate task k
+           gives D_ik + D_kj >= D_ij (4'')
+
+The upper bound ub on m is one run of a station-oriented greedy (longest
+available task that still fits); the paper takes the best of 100 randomized
+runs. A third argument caps CP-SAT's search time in seconds.
+
+Formulation race
+----------------
+
+The three formulations were raced with run_cpsat_python_experiment (one worker
+each, 30 s limit, graded by checker.py) on larger Scholl graphs parsed into a
+scratch directory, not shipped:
+
+  instance (published m*)      base               bounds             full
+  Warnecke ct=54 (31), seed 42 31 proved 21.8 s   32, bound 31       31, bound 30
+                       seed 1  32, bound 31       31, bound 30       31, bound 30
+                       seed 2  32, bound 31       31 proved 29.8 s   31, bound 30
+  Lutz2 ct=14 (37)             proved 28.3 s      proved 11.6 s      proved 16.4 s
+  Tonge ct=168 (22)            proved ~2.9 s      proved ~1.7 s      proved ~0.7 s
+
+No formulation dominates. full is the default because it reached the published
+optimum on every run; bounds proved optimality faster on Lutz2.
+
+Checker (checker.py)
+--------------------
+
+checker.py reads the instance from the payload's `problem` field (the instance
+JSON text) and grades solution.stations, a list of task-id lists for stations
+1..m: every task exactly once, no unknown task, every load within ct, no task
+before a direct predecessor, and the objective equal to the station count. It
+does not prove minimality; details report the loads and the total-work lower
+bound ceil(sum t_i / ct).
