@@ -1,7 +1,7 @@
 """Real-subprocess smoke test for the assembly line balancing example workflow.
 
-The real MCP tool spawns the real script on the Scholl benchmark instance,
-parses its stdout, builds the checker payload from it, and spawns the real
+The real MCP tool spawns the real scripts on the Scholl benchmark instance,
+parses each one's stdout, builds the checker payload from it, and spawns the real
 checker -- the seam between the script's printed `solution` and checker.py's
 expectations of it, which the checker's unit tests supply both sides of and
 therefore cannot check.
@@ -50,5 +50,33 @@ async def test_jackson_reaches_the_published_optimum_with_an_accepted_verdict() 
     assert (result["status"], result["objective"], checker["status"]) == (
         "optimal",
         published_optimum,
+        "accepted",
+    ), checker["errors"]
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_largest_candidate_rule_on_jackson_is_graded_by_the_same_checker() -> None:
+    mcp = create_mcp_server("full")
+    problem_text = (_EXAMPLE_DIR / "parsed" / "JACKSON_c10.json").read_text(encoding="utf-8")
+
+    call_result = await mcp.call_tool(
+        "run_cpsat_python_file_checked",
+        {
+            "script_path": str(_EXAMPLE_DIR / "largest_candidate.py"),
+            "checker_path": str(_EXAMPLE_DIR / "checker.py"),
+            "args": ["JACKSON_c10.json"],
+            "problem": problem_text,
+        },
+    )
+    assert isinstance(call_result, CallToolResult)
+    assert call_result.structured_content is not None
+    result: dict[str, Any] = call_result.structured_content
+    checker: dict[str, Any] = result["checker"]
+
+    # The rule needs one station more than the published optimum, 5.
+    assert (result["status"], result["objective"], checker["status"]) == (
+        "feasible",
+        6,
         "accepted",
     ), checker["errors"]

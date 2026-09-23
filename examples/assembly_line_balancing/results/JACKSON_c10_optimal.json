@@ -1,0 +1,1 @@
+{"status": "optimal", "objective": 5, "best_objective_bound": 5.0, "solution": {"stations": [[1, 2, 6], [5, 8], [3, 10], [4, 7], [9, 11]]}}

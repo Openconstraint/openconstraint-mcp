@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 _EXAMPLE_DIR = Path(__file__).parent.parent / "examples" / "assembly_line_balancing"
 _CHECKER_PATH = _EXAMPLE_DIR / "checker.py"
 _INSTANCE_TEXT = (_EXAMPLE_DIR / "parsed" / "five_task_line.json").read_text(encoding="utf-8")
@@ -21,13 +23,15 @@ def _load_checker() -> Any:
 _checker = _load_checker()
 
 
-def _committed_payload() -> dict[str, Any]:
+def _committed_payload(
+    result: str = "optimal.json", instance: str = "five_task_line.json"
+) -> dict[str, Any]:
     """The checker payload run_cpsat_python_file_checked builds from the committed
     script stdout: the script's `status` becomes `solver_status`, and `problem`
     is the instance JSON text."""
-    envelope = json.loads((_EXAMPLE_DIR / "results" / "optimal.json").read_text(encoding="utf-8"))
+    envelope = json.loads((_EXAMPLE_DIR / "results" / result).read_text(encoding="utf-8"))
     return {
-        "problem": _INSTANCE_TEXT,
+        "problem": (_EXAMPLE_DIR / "parsed" / instance).read_text(encoding="utf-8"),
         "solution": envelope["solution"],
         "objective": envelope["objective"],
         "solver_status": envelope["status"],
@@ -58,6 +62,22 @@ def test_optimal_payload_details_report_loads_and_lower_bound() -> None:
         "cycle_time": 6,
         "total_work_lower_bound": 3,
     }
+
+
+@pytest.mark.parametrize(
+    ("result", "station_loads"),
+    [
+        # model.py reaches the published optimum, 5 stations.
+        ("JACKSON_c10_optimal.json", [10, 7, 10, 10, 9]),
+        # largest_candidate.py needs one station more on the same line.
+        ("JACKSON_c10_largest_candidate.json", [10, 8, 6, 10, 8, 4]),
+    ],
+)
+def test_accepts_committed_jackson_payloads(result: str, station_loads: list[int]) -> None:
+    verdict = _checker.check_payload(_committed_payload(result, "JACKSON_c10.json"))
+    assert (verdict["status"], verdict["errors"]) == ("accepted", [])
+    assert verdict["details"]["station_loads"] == station_loads
+    assert verdict["details"]["total_work_lower_bound"] == 5
 
 
 def test_rejects_station_over_cycle_time() -> None:

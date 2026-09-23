@@ -105,6 +105,38 @@ seed luck: that instance's total-work bound is 29, below the 30 full already
 reaches, so the proof did not come from the new constraint directly.
 full_work_bound is the default; pass full to run the paper's model exactly.
 
+Comparison rule (largest_candidate.py)
+--------------------------------------
+
+largest_candidate.py builds one line balance with a rule a planner could follow
+by hand: open a station, repeatedly put on it the longest task whose direct
+predecessors all sit on this or an earlier station and whose time still fits in
+what is left of the cycle time (ties to the lower task id), and open the next
+station when no task fits. It is the greedy that gives model.py its upper bound
+ub, returning the stations instead of only their count. It proves nothing about
+the minimum.
+
+On Jackson (ct = 10, total work 46) it needs 6 stations, one more than the
+published optimum model.py proves:
+
+  largest_candidate.py  [1, 2, 6] [4, 5] [8] [3, 10] [7, 9] [11]
+                        loads 10, 8, 6, 10, 8, 4; idle 14
+  model.py              [1, 2, 6] [5, 8] [3, 10] [4, 7] [9, 11]
+                        loads 10, 7, 10, 10, 9; idle 4
+
+Five stations of 10 hold 46 units of work only if at most 4 units stay idle in
+total. The rule's first three stations already leave 6 idle: it starts station
+2 with task 4, the longest candidate at 7, fills it to 8 with task 5, and then
+task 8 (6) stands alone on station 3. The optimum puts task 4 with task 7
+(7 + 3 = 10). On the five-task line the rule reaches the optimum, 3 stations.
+
+results/JACKSON_c10_optimal.json and results/JACKSON_c10_largest_candidate.json
+are the committed stdout of the two scripts, both graded accepted by
+checker.py, regenerated from the repository root with:
+
+    uv run examples/assembly_line_balancing/model.py JACKSON_c10.json > examples/assembly_line_balancing/results/JACKSON_c10_optimal.json
+    uv run examples/assembly_line_balancing/largest_candidate.py JACKSON_c10.json > examples/assembly_line_balancing/results/JACKSON_c10_largest_candidate.json
+
 Checker (checker.py)
 --------------------
 
