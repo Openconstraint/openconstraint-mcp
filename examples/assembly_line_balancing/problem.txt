@@ -21,25 +21,27 @@ tied assignment elsewhere, the objective does not change):
 
     uv run examples/assembly_line_balancing/model.py > examples/assembly_line_balancing/results/optimal.json
 
-parsed/four_task_line.json -- a four-task line
-----------------------------------------------
+parsed/seven_task_line.json -- a seven-task line
+------------------------------------------------
 
 Authored for this example (license CC0-1.0); it has no raw form in data/. It
-was picked from an enumeration of four-task lines as one on which the
-largest-candidate rule misses the optimum (see Comparison rule), with a single
-precedence relation. It shows how the rule can fail, not how often it does.
+was picked from a search of seven-task lines as one on which the
+largest-candidate rule misses the optimum (see Comparison rule), with its
+tasks in two chains that meet at the last task. It shows how the rule can
+fail, not how often it does.
 
-  task     1   2   3   4
-  time     6   7   4   3
-  precedences 3->4;  ct = 10
+  task     1   2   3   4   5   6   7
+  time     6   3   5   1   9   4   2
+  precedences 1->2, 2->3, 3->7, 4->5, 5->6, 6->7;  ct = 10
 
-The total work 20 needs at least ceil(20 / 10) = 2 stations, and {1, 3},
-{2, 4} uses 2, so the optimum is m = 2. It is the only optimal line balance:
-6 + 4 and 7 + 3 are the only way to fill two stations exactly, and 3->4 puts
-{1, 3} on the first one. results/four_task_line_optimal.json is model.py's
-committed stdout for it (ortools 9.15.6755, seed 42):
+The total work 30 needs at least ceil(30 / 10) = 3 stations, and {4, 5},
+{1, 6}, {2, 3, 7} uses 3, so the optimum is m = 3. It is the only optimal line
+balance: 9 + 1, 6 + 4 and 5 + 3 + 2 are the only way to fill three stations
+exactly, 5->6 puts {4, 5} before {1, 6}, and 1->2 puts {1, 6} before
+{2, 3, 7}. results/seven_task_line_optimal.json is model.py's committed stdout
+for it (ortools 9.15.6755, seed 42):
 
-    uv run examples/assembly_line_balancing/model.py four_task_line.json > examples/assembly_line_balancing/results/four_task_line_optimal.json
+    uv run examples/assembly_line_balancing/model.py seven_task_line.json > examples/assembly_line_balancing/results/seven_task_line_optimal.json
 
 Benchmark instances from the Scholl data set
 --------------------------------------------
@@ -150,31 +152,34 @@ total. The rule's first three stations already leave 6 idle: it starts station
 task 8 (6) stands alone on station 3. The optimum puts task 4 with task 7
 (7 + 3 = 10). On the five-task line the rule reaches the optimum, 3 stations.
 
-On the four-task line (ct = 10, total work 20) the rule needs 3 stations
-against the optimum of 2, so its line uses 50% more stations:
+On the seven-task line (ct = 10, total work 30) the rule needs 4 stations,
+one more than the optimum of 3:
 
-  largest_candidate.py  [2] [1, 3] [4]
-                        loads 7, 10, 3; idle 10
-  model.py              [1, 3] [2, 4]
-                        loads 10, 10; idle 0
+  largest_candidate.py  [1, 2, 4] [5] [3, 6] [7]
+                        loads 10, 9, 9, 2; idle 10
+  model.py              [4, 5] [1, 6] [2, 3, 7]
+                        loads 10, 10, 10; idle 0
 
-The rule starts station 1 with task 2 (7), the longest candidate. Only task 4
-(3) is short enough to fit beside it, but task 4 must wait for task 3 (4), and
-task 3 does not fit beside task 2. So task 2 stands alone on station 1, tasks
-1 and 3 fill station 2, and task 4 needs a third station for 3 units of work.
-The optimum puts task 3 beside task 1 on station 1 (6 + 4 = 10) and task 4
-beside task 2 on station 2 (7 + 3 = 10). Without the relation 3->4 the rule
-reaches the optimum, [2, 4] [1, 3]: that one relation is what makes it fail.
-The four times are distinct, so no tie-break decides any choice.
+Three stations of 10 hold 30 units of work only if none stays idle, and task 5
+(9) fills a station only beside task 4 (1), the one task short enough to fit
+next to it. The rule starts station 1 with task 1 (6), the longer of the two
+ready tasks, adds task 2 (3), and fills the last unit with task 4. Task 5 then
+stands alone on station 2 with 1 unit idle, so the rule cannot finish in 3
+stations: tasks 3 and 6 fill station 3 to 9, and task 7 (2) needs a fourth.
+The optimum puts task 4 beside task 5 on station 1 (1 + 9 = 10) and task 1
+beside task 6 on station 2 (6 + 4 = 10). Without the relation 4->5 the rule
+reaches the optimum, [5, 4] [1, 6] [2, 3, 7]: that relation keeps task 5 from
+being ready when the rule opens station 1. The seven times are distinct, so no
+tie-break decides any choice.
 
 results/JACKSON_c10_optimal.json, results/JACKSON_c10_largest_candidate.json
-and results/four_task_line_largest_candidate.json are the committed stdout of
+and results/seven_task_line_largest_candidate.json are the committed stdout of
 the two scripts, all graded accepted by checker.py, regenerated from the
 repository root with:
 
     uv run examples/assembly_line_balancing/model.py JACKSON_c10.json > examples/assembly_line_balancing/results/JACKSON_c10_optimal.json
     uv run examples/assembly_line_balancing/largest_candidate.py JACKSON_c10.json > examples/assembly_line_balancing/results/JACKSON_c10_largest_candidate.json
-    uv run examples/assembly_line_balancing/largest_candidate.py four_task_line.json > examples/assembly_line_balancing/results/four_task_line_largest_candidate.json
+    uv run examples/assembly_line_balancing/largest_candidate.py seven_task_line.json > examples/assembly_line_balancing/results/seven_task_line_largest_candidate.json
 
 Checker (checker.py)
 --------------------

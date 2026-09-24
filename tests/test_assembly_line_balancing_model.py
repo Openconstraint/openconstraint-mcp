@@ -44,10 +44,10 @@ def test_five_task_line_proves_three_stations(formulation: str) -> None:
 
 
 @pytest.mark.parametrize("formulation", ["base", "bounds", "full", "full_work_bound"])
-def test_four_task_line_proves_its_only_optimal_line_balance(formulation: str) -> None:
-    raw = json.loads((_MODEL_PATH.parent / "parsed" / "four_task_line.json").read_text())
+def test_seven_task_line_proves_its_only_optimal_line_balance(formulation: str) -> None:
+    raw = json.loads((_MODEL_PATH.parent / "parsed" / "seven_task_line.json").read_text())
     solution = _model.solve(_model.parse_input(raw), formulation)
-    assert (solution.status, solution.stations) == ("optimal", [[1, 3], [2, 4]])
+    assert (solution.status, solution.stations) == ("optimal", [[4, 5], [1, 6], [2, 3, 7]])
 
 
 @pytest.mark.parametrize(("name", "published_optimum"), [("GUNTHER_c41", 14), ("KILBRID_c62", 9)])
