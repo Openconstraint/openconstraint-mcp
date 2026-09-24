@@ -80,6 +80,22 @@ def test_accepts_committed_jackson_payloads(result: str, station_loads: list[int
     assert verdict["details"]["total_work_lower_bound"] == 5
 
 
+@pytest.mark.parametrize(
+    ("result", "station_loads"),
+    [
+        # model.py fills both stations of the total-work bound.
+        ("four_task_line_optimal.json", [10, 10]),
+        # largest_candidate.py needs a third station for task 4 alone.
+        ("four_task_line_largest_candidate.json", [7, 10, 3]),
+    ],
+)
+def test_accepts_committed_four_task_payloads(result: str, station_loads: list[int]) -> None:
+    verdict = _checker.check_payload(_committed_payload(result, "four_task_line.json"))
+    assert (verdict["status"], verdict["errors"]) == ("accepted", [])
+    assert verdict["details"]["station_loads"] == station_loads
+    assert verdict["details"]["total_work_lower_bound"] == 2
+
+
 def test_rejects_station_over_cycle_time() -> None:
     result = _checker.check_payload(_payload([[1, 2, 3], [4, 5]], 2))
     assert result["errors"] == ["station 1 load 9 exceeds cycle time 6"]

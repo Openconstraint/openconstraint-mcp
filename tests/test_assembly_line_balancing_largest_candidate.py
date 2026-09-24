@@ -30,19 +30,25 @@ def _raw(name: str) -> dict[str, Any]:
     return raw
 
 
-def test_jackson_matches_the_committed_result() -> None:
+@pytest.mark.parametrize("name", ["JACKSON_c10", "four_task_line"])
+def test_matches_the_committed_result(name: str) -> None:
     committed = json.loads(
-        (_EXAMPLE_DIR / "results" / "JACKSON_c10_largest_candidate.json").read_text(
-            encoding="utf-8"
-        )
+        (_EXAMPLE_DIR / "results" / f"{name}_largest_candidate.json").read_text(encoding="utf-8")
     )
-    solution = _rule.solve(_rule.parse_input(_raw("JACKSON_c10.json")))
+    solution = _rule.solve(_rule.parse_input(_raw(f"{name}.json")))
     assert _rule.serialize_solution(solution) == committed
 
 
 def test_five_task_line_reaches_its_optimum() -> None:
     solution = _rule.solve(_rule.parse_input(_raw("five_task_line.json")))
     assert (solution.status, solution.stations) == ("feasible", [[1, 2], [3], [4, 5]])
+
+
+def test_four_task_line_reaches_its_optimum_without_its_precedence() -> None:
+    # problem.txt: the one relation 3->4 is what makes the rule need 3 stations.
+    raw = _raw("four_task_line.json") | {"precedences": []}
+    solution = _rule.solve(_rule.parse_input(raw))
+    assert (solution.status, solution.stations) == ("feasible", [[2, 4], [1, 3]])
 
 
 @pytest.mark.parametrize("path", sorted(_EXAMPLE_DIR.glob("parsed/*.json")), ids=lambda p: p.stem)
