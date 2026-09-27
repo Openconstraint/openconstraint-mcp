@@ -38,7 +38,7 @@ dependencies = [
 openconstraint-mcp = "openconstraint_mcp:main"
 
 [project.urls]
-Homepage = "https://github.com/Openconstraint/openconstraint-mcp"
+Homepage = "https://openconstraint.com"
 Repository = "https://github.com/Openconstraint/openconstraint-mcp"
 Issues = "https://github.com/Openconstraint/openconstraint-mcp/issues"
 
