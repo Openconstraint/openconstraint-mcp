@@ -1,0 +1,20 @@
+{
+  "name": "seven_task_line",
+  "provenance": {
+    "source": "authored for this example (license CC0-1.0)",
+    "citation": null,
+    "license": "CC0-1.0"
+  },
+  "published_optimum": null,
+  "cycle_time": 10,
+  "tasks": [
+    {"id": 1, "time": 6},
+    {"id": 2, "time": 3},
+    {"id": 3, "time": 5},
+    {"id": 4, "time": 1},
+    {"id": 5, "time": 9},
+    {"id": 6, "time": 4},
+    {"id": 7, "time": 2}
+  ],
+  "precedences": [[1, 2], [2, 3], [3, 7], [4, 5], [5, 6], [6, 7]]
+}

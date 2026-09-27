@@ -43,6 +43,13 @@ def test_five_task_line_proves_three_stations(formulation: str) -> None:
     assert (solution.status, solution.objective) == ("optimal", 3)
 
 
+@pytest.mark.parametrize("formulation", ["base", "bounds", "full", "full_work_bound"])
+def test_seven_task_line_proves_its_only_optimal_line_balance(formulation: str) -> None:
+    raw = json.loads((_MODEL_PATH.parent / "parsed" / "seven_task_line.json").read_text())
+    solution = _model.solve(_model.parse_input(raw), formulation)
+    assert (solution.status, solution.stations) == ("optimal", [[4, 5], [1, 6], [2, 3, 7]])
+
+
 @pytest.mark.parametrize(("name", "published_optimum"), [("GUNTHER_c41", 14), ("KILBRID_c62", 9)])
 def test_small_benchmark_proves_its_published_optimum(name: str, published_optimum: int) -> None:
     # The two small-scale Scholl instances prove optimal in under a second.
