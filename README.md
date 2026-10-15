@@ -3,6 +3,8 @@
 [![CI](https://github.com/Openconstraint/openconstraint-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Openconstraint/openconstraint-mcp/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/openconstraint-mcp)](https://pypi.org/project/openconstraint-mcp/)
 
+[OpenConstraint website](https://openconstraint.com/) · [Worked case studies](https://openconstraint.com/cases/)
+
 A local-first [Model Context Protocol](https://modelcontextprotocol.io) server for
 constraint programming and optimization. `openconstraint-mcp` gives an MCP client a
 deterministic way to compile-check and solve [MiniZinc](https://www.minizinc.org/)
